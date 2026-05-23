@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from pawchestrator.config import DEFAULT_PORT, LOCAL_HOST, Settings
-from pawchestrator.db import init_db
+from pawchestrator.db import count_registered_repos, init_db
 from pawchestrator.runners import ClaudeRunner, CodexRunner
 
 STATUS_PASS = "pass"
@@ -39,6 +39,7 @@ def run_checks(settings: Settings, port: int = DEFAULT_PORT) -> list[CheckResult
         check_codex_runner(settings),
         check_port_available(port),
         check_sqlite_writable(settings),
+        check_repo_registry(settings),
     ]
 
 
@@ -170,6 +171,33 @@ def check_sqlite_writable(settings: Settings) -> CheckResult:
         STATUS_PASS,
         f"database writable at {_display_path(database_path)}",
         required=True,
+    )
+
+
+def check_repo_registry(settings: Settings) -> CheckResult:
+    try:
+        count = asyncio.run(count_registered_repos(settings))
+    except Exception as error:  # pragma: no cover - exact SQLite errors vary.
+        return CheckResult(
+            "repo registry",
+            STATUS_WARN,
+            f"repo registry unavailable: {error}",
+            required=False,
+        )
+
+    if count == 0:
+        return CheckResult(
+            "repo registry",
+            STATUS_WARN,
+            "0 repos registered — run pawchestrator repo add <path>",
+            required=False,
+        )
+
+    return CheckResult(
+        "repo registry",
+        STATUS_PASS,
+        f"{count} repo(s) registered",
+        required=False,
     )
 
 
