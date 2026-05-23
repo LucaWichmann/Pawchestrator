@@ -1,9 +1,16 @@
 import asyncio
+import json
 
 import httpx
 import pytest
 
-from pawchestrator.github import GitHubIssueClient, format_run_comment, parse_issue_url
+from pawchestrator.github import (
+    PAWCHESTRATOR_LABELS,
+    GitHubIssueClient,
+    ensure_pawchestrator_labels,
+    format_run_comment,
+    parse_issue_url,
+)
 
 
 def test_parse_issue_url_accepts_github_issue_url() -> None:
@@ -138,6 +145,147 @@ def test_github_issue_client_edits_comment() -> None:
     asyncio.run(client.edit_comment("owner", "repo", 99, "Updated"))
 
     assert len(requests) == 1
+
+
+def test_github_issue_client_ensure_label_noops_when_label_exists() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.method == "GET"
+        assert request.url.path == "/repos/owner/repo/labels/pawchestrator:running"
+        return httpx.Response(200, json={"name": "pawchestrator:running"})
+
+    client = GitHubIssueClient(
+        "token",
+        api_base="https://api.github.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    asyncio.run(client.ensure_label("owner", "repo", "pawchestrator:running", "6f42c1"))
+
+    assert len(requests) == 1
+
+
+def test_github_issue_client_ensure_label_creates_missing_label() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "GET":
+            assert request.url.path == "/repos/owner/repo/labels/pawchestrator:running"
+            return httpx.Response(404, json={"message": "not found"})
+        assert request.method == "POST"
+        assert request.url.path == "/repos/owner/repo/labels"
+        assert json.loads(request.read()) == {
+            "name": "pawchestrator:running",
+            "color": "6f42c1",
+        }
+        return httpx.Response(201, json={"name": "pawchestrator:running"})
+
+    client = GitHubIssueClient(
+        "token",
+        api_base="https://api.github.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    asyncio.run(client.ensure_label("owner", "repo", "pawchestrator:running", "6f42c1"))
+
+    assert [request.method for request in requests] == ["GET", "POST"]
+
+
+def test_github_issue_client_ensure_label_treats_create_conflict_as_noop() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "GET":
+            return httpx.Response(404, json={"message": "not found"})
+        return httpx.Response(422, json={"message": "already_exists"})
+
+    client = GitHubIssueClient(
+        "token",
+        api_base="https://api.github.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    asyncio.run(client.ensure_label("owner", "repo", "pawchestrator:running", "6f42c1"))
+
+    assert [request.method for request in requests] == ["GET", "POST"]
+
+
+def test_github_issue_client_adds_label() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.method == "POST"
+        assert request.url.path == "/repos/owner/repo/issues/42/labels"
+        assert json.loads(request.read()) == {"labels": ["pawchestrator:running"]}
+        return httpx.Response(200, json=[{"name": "pawchestrator:running"}])
+
+    client = GitHubIssueClient(
+        "token",
+        api_base="https://api.github.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    asyncio.run(client.add_label("owner", "repo", 42, "pawchestrator:running"))
+
+    assert len(requests) == 1
+
+
+def test_github_issue_client_removes_label() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.method == "DELETE"
+        assert request.url.path == "/repos/owner/repo/issues/42/labels/pawchestrator:running"
+        return httpx.Response(200, json=[{"name": "enhancement"}])
+
+    client = GitHubIssueClient(
+        "token",
+        api_base="https://api.github.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    asyncio.run(client.remove_label("owner", "repo", 42, "pawchestrator:running"))
+
+    assert len(requests) == 1
+
+
+def test_github_issue_client_remove_label_treats_missing_label_as_noop() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(404, json={"message": "not found"})
+
+    client = GitHubIssueClient(
+        "token",
+        api_base="https://api.github.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    asyncio.run(client.remove_label("owner", "repo", 42, "pawchestrator:running"))
+
+    assert len(requests) == 1
+
+
+def test_ensure_pawchestrator_labels_creates_all_labels() -> None:
+    calls: list[tuple[str, str, str, str]] = []
+
+    class FakeClient:
+        async def ensure_label(self, owner: str, repo: str, name: str, color: str) -> None:
+            calls.append((owner, repo, name, color))
+
+    asyncio.run(ensure_pawchestrator_labels(FakeClient(), "owner", "repo"))  # type: ignore[arg-type]
+
+    assert calls == [
+        ("owner", "repo", name, color)
+        for name, color in PAWCHESTRATOR_LABELS.values()
+    ]
 
 
 def test_format_run_comment_includes_structured_run_state() -> None:
