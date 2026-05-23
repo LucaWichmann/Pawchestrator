@@ -109,6 +109,40 @@ def test_claude_runner_invokes_expected_command_and_parses_result(
     }
 
 
+def test_claude_runner_debug_prints_command_and_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return b'{"result": {"status": "success"}}', b"claude warning"
+
+    async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
+        return FakeProcess()
+
+    monkeypatch.setattr(
+        "pawchestrator.runners.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+
+    task = RunnerTask(
+        prompt="debug prompt",
+        cwd=tmp_path,
+        run_id="run-debug",
+        stage_name="scout",
+    )
+
+    asyncio.run(ClaudeRunner(debug=True).run_task(task))
+
+    output = capsys.readouterr().out
+    assert "[pawchestrator:debug] run=run-debug stage=scout runner=claude" in output
+    assert "<prompt chars=12>" in output
+    assert "--model sonnet --effort low" in output
+    assert '{"result": {"status": "success"}}' in output
+    assert "claude warning" in output
+
+
 def test_codex_runner_reports_missing_binary(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("pawchestrator.runners.shutil.which", lambda name: None)
 
@@ -268,6 +302,52 @@ def test_codex_runner_invokes_expected_command_logs_and_captures_diff(
     assert (tmp_path / "runs" / "run-123" / "stdout" / "implement.log").read_text(
         encoding="utf-8"
     ) == "codex stdout\ncodex stderr\n"
+
+
+def test_codex_runner_debug_prints_command_and_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    codex_path = "C:\\bin\\codex.CMD"
+
+    class FakeProcess:
+        def __init__(self, stdout: bytes, stderr: bytes) -> None:
+            self.returncode = 0
+            self._stdout = stdout
+            self._stderr = stderr
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return self._stdout, self._stderr
+
+    async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
+        if cmd[:3] == ("git", "diff", "HEAD"):
+            return FakeProcess(b"", b"")
+        return FakeProcess(b"codex stdout", b"codex stderr")
+
+    monkeypatch.setattr(
+        "pawchestrator.runners.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr(
+        "pawchestrator.runners.shutil.which",
+        lambda name: codex_path if name == "codex" else None,
+    )
+
+    task = RunnerTask(
+        prompt="debug prompt",
+        cwd=tmp_path,
+        run_id="run-debug",
+        stage_name="implement",
+    )
+
+    asyncio.run(CodexRunner(debug=True).run_task(task))
+
+    output = capsys.readouterr().out
+    assert "[pawchestrator:debug] run=run-debug stage=implement runner=codex" in output
+    assert "<prompt chars=12>" in output
+    assert "--model gpt-5.5" in output
+    assert "-c 'model_reasoning_effort=\"low\"'" in output
+    assert "codex stdout" in output
+    assert "codex stderr" in output
 
 
 def test_codex_runner_falls_back_for_windows_sandbox_error(

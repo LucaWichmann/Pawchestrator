@@ -18,6 +18,9 @@ Pawchestrator reads optional runner defaults from `~/.pawchestrator/config.toml`
 These defaults keep token use low while still letting you raise effort when needed:
 
 ```toml
+[app]
+debug = true
+
 [runners.claude]
 model = "sonnet"
 effort = "low"
@@ -28,6 +31,9 @@ reasoning_effort = "low"
 ```
 
 Set Claude `effort = "medium"` when scout or plan stages need deeper thinking.
+When `[app] debug = true`, Pawchestrator prints runner argv plus captured stdout/stderr
+to the console. Prompts are redacted to their character count so issue content does not
+flood the terminal.
 
 ## Tampermonkey userscript
 

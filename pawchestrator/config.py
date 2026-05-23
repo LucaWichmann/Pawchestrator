@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore")
 
     app_dir: Path = Field(default_factory=lambda: Path.home() / APP_DIR_NAME)
+    debug: bool = False
     backend: BackendSettings = Field(default_factory=BackendSettings)
     runners: RunnerSettings = Field(default_factory=RunnerSettings)
 
@@ -85,6 +86,7 @@ def load_settings(config_path: Path | None = None) -> Settings:
     app_dir = Path(app_data.get("app_dir", default_app_dir)).expanduser()
     return Settings(
         app_dir=app_dir,
+        debug=bool(app_data.get("debug", False)),
         backend=BackendSettings(**backend_data),
         runners=RunnerSettings(**runners_data),
     )

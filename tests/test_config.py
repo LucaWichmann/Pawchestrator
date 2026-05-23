@@ -15,6 +15,7 @@ def test_runner_settings_defaults_match_low_token_profile() -> None:
     assert settings.runners.codex.binary == "codex"
     assert settings.runners.codex.model == "gpt-5.5"
     assert settings.runners.codex.reasoning_effort == "low"
+    assert settings.debug is False
 
 
 def test_load_settings_reads_runner_overrides(tmp_path: Path) -> None:
@@ -24,6 +25,7 @@ def test_load_settings_reads_runner_overrides(tmp_path: Path) -> None:
         f"""
 [app]
 app_dir = "{app_dir.as_posix()}"
+debug = true
 
 [runners.claude]
 binary = "claude-beta"
@@ -41,6 +43,7 @@ reasoning_effort = "medium"
     settings = load_settings(config_path)
 
     assert settings.app_dir == app_dir
+    assert settings.debug is True
     assert settings.runners.claude.binary == "claude-beta"
     assert settings.runners.claude.model == "opus"
     assert settings.runners.claude.effort == "medium"

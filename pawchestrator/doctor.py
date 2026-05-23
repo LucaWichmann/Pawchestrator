@@ -55,15 +55,25 @@ def check_binary(name: str, required: bool) -> CheckResult:
 
 
 def check_claude_runner(settings: Settings | None = None) -> CheckResult:
-    config = (settings or Settings()).runners.claude
-    healthy, message = asyncio.run(ClaudeRunner(config).check_health())
+    runtime_settings = settings or Settings()
+    healthy, message = asyncio.run(
+        ClaudeRunner(
+            runtime_settings.runners.claude,
+            debug=runtime_settings.debug,
+        ).check_health()
+    )
     status = STATUS_PASS if healthy else STATUS_WARN
     return CheckResult("claude", status, message, required=False)
 
 
 def check_codex_runner(settings: Settings | None = None) -> CheckResult:
-    config = (settings or Settings()).runners.codex
-    healthy, message = asyncio.run(CodexRunner(config).check_health())
+    runtime_settings = settings or Settings()
+    healthy, message = asyncio.run(
+        CodexRunner(
+            runtime_settings.runners.codex,
+            debug=runtime_settings.debug,
+        ).check_health()
+    )
     status = STATUS_PASS if healthy else STATUS_WARN
     return CheckResult("codex", status, message, required=False)
 
