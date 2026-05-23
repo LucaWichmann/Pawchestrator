@@ -24,12 +24,17 @@ class SnapshotResult:
     title: str
 
 
-async def snapshot_issue(issue_url: str, settings: Settings) -> SnapshotResult:
+async def snapshot_issue(
+    issue_url: str,
+    settings: Settings,
+    *,
+    run_id: str | None = None,
+) -> SnapshotResult:
     reference = parse_issue_url(issue_url)
-    run_id = str(uuid4())
+    active_run_id = run_id or str(uuid4())
     stage_id = await create_snapshot_run(
         settings,
-        run_id=run_id,
+        run_id=active_run_id,
         owner=reference.owner,
         repo=reference.repo,
         issue_number=reference.number,
@@ -38,7 +43,7 @@ async def snapshot_issue(issue_url: str, settings: Settings) -> SnapshotResult:
     try:
         token = get_gh_token()
         snapshot = await GitHubIssueClient(token).fetch_snapshot(reference)
-        artifact_path = _snapshot_artifact_path(settings, run_id)
+        artifact_path = _snapshot_artifact_path(settings, active_run_id)
         artifact_path.parent.mkdir(parents=True, exist_ok=True)
         artifact_path.write_text(
             json.dumps(snapshot, indent=2, sort_keys=True) + "\n",
@@ -46,21 +51,21 @@ async def snapshot_issue(issue_url: str, settings: Settings) -> SnapshotResult:
         )
         await complete_snapshot_run(
             settings,
-            run_id=run_id,
+            run_id=active_run_id,
             stage_id=stage_id,
             artifact_path=artifact_path,
         )
     except Exception as error:
         await fail_snapshot_run(
             settings,
-            run_id=run_id,
+            run_id=active_run_id,
             stage_id=stage_id,
             error=str(error),
         )
         raise
 
     return SnapshotResult(
-        run_id=run_id,
+        run_id=active_run_id,
         artifact_path=artifact_path,
         issue_number=reference.number,
         title=str(snapshot["title"]),

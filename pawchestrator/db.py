@@ -10,6 +10,8 @@ import aiosqlite
 
 from pawchestrator.config import Settings, ensure_app_dir
 
+PIPELINE_STAGES = ("snapshot", "scout", "plan", "implement", "verify", "pr")
+
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS workflow_runs (
   id TEXT PRIMARY KEY,
@@ -78,7 +80,44 @@ async def create_snapshot_run(
     issue_number: int,
 ) -> str:
     await init_db(settings)
-    stage_id = str(uuid4())
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            INSERT OR IGNORE INTO workflow_runs (
+              id, owner, repo, issue_number, status, current_stage, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, 'pending', NULL, ?, ?)
+            """,
+            (run_id, owner, repo, issue_number, now, now),
+        )
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET status = 'snapshot_running',
+                current_stage = 'snapshot',
+                owner = ?,
+                repo = ?,
+                issue_number = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (owner, repo, issue_number, now, run_id),
+        )
+        stage_id = await _start_stage_row(db, run_id=run_id, stage_name="snapshot", now=now)
+        await db.commit()
+    return stage_id
+
+
+async def create_pipeline_run(
+    settings: Settings,
+    *,
+    run_id: str,
+    owner: str,
+    repo: str,
+    issue_number: int,
+) -> None:
+    await init_db(settings)
     now = utc_now_iso()
     async with aiosqlite.connect(settings.database_path) as db:
         await db.execute(
@@ -86,21 +125,19 @@ async def create_snapshot_run(
             INSERT INTO workflow_runs (
               id, owner, repo, issue_number, status, current_stage, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, 'snapshot_running', 'snapshot', ?, ?)
+            VALUES (?, ?, ?, ?, 'pending', NULL, ?, ?)
             """,
             (run_id, owner, repo, issue_number, now, now),
         )
-        await db.execute(
-            """
-            INSERT INTO workflow_stages (
-              id, run_id, stage_name, status, started_at
+        for stage_name in PIPELINE_STAGES:
+            await db.execute(
+                """
+                INSERT INTO workflow_stages (id, run_id, stage_name, status)
+                VALUES (?, ?, ?, 'pending')
+                """,
+                (str(uuid4()), run_id, stage_name),
             )
-            VALUES (?, ?, 'snapshot', 'running', ?)
-            """,
-            (stage_id, run_id, now),
-        )
         await db.commit()
-    return stage_id
 
 
 async def complete_snapshot_run(
@@ -168,7 +205,6 @@ async def fail_snapshot_run(
 
 async def start_scout_run(settings: Settings, *, run_id: str) -> str:
     await init_db(settings)
-    stage_id = str(uuid4())
     now = utc_now_iso()
     async with aiosqlite.connect(settings.database_path) as db:
         await db.execute(
@@ -179,15 +215,7 @@ async def start_scout_run(settings: Settings, *, run_id: str) -> str:
             """,
             (now, run_id),
         )
-        await db.execute(
-            """
-            INSERT INTO workflow_stages (
-              id, run_id, stage_name, status, started_at
-            )
-            VALUES (?, ?, 'scout', 'running', ?)
-            """,
-            (stage_id, run_id, now),
-        )
+        stage_id = await _start_stage_row(db, run_id=run_id, stage_name="scout", now=now)
         await db.commit()
     return stage_id
 
@@ -257,7 +285,6 @@ async def fail_scout_run(
 
 async def start_plan_run(settings: Settings, *, run_id: str) -> str:
     await init_db(settings)
-    stage_id = str(uuid4())
     now = utc_now_iso()
     async with aiosqlite.connect(settings.database_path) as db:
         await db.execute(
@@ -268,15 +295,7 @@ async def start_plan_run(settings: Settings, *, run_id: str) -> str:
             """,
             (now, run_id),
         )
-        await db.execute(
-            """
-            INSERT INTO workflow_stages (
-              id, run_id, stage_name, status, started_at
-            )
-            VALUES (?, ?, 'plan', 'running', ?)
-            """,
-            (stage_id, run_id, now),
-        )
+        stage_id = await _start_stage_row(db, run_id=run_id, stage_name="plan", now=now)
         await db.commit()
     return stage_id
 
@@ -388,7 +407,6 @@ async def upsert_worktree_record(
 
 async def start_implement_run(settings: Settings, *, run_id: str) -> str:
     await init_db(settings)
-    stage_id = str(uuid4())
     now = utc_now_iso()
     async with aiosqlite.connect(settings.database_path) as db:
         await db.execute(
@@ -399,15 +417,7 @@ async def start_implement_run(settings: Settings, *, run_id: str) -> str:
             """,
             (now, run_id),
         )
-        await db.execute(
-            """
-            INSERT INTO workflow_stages (
-              id, run_id, stage_name, status, started_at
-            )
-            VALUES (?, ?, 'implement', 'running', ?)
-            """,
-            (stage_id, run_id, now),
-        )
+        stage_id = await _start_stage_row(db, run_id=run_id, stage_name="implement", now=now)
         await db.commit()
     return stage_id
 
@@ -493,7 +503,6 @@ async def get_worktree_record(settings: Settings, *, run_id: str) -> dict[str, o
 
 async def start_verify_run(settings: Settings, *, run_id: str) -> str:
     await init_db(settings)
-    stage_id = str(uuid4())
     now = utc_now_iso()
     async with aiosqlite.connect(settings.database_path) as db:
         await db.execute(
@@ -504,15 +513,7 @@ async def start_verify_run(settings: Settings, *, run_id: str) -> str:
             """,
             (now, run_id),
         )
-        await db.execute(
-            """
-            INSERT INTO workflow_stages (
-              id, run_id, stage_name, status, started_at
-            )
-            VALUES (?, ?, 'verify', 'running', ?)
-            """,
-            (stage_id, run_id, now),
-        )
+        stage_id = await _start_stage_row(db, run_id=run_id, stage_name="verify", now=now)
         await db.commit()
     return stage_id
 
@@ -620,7 +621,6 @@ async def fail_verify_run(
 
 async def start_pr_run(settings: Settings, *, run_id: str) -> str:
     await init_db(settings)
-    stage_id = str(uuid4())
     now = utc_now_iso()
     async with aiosqlite.connect(settings.database_path) as db:
         await db.execute(
@@ -631,15 +631,7 @@ async def start_pr_run(settings: Settings, *, run_id: str) -> str:
             """,
             (now, run_id),
         )
-        await db.execute(
-            """
-            INSERT INTO workflow_stages (
-              id, run_id, stage_name, status, started_at
-            )
-            VALUES (?, ?, 'pr', 'running', ?)
-            """,
-            (stage_id, run_id, now),
-        )
+        stage_id = await _start_stage_row(db, run_id=run_id, stage_name="pr", now=now)
         await db.commit()
     return stage_id
 
@@ -708,6 +700,34 @@ async def fail_pr_run(
         await db.commit()
 
 
+async def mark_run_completed(settings: Settings, *, run_id: str) -> None:
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET status = 'completed', current_stage = 'pr', updated_at = ?
+            WHERE id = ?
+            """,
+            (now, run_id),
+        )
+        await db.commit()
+
+
+async def mark_run_failed(settings: Settings, *, run_id: str) -> None:
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET status = 'failed', updated_at = ?
+            WHERE id = ?
+            """,
+            (now, run_id),
+        )
+        await db.commit()
+
+
 async def get_run_state(settings: Settings, run_id: str) -> dict[str, object] | None:
     await init_db(settings)
     async with aiosqlite.connect(settings.database_path) as db:
@@ -730,7 +750,18 @@ async def get_run_state(settings: Settings, run_id: str) -> dict[str, object] | 
             SELECT id, run_id, stage_name, status, error, started_at, completed_at
             FROM workflow_stages
             WHERE run_id = ?
-            ORDER BY started_at, id
+            ORDER BY
+              CASE stage_name
+                WHEN 'snapshot' THEN 1
+                WHEN 'scout' THEN 2
+                WHEN 'plan' THEN 3
+                WHEN 'implement' THEN 4
+                WHEN 'verify' THEN 5
+                WHEN 'pr' THEN 6
+                ELSE 99
+              END,
+              started_at,
+              id
             """,
             (run_id,),
         )
@@ -750,6 +781,52 @@ async def get_run_state(settings: Settings, run_id: str) -> dict[str, object] | 
     payload["stages"] = [dict(stage) for stage in stages]
     payload["artifacts"] = [dict(artifact) for artifact in artifacts]
     return payload
+
+
+async def _start_stage_row(
+    db: aiosqlite.Connection,
+    *,
+    run_id: str,
+    stage_name: str,
+    now: str,
+) -> str:
+    cursor = await db.execute(
+        """
+        SELECT id
+        FROM workflow_stages
+        WHERE run_id = ? AND stage_name = ? AND status = 'pending'
+        ORDER BY id
+        LIMIT 1
+        """,
+        (run_id, stage_name),
+    )
+    row = await cursor.fetchone()
+    if row is not None:
+        stage_id = str(row[0])
+        await db.execute(
+            """
+            UPDATE workflow_stages
+            SET status = 'running',
+                error = NULL,
+                started_at = ?,
+                completed_at = NULL
+            WHERE id = ?
+            """,
+            (now, stage_id),
+        )
+        return stage_id
+
+    stage_id = str(uuid4())
+    await db.execute(
+        """
+        INSERT INTO workflow_stages (
+          id, run_id, stage_name, status, started_at
+        )
+        VALUES (?, ?, ?, 'running', ?)
+        """,
+        (stage_id, run_id, stage_name, now),
+    )
+    return stage_id
 
 
 async def list_tables(database_path: Path) -> set[str]:

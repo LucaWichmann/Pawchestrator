@@ -3,7 +3,7 @@ import sqlite3
 from pathlib import Path
 
 from pawchestrator.config import Settings
-from pawchestrator.db import init_db, list_tables, upsert_worktree_record
+from pawchestrator.db import create_pipeline_run, init_db, list_tables, upsert_worktree_record
 
 
 def test_init_db_creates_mvp0_tables(tmp_path: Path) -> None:
@@ -67,3 +67,40 @@ def test_upsert_worktree_record_inserts_and_updates(tmp_path: Path) -> None:
         ).fetchall()
 
     assert rows == [("paw/issue-42-new", str(tmp_path / "new"))]
+
+
+def test_create_pipeline_run_inserts_all_pending_stages(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+
+    asyncio.run(
+        create_pipeline_run(
+            settings,
+            run_id="run-123",
+            owner="owner",
+            repo="repo",
+            issue_number=42,
+        )
+    )
+
+    with sqlite3.connect(tmp_path / "database.sqlite") as db:
+        run = db.execute(
+            "SELECT status, current_stage FROM workflow_runs WHERE id = 'run-123'"
+        ).fetchone()
+        stages = db.execute(
+            """
+            SELECT stage_name, status
+            FROM workflow_stages
+            WHERE run_id = 'run-123'
+            ORDER BY rowid
+            """
+        ).fetchall()
+
+    assert run == ("pending", None)
+    assert stages == [
+        ("snapshot", "pending"),
+        ("scout", "pending"),
+        ("plan", "pending"),
+        ("implement", "pending"),
+        ("verify", "pending"),
+        ("pr", "pending"),
+    ]
