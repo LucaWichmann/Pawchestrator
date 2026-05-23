@@ -16,6 +16,7 @@ from pawchestrator.implement import run_implement
 from pawchestrator.issues import snapshot_issue
 from pawchestrator.plan import run_plan
 from pawchestrator.scout import run_scout
+from pawchestrator.verify import run_verify
 
 app = typer.Typer(add_completion=False, help="Local Pawchestrator backend tools.")
 issue_app = typer.Typer(add_completion=False, help="GitHub issue tools.")
@@ -139,6 +140,25 @@ def run_implement_command(
     for file_path in files_changed:
         typer.echo(f"- {file_path}")
     typer.echo(f"Report: {result.artifact_path}")
+
+
+@run_app.command("verify")
+def run_verify_command(run_id: str) -> None:
+    """Run the Verify stage for an existing implement run."""
+
+    settings = load_settings()
+    try:
+        result = asyncio.run(run_verify(run_id, settings))
+    except Exception as error:
+        typer.secho(f"Verify failed: {error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from error
+
+    for command in result.report["commands"]:
+        name = command.get("name", command["command"])
+        exit_code = command["exit_code"]
+        marker = "PASS" if exit_code == 0 else "FAIL"
+        typer.echo(f"[verify] {name}... exit {exit_code} {marker}")
+    typer.echo(f"[verify] {result.report['status'].upper()}")
 
 
 def _print_result(label: str, status: str, message: str) -> None:

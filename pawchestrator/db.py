@@ -475,6 +475,149 @@ async def fail_implement_run(
         await db.commit()
 
 
+async def get_worktree_record(settings: Settings, *, run_id: str) -> dict[str, object] | None:
+    await init_db(settings)
+    async with aiosqlite.connect(settings.database_path) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT id, run_id, owner, repo, issue_number, branch, path, created_at, updated_at
+            FROM worktrees
+            WHERE run_id = ?
+            """,
+            (run_id,),
+        )
+        row = await cursor.fetchone()
+    return dict(row) if row is not None else None
+
+
+async def start_verify_run(settings: Settings, *, run_id: str) -> str:
+    await init_db(settings)
+    stage_id = str(uuid4())
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET status = 'verify_running', current_stage = 'verify', updated_at = ?
+            WHERE id = ?
+            """,
+            (now, run_id),
+        )
+        await db.execute(
+            """
+            INSERT INTO workflow_stages (
+              id, run_id, stage_name, status, started_at
+            )
+            VALUES (?, ?, 'verify', 'running', ?)
+            """,
+            (stage_id, run_id, now),
+        )
+        await db.commit()
+    return stage_id
+
+
+async def complete_verify_run(
+    settings: Settings,
+    *,
+    run_id: str,
+    stage_id: str,
+    artifact_path: Path,
+    passed: bool,
+) -> None:
+    now = utc_now_iso()
+    run_status = "verify_complete" if passed else "verify_failed"
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET status = ?, current_stage = 'verify', updated_at = ?
+            WHERE id = ?
+            """,
+            (run_status, now, run_id),
+        )
+        await db.execute(
+            """
+            UPDATE workflow_stages
+            SET status = 'complete', completed_at = ?
+            WHERE id = ?
+            """,
+            (now, stage_id),
+        )
+        await db.execute(
+            """
+            INSERT INTO artifacts (id, run_id, artifact_type, file_path, created_at)
+            VALUES (?, ?, 'verification_report', ?, ?)
+            """,
+            (str(uuid4()), run_id, str(artifact_path), now),
+        )
+        await db.commit()
+
+
+async def skip_verify_run(
+    settings: Settings,
+    *,
+    run_id: str,
+    stage_id: str,
+    artifact_path: Path,
+    reason: str,
+) -> None:
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET status = 'verify_skipped', current_stage = 'verify', updated_at = ?
+            WHERE id = ?
+            """,
+            (now, run_id),
+        )
+        await db.execute(
+            """
+            UPDATE workflow_stages
+            SET status = 'skipped', error = ?, completed_at = ?
+            WHERE id = ?
+            """,
+            (reason, now, stage_id),
+        )
+        await db.execute(
+            """
+            INSERT INTO artifacts (id, run_id, artifact_type, file_path, created_at)
+            VALUES (?, ?, 'verification_report', ?, ?)
+            """,
+            (str(uuid4()), run_id, str(artifact_path), now),
+        )
+        await db.commit()
+
+
+async def fail_verify_run(
+    settings: Settings,
+    *,
+    run_id: str,
+    stage_id: str,
+    error: str,
+) -> None:
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET status = 'verify_failed', current_stage = 'verify', updated_at = ?
+            WHERE id = ?
+            """,
+            (now, run_id),
+        )
+        await db.execute(
+            """
+            UPDATE workflow_stages
+            SET status = 'failed', error = ?, completed_at = ?
+            WHERE id = ?
+            """,
+            (error, now, stage_id),
+        )
+        await db.commit()
+
+
 async def get_run_state(settings: Settings, run_id: str) -> dict[str, object] | None:
     await init_db(settings)
     async with aiosqlite.connect(settings.database_path) as db:
