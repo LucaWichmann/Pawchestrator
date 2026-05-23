@@ -5,11 +5,11 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
 from pawchestrator import __version__
 from pawchestrator.config import LOCAL_HOST, Settings, load_settings
-from pawchestrator.db import init_db
+from pawchestrator.db import get_run_state, init_db
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -39,5 +39,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "localhost_only": True,
             },
         }
+
+    @app.get("/runs/{run_id}")
+    async def run_state(run_id: str) -> dict[str, object]:
+        state = await get_run_state(runtime_settings, run_id)
+        if state is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        return state
 
     return app
