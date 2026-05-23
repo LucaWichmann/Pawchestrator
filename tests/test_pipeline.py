@@ -21,6 +21,7 @@ from pawchestrator.db import (
     start_scout_run,
     start_verify_run,
 )
+from pawchestrator.github import PAWCHESTRATOR_LABELS
 from pawchestrator.pipeline import run_pipeline
 
 
@@ -151,6 +152,146 @@ def test_run_pipeline_passes_allow_empty_commit_to_pr_stage(
     )
 
     assert allow_empty_commit_values == [True]
+
+
+def test_run_pipeline_updates_stage_labels(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    calls: list[str] = []
+    client = _RecordingLabelClient()
+    _patch_successful_stages(monkeypatch, calls)
+    monkeypatch.setattr(
+        "pawchestrator.pipeline._post_initial_run_comment",
+        _fake_post_initial_run_comment(client),
+    )
+
+    asyncio.run(
+        run_pipeline(
+            "https://github.com/owner/repo/issues/42",
+            settings,
+            repo_path=tmp_path,
+        )
+    )
+
+    assert client.ensure_calls == [
+        ("owner", "repo", name, color)
+        for name, color in PAWCHESTRATOR_LABELS.values()
+    ]
+    assert client.added_labels == [
+        "pawchestrator:running",
+        "pawchestrator:scouting",
+        "pawchestrator:planning",
+        "pawchestrator:implementing",
+        "pawchestrator:verifying",
+        "pawchestrator:pr-ready",
+    ]
+    assert "pawchestrator:failed" not in client.added_labels
+
+
+def test_run_pipeline_sets_failed_label_on_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    calls: list[str] = []
+    client = _RecordingLabelClient()
+    _patch_successful_stages(monkeypatch, calls)
+    monkeypatch.setattr(
+        "pawchestrator.pipeline._post_initial_run_comment",
+        _fake_post_initial_run_comment(client),
+    )
+
+    async def fake_plan(run_id: str, settings: Settings, *, repo_path: Path | None = None):
+        calls.append("plan")
+        stage_id = await start_plan_run(settings, run_id=run_id)
+        await fail_plan_run(
+            settings,
+            run_id=run_id,
+            stage_id=stage_id,
+            error="plan exploded",
+        )
+        raise RuntimeError("plan exploded")
+
+    monkeypatch.setattr("pawchestrator.pipeline.run_plan", fake_plan)
+
+    with pytest.raises(RuntimeError, match="plan exploded"):
+        asyncio.run(
+            run_pipeline(
+                "https://github.com/owner/repo/issues/42",
+                settings,
+                repo_path=tmp_path,
+            )
+        )
+
+    assert client.added_labels == [
+        "pawchestrator:running",
+        "pawchestrator:scouting",
+        "pawchestrator:planning",
+        "pawchestrator:failed",
+    ]
+
+
+def test_run_pipeline_label_errors_do_not_abort_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    calls: list[str] = []
+    client = _RecordingLabelClient(fail_add=True)
+    _patch_successful_stages(monkeypatch, calls)
+    monkeypatch.setattr(
+        "pawchestrator.pipeline._post_initial_run_comment",
+        _fake_post_initial_run_comment(client),
+    )
+
+    result = asyncio.run(
+        run_pipeline(
+            "https://github.com/owner/repo/issues/42",
+            settings,
+            repo_path=tmp_path,
+        )
+    )
+
+    assert calls == ["snapshot", "scout", "plan", "implement", "verify", "pr"]
+    assert result.pr_url == "https://github.com/owner/repo/pull/99"
+    assert client.add_attempts == [
+        "pawchestrator:running",
+        "pawchestrator:scouting",
+        "pawchestrator:planning",
+        "pawchestrator:implementing",
+        "pawchestrator:verifying",
+        "pawchestrator:pr-ready",
+    ]
+
+
+class _RecordingLabelClient:
+    def __init__(self, *, fail_add: bool = False) -> None:
+        self.fail_add = fail_add
+        self.ensure_calls: list[tuple[str, str, str, str]] = []
+        self.added_labels: list[str] = []
+        self.add_attempts: list[str] = []
+        self.removed_labels: list[str] = []
+
+    async def ensure_label(self, owner: str, repo: str, name: str, color: str) -> None:
+        self.ensure_calls.append((owner, repo, name, color))
+
+    async def add_label(self, owner: str, repo: str, issue_number: int, name: str) -> None:
+        self.add_attempts.append(name)
+        if self.fail_add:
+            raise RuntimeError("label add failed")
+        self.added_labels.append(name)
+
+    async def remove_label(self, owner: str, repo: str, issue_number: int, name: str) -> None:
+        self.removed_labels.append(name)
+
+
+def _fake_post_initial_run_comment(client: _RecordingLabelClient):
+    async def fake_post_initial_run_comment(settings: Settings, run_id: str):
+        return client
+
+    return fake_post_initial_run_comment
 
 
 def _patch_successful_stages(

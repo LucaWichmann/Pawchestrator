@@ -13,6 +13,16 @@ from pawchestrator.db import utc_now_iso
 
 ISSUE_SNAPSHOT_SCHEMA = "pawchestrator.issue_snapshot.v1"
 GITHUB_API_BASE = "https://api.github.com"
+PAWCHESTRATOR_LABELS = {
+    "running": ("pawchestrator:running", "6f42c1"),
+    "scouting": ("pawchestrator:scouting", "0969da"),
+    "planning": ("pawchestrator:planning", "1f883d"),
+    "implementing": ("pawchestrator:implementing", "bf8700"),
+    "verifying": ("pawchestrator:verifying", "8250df"),
+    "pr-ready": ("pawchestrator:pr-ready", "0e8a16"),
+    "failed": ("pawchestrator:failed", "cf222e"),
+    "blocked": ("pawchestrator:blocked", "57606a"),
+}
 RUN_STAGE_LABELS = {
     "snapshot": "Snapshot",
     "scout": "Scout",
@@ -177,6 +187,63 @@ class GitHubIssueClient:
             )
             self._raise_for_status(response)
 
+    async def ensure_label(self, owner: str, repo: str, name: str, color: str) -> None:
+        async with httpx.AsyncClient(
+            base_url=self._api_base,
+            headers=self._headers(),
+            transport=self._transport,
+        ) as client:
+            response = await client.get(f"/repos/{owner}/{repo}/labels/{name}")
+            if response.status_code == 200:
+                return
+            if response.status_code != 404:
+                self._raise_for_status(response)
+
+            response = await client.post(
+                f"/repos/{owner}/{repo}/labels",
+                json={"name": name, "color": color},
+            )
+            if response.status_code == 422:
+                return
+            self._raise_for_status(response)
+
+    async def add_label(
+        self,
+        owner: str,
+        repo: str,
+        issue_number: int,
+        name: str,
+    ) -> None:
+        async with httpx.AsyncClient(
+            base_url=self._api_base,
+            headers=self._headers(),
+            transport=self._transport,
+        ) as client:
+            response = await client.post(
+                f"/repos/{owner}/{repo}/issues/{issue_number}/labels",
+                json={"labels": [name]},
+            )
+            self._raise_for_status(response)
+
+    async def remove_label(
+        self,
+        owner: str,
+        repo: str,
+        issue_number: int,
+        name: str,
+    ) -> None:
+        async with httpx.AsyncClient(
+            base_url=self._api_base,
+            headers=self._headers(),
+            transport=self._transport,
+        ) as client:
+            response = await client.delete(
+                f"/repos/{owner}/{repo}/issues/{issue_number}/labels/{name}",
+            )
+            if response.status_code == 404:
+                return
+            self._raise_for_status(response)
+
     def _headers(self) -> dict[str, str]:
         return {
             "Authorization": f"Bearer {self._token}",
@@ -215,6 +282,15 @@ class GitHubIssueClient:
         except ValueError:
             message = response.text
         raise GitHubError(f"GitHub API error {response.status_code}: {message}")
+
+
+async def ensure_pawchestrator_labels(
+    client: GitHubIssueClient,
+    owner: str,
+    repo: str,
+) -> None:
+    for label_name, color in PAWCHESTRATOR_LABELS.values():
+        await client.ensure_label(owner, repo, label_name, color)
 
 
 def format_run_comment(run_state: dict[str, Any]) -> str:

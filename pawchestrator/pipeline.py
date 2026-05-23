@@ -21,6 +21,8 @@ from pawchestrator.db import (
 )
 from pawchestrator.github import (
     GitHubIssueClient,
+    PAWCHESTRATOR_LABELS,
+    ensure_pawchestrator_labels,
     format_run_comment,
     get_gh_token,
     parse_issue_url,
@@ -74,6 +76,8 @@ async def run_pipeline(
         )
 
     comment_client = await _post_initial_run_comment(settings, active_run_id)
+    await _ensure_pawchestrator_labels(settings, active_run_id, comment_client)
+    await _swap_stage_label(settings, active_run_id, comment_client, "running")
 
     async def snapshot_stage() -> SnapshotResult:
         return await snapshot_issue(issue_url, settings, run_id=active_run_id)
@@ -101,13 +105,17 @@ async def run_pipeline(
     try:
         await _run_stage("snapshot", snapshot_stage, progress)
         await _edit_run_comment(settings, active_run_id, comment_client)
+        await _swap_stage_label(settings, active_run_id, comment_client, "scouting")
         scout = await _run_stage("scout", scout_stage, progress)
         _print_done(progress, "scout", f"readiness: {scout.report.get('readiness', 'unknown')}")
         await _edit_run_comment(settings, active_run_id, comment_client)
+        await _swap_stage_label(settings, active_run_id, comment_client, "planning")
         await _run_stage("plan", plan_stage, progress)
         await _edit_run_comment(settings, active_run_id, comment_client)
+        await _swap_stage_label(settings, active_run_id, comment_client, "implementing")
         await _run_stage("implement", implement_stage, progress)
         await _edit_run_comment(settings, active_run_id, comment_client)
+        await _swap_stage_label(settings, active_run_id, comment_client, "verifying")
         verification = await _run_stage("verify", verify_stage, progress)
         _print_done(progress, "verify", f"status: {verification.report.get('status', 'unknown')}")
         await _edit_run_comment(settings, active_run_id, comment_client)
@@ -118,10 +126,12 @@ async def run_pipeline(
     except Exception:
         await mark_run_failed(settings, run_id=active_run_id)
         await _edit_run_comment(settings, active_run_id, comment_client)
+        await _swap_stage_label(settings, active_run_id, comment_client, "failed")
         raise
 
     await mark_run_completed(settings, run_id=active_run_id)
     await _edit_run_comment(settings, active_run_id, comment_client)
+    await _swap_stage_label(settings, active_run_id, comment_client, "pr-ready")
     progress(pr_url)
     return PipelineResult(run_id=active_run_id, pr_url=pr_url)
 
@@ -196,6 +206,48 @@ async def _edit_run_comment(
         )
     except Exception as error:
         LOGGER.warning("GitHub run comment edit failed for %s: %s", run_id, error)
+
+
+async def _ensure_pawchestrator_labels(
+    settings: Settings,
+    run_id: str,
+    client: GitHubIssueClient | None,
+) -> None:
+    try:
+        run_state = await _comment_run_state(settings, run_id)
+        if run_state is None:
+            return
+        active_client = client or GitHubIssueClient(get_gh_token())
+        await ensure_pawchestrator_labels(
+            active_client,
+            str(run_state["owner"]),
+            str(run_state["repo"]),
+        )
+    except Exception as error:
+        LOGGER.warning("GitHub label ensure failed for %s: %s", run_id, error)
+
+
+async def _swap_stage_label(
+    settings: Settings,
+    run_id: str,
+    client: GitHubIssueClient | None,
+    stage_name: str,
+) -> None:
+    try:
+        run_state = await _comment_run_state(settings, run_id)
+        if run_state is None:
+            return
+        active_client = client or GitHubIssueClient(get_gh_token())
+        owner = str(run_state["owner"])
+        repo = str(run_state["repo"])
+        issue_number = int(run_state["issue_number"])
+        next_label = PAWCHESTRATOR_LABELS[stage_name][0]
+        for label_name, _color in PAWCHESTRATOR_LABELS.values():
+            if label_name != next_label:
+                await active_client.remove_label(owner, repo, issue_number, label_name)
+        await active_client.add_label(owner, repo, issue_number, next_label)
+    except Exception as error:
+        LOGGER.warning("GitHub stage label update failed for %s: %s", run_id, error)
 
 
 async def _comment_run_state(settings: Settings, run_id: str) -> dict[str, object] | None:
