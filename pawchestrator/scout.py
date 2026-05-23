@@ -17,6 +17,8 @@ from pawchestrator.db import (
 from pawchestrator.runners import ClaudeRunner, Runner, RunnerTask
 
 SCOUT_REPORT_SCHEMA = "pawchestrator.scout_report.v1"
+MAX_PROMPT_COMMENTS = 10
+MAX_PROMPT_COMMENT_BODY_CHARS = 400
 
 
 @dataclass(frozen=True)
@@ -104,7 +106,7 @@ async def run_scout(
 
 
 def build_scout_prompt(snapshot: dict[str, Any]) -> str:
-    comments = snapshot.get("comments") or []
+    comments = _prompt_comments(snapshot.get("comments"))
     rendered_comments = "\n\n".join(_render_comment(comment) for comment in comments)
     if not rendered_comments:
         rendered_comments = "(none)"
@@ -132,6 +134,7 @@ Analyze this issue and return a JSON object matching this schema exactly:
 }}
 
 Use your Read, Glob, Grep tools to explore the repository as needed.
+Be terse. Return minimal valid JSON. No prose outside JSON fields.
 """
 
 
@@ -162,6 +165,21 @@ def _render_comment(comment: object) -> str:
     created_at = comment.get("created_at") or "unknown time"
     body = comment.get("body") or ""
     return f"{author} at {created_at}:\n{body}"
+
+
+def _prompt_comments(value: object) -> list[object]:
+    comments = _list_value(value)[:MAX_PROMPT_COMMENTS]
+    return [_truncate_comment_body(comment) for comment in comments]
+
+
+def _truncate_comment_body(comment: object) -> object:
+    if not isinstance(comment, dict):
+        return comment
+    compressed = dict(comment)
+    body = str(compressed.get("body") or "")
+    if len(body) > MAX_PROMPT_COMMENT_BODY_CHARS:
+        compressed["body"] = "[truncated]" + body[:MAX_PROMPT_COMMENT_BODY_CHARS]
+    return compressed
 
 
 def _list_value(value: object) -> list[object]:
