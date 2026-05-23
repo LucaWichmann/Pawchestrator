@@ -4,7 +4,14 @@ from pathlib import Path
 
 import pytest
 
-from pawchestrator.runners import RUNNERS, ClaudeRunner, CodexRunner, RunnerTask
+from pawchestrator.runners import RUNNERS, ClaudeRunner, CodexRunner, Runner, RunnerTask
+
+
+def test_runner_registry_contains_both_agent_runners() -> None:
+    assert set(RUNNERS) == {"claude", "codex"}
+    assert isinstance(RUNNERS["claude"], ClaudeRunner)
+    assert isinstance(RUNNERS["codex"], CodexRunner)
+    assert all(isinstance(runner, Runner) for runner in RUNNERS.values())
 
 
 def test_claude_runner_reports_missing_binary(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -14,6 +21,18 @@ def test_claude_runner_reports_missing_binary(monkeypatch: pytest.MonkeyPatch) -
 
     assert healthy is False
     assert message == "claude binary not found on PATH"
+
+
+def test_claude_runner_reports_found_binary(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "pawchestrator.runners.shutil.which",
+        lambda name: "C:\\bin\\claude.exe" if name == "claude" else None,
+    )
+
+    healthy, message = asyncio.run(ClaudeRunner().check_health())
+
+    assert healthy is True
+    assert message == "found at C:\\bin\\claude.exe"
 
 
 def test_claude_runner_invokes_expected_command_and_parses_result(
@@ -90,8 +109,32 @@ def test_codex_runner_reports_missing_binary(monkeypatch: pytest.MonkeyPatch) ->
     assert message == "codex not found"
 
 
-def test_codex_runner_is_registered() -> None:
-    assert isinstance(RUNNERS["codex"], CodexRunner)
+def test_codex_runner_reports_found_binary(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return b"codex 1.2.3", b""
+
+    async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
+        assert list(cmd) == ["codex", "--version"]
+        assert kwargs["stdout"] == asyncio.subprocess.PIPE
+        assert kwargs["stderr"] == asyncio.subprocess.PIPE
+        return FakeProcess()
+
+    monkeypatch.setattr(
+        "pawchestrator.runners.shutil.which",
+        lambda name: "C:\\bin\\codex.exe" if name == "codex" else None,
+    )
+    monkeypatch.setattr(
+        "pawchestrator.runners.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+
+    healthy, message = asyncio.run(CodexRunner().check_health())
+
+    assert healthy is True
+    assert message == "found at C:\\bin\\codex.exe (codex 1.2.3)"
 
 
 def test_codex_runner_invokes_expected_command_logs_and_captures_diff(
