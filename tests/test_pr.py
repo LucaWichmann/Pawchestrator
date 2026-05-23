@@ -1,0 +1,367 @@
+import asyncio
+import json
+import sqlite3
+from pathlib import Path
+from typing import Any
+
+import aiosqlite
+import pytest
+from typer.testing import CliRunner
+
+from pawchestrator import cli
+from pawchestrator.config import Settings
+from pawchestrator.db import init_db
+from pawchestrator.pr import PrDraftResult, build_pr_body, run_pr
+
+
+def test_build_pr_body_includes_required_sections_for_passed_verification() -> None:
+    body = build_pr_body(
+        _run_state(),
+        _plan(),
+        {"status": "passed", "commands": [], "skip_reason": None},
+    )
+
+    assert "## Summary\n\nAdd PR stage." in body
+    assert "Fixes #42" in body
+    assert "- Create draft PR." in body
+    assert "All checks passed." in body
+    assert "Internal artifacts are stored locally under run `run-123`" in body
+
+
+def test_build_pr_body_reports_skipped_verification() -> None:
+    body = build_pr_body(
+        _run_state(),
+        _plan(),
+        {"status": "skipped", "commands": [], "skip_reason": "No config."},
+    )
+
+    assert "No config." in body
+
+
+def test_build_pr_body_reports_failed_commands() -> None:
+    body = build_pr_body(
+        _run_state(),
+        _plan(),
+        {
+            "status": "failed",
+            "commands": [
+                {"command": "pytest", "exit_code": 1},
+                {"command": "ruff check .", "exit_code": 0},
+            ],
+            "skip_reason": None,
+        },
+    )
+
+    assert "- `pytest` exit 1" in body
+    assert "- `ruff check .` exit 0" in body
+
+
+def test_run_pr_pushes_branch_creates_pr_writes_artifact_and_records_stage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    run_id = "run-123"
+    worktree_path = tmp_path / "worktree"
+    worktree_path.mkdir()
+    asyncio.run(_insert_verify_run(settings, run_id, worktree_path=worktree_path))
+    _write_artifacts(settings, run_id)
+    calls: list[tuple[list[str], Path]] = []
+
+    async def fake_run_process(cmd: list[str], cwd: Path) -> tuple[str, str, int]:
+        calls.append((cmd, cwd))
+        if cmd[:2] == ["git", "push"]:
+            return "pushed", "", 0
+        if cmd[:3] == ["gh", "pr", "create"]:
+            return "https://github.com/owner/repo/pull/99\n", "", 0
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr("pawchestrator.pr._run_process", fake_run_process)
+
+    result = asyncio.run(run_pr(run_id, settings))
+
+    assert result.pr_url == "https://github.com/owner/repo/pull/99"
+    assert result.branch == "paw/issue-42-test"
+    assert result.title == "fix: Add PR command (#42)"
+    assert calls[0] == (
+        ["git", "push", "-u", "origin", "paw/issue-42-test"],
+        worktree_path,
+    )
+    assert calls[1][0][:6] == [
+        "gh",
+        "pr",
+        "create",
+        "--draft",
+        "--title",
+        "fix: Add PR command (#42)",
+    ]
+    assert "--base" in calls[1][0]
+    assert "main" in calls[1][0]
+    assert "--head" in calls[1][0]
+    assert "paw/issue-42-test" in calls[1][0]
+
+    draft = json.loads(result.artifact_path.read_text(encoding="utf-8"))
+    assert result.artifact_path == tmp_path / "runs" / run_id / "pr_draft.json"
+    assert draft == {
+        "schema": "pawchestrator.pr_draft.v1",
+        "pr_url": "https://github.com/owner/repo/pull/99",
+        "branch": "paw/issue-42-test",
+        "base": "main",
+        "title": "fix: Add PR command (#42)",
+    }
+
+    with sqlite3.connect(tmp_path / "database.sqlite") as db:
+        run = db.execute(
+            "SELECT status, current_stage, pr_url FROM workflow_runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+        stage = db.execute(
+            """
+            SELECT status, error FROM workflow_stages
+            WHERE run_id = ? AND stage_name = 'pr'
+            """,
+            (run_id,),
+        ).fetchone()
+        artifact = db.execute(
+            """
+            SELECT artifact_type, file_path FROM artifacts
+            WHERE run_id = ? AND artifact_type = 'pr_draft'
+            """,
+            (run_id,),
+        ).fetchone()
+
+    assert run == ("pr_complete", "pr", "https://github.com/owner/repo/pull/99")
+    assert stage == ("complete", None)
+    assert artifact == ("pr_draft", str(result.artifact_path))
+
+
+def test_run_pr_reuses_existing_pr_for_branch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    run_id = "run-123"
+    worktree_path = tmp_path / "worktree"
+    worktree_path.mkdir()
+    asyncio.run(_insert_verify_run(settings, run_id, worktree_path=worktree_path))
+    _write_artifacts(settings, run_id)
+    calls: list[list[str]] = []
+
+    async def fake_run_process(cmd: list[str], cwd: Path) -> tuple[str, str, int]:
+        calls.append(cmd)
+        if cmd[:2] == ["git", "push"]:
+            return "pushed", "", 0
+        if cmd[:3] == ["gh", "pr", "create"]:
+            return "", "a pull request already exists for branch", 1
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return "https://github.com/owner/repo/pull/100\n", "", 0
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr("pawchestrator.pr._run_process", fake_run_process)
+
+    result = asyncio.run(run_pr(run_id, settings))
+
+    assert result.pr_url == "https://github.com/owner/repo/pull/100"
+    assert calls[-1] == [
+        "gh",
+        "pr",
+        "view",
+        "paw/issue-42-test",
+        "--json",
+        "url",
+        "--jq",
+        ".url",
+    ]
+
+
+def test_run_pr_reports_missing_run(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="run not found: missing"):
+        asyncio.run(run_pr("missing", Settings(app_dir=tmp_path)))
+
+
+def test_run_pr_records_failure_when_worktree_missing(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    run_id = "run-123"
+    asyncio.run(_insert_verify_run(settings, run_id, worktree_path=None))
+    _write_artifacts(settings, run_id)
+
+    with pytest.raises(RuntimeError, match="worktree record not found"):
+        asyncio.run(run_pr(run_id, settings))
+
+    _assert_pr_failed(settings, run_id, "worktree record not found")
+
+
+@pytest.mark.parametrize(
+    ("artifact_name", "message"),
+    [
+        ("implementation_plan.json", "implementation_plan.json"),
+        ("verification_report.json", "verification_report.json"),
+    ],
+)
+def test_run_pr_records_failure_when_required_artifact_missing(
+    tmp_path: Path,
+    artifact_name: str,
+    message: str,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    run_id = "run-123"
+    worktree_path = tmp_path / "worktree"
+    worktree_path.mkdir()
+    asyncio.run(_insert_verify_run(settings, run_id, worktree_path=worktree_path))
+    _write_artifacts(settings, run_id)
+    (tmp_path / "runs" / run_id / artifact_name).unlink()
+
+    with pytest.raises(FileNotFoundError, match=message):
+        asyncio.run(run_pr(run_id, settings))
+
+    _assert_pr_failed(settings, run_id, message)
+
+
+def test_run_pr_records_failure_when_gh_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    run_id = "run-123"
+    worktree_path = tmp_path / "worktree"
+    worktree_path.mkdir()
+    asyncio.run(_insert_verify_run(settings, run_id, worktree_path=worktree_path))
+    _write_artifacts(settings, run_id)
+
+    async def fake_run_process(cmd: list[str], cwd: Path) -> tuple[str, str, int]:
+        if cmd[:2] == ["git", "push"]:
+            return "pushed", "", 0
+        return "", "gh auth failed", 1
+
+    monkeypatch.setattr("pawchestrator.pr._run_process", fake_run_process)
+
+    with pytest.raises(RuntimeError, match="gh auth failed"):
+        asyncio.run(run_pr(run_id, settings))
+
+    _assert_pr_failed(settings, run_id, "gh auth failed")
+
+
+def test_run_pr_command_prints_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli, "load_settings", lambda: Settings(app_dir=tmp_path))
+
+    async def fake_run_pr(run_id: str, settings: Settings) -> PrDraftResult:
+        assert run_id == "run-123"
+        assert settings.app_dir == tmp_path
+        return PrDraftResult(
+            run_id=run_id,
+            artifact_path=tmp_path / "runs" / run_id / "pr_draft.json",
+            pr_url="https://github.com/owner/repo/pull/99",
+            branch="paw/issue-42-test",
+            title="fix: Add PR command (#42)",
+            draft={},
+        )
+
+    monkeypatch.setattr(cli, "run_pr", fake_run_pr)
+
+    result = CliRunner().invoke(cli.app, ["run", "pr", "run-123"])
+
+    assert result.exit_code == 0
+    assert "https://github.com/owner/repo/pull/99" in result.output
+
+
+def _run_state() -> dict[str, Any]:
+    return {
+        "id": "run-123",
+        "owner": "owner",
+        "repo": "repo",
+        "issue_number": 42,
+    }
+
+
+def _plan() -> dict[str, Any]:
+    return {
+        "schema": "pawchestrator.implementation_plan.v1",
+        "approach_summary": "Add PR stage.",
+        "steps": [{"order": 1, "description": "Create draft PR."}],
+    }
+
+
+async def _insert_verify_run(
+    settings: Settings,
+    run_id: str,
+    *,
+    worktree_path: Path | None,
+) -> None:
+    await init_db(settings)
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            INSERT INTO workflow_runs (
+              id, owner, repo, issue_number, status, current_stage,
+              created_at, updated_at
+            )
+            VALUES (
+              ?, 'owner', 'repo', 42, 'verify_complete', 'verify',
+              '2026-05-23T00:00:00Z', '2026-05-23T00:00:01Z'
+            )
+            """,
+            (run_id,),
+        )
+        await db.execute(
+            """
+            INSERT INTO workflow_stages (
+              id, run_id, stage_name, status, started_at, completed_at
+            )
+            VALUES (
+              'stage-verify', ?, 'verify', 'complete',
+              '2026-05-23T00:00:00Z', '2026-05-23T00:00:01Z'
+            )
+            """,
+            (run_id,),
+        )
+        if worktree_path is not None:
+            await db.execute(
+                """
+                INSERT INTO worktrees (
+                  id, run_id, owner, repo, issue_number, branch, path,
+                  created_at, updated_at
+                )
+                VALUES (
+                  'worktree-123', ?, 'owner', 'repo', 42,
+                  'paw/issue-42-test', ?,
+                  '2026-05-23T00:00:00Z', '2026-05-23T00:00:01Z'
+                )
+                """,
+                (run_id, str(worktree_path)),
+            )
+        await db.commit()
+
+
+def _write_artifacts(settings: Settings, run_id: str) -> None:
+    run_dir = settings.app_dir / "runs" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "issue.snapshot.json").write_text(
+        json.dumps({"title": "Add PR command"}),
+        encoding="utf-8",
+    )
+    (run_dir / "implementation_plan.json").write_text(
+        json.dumps(_plan()),
+        encoding="utf-8",
+    )
+    (run_dir / "verification_report.json").write_text(
+        json.dumps({"status": "passed", "commands": [], "skip_reason": None}),
+        encoding="utf-8",
+    )
+
+
+def _assert_pr_failed(settings: Settings, run_id: str, error: str) -> None:
+    with sqlite3.connect(settings.database_path) as db:
+        run = db.execute(
+            "SELECT status, current_stage FROM workflow_runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+        stage = db.execute(
+            """
+            SELECT status, error FROM workflow_stages
+            WHERE run_id = ? AND stage_name = 'pr'
+            """,
+            (run_id,),
+        ).fetchone()
+
+    assert run == ("pr_failed", "pr")
+    assert stage[0] == "failed"
+    assert error in stage[1]
