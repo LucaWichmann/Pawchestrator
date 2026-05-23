@@ -58,6 +58,12 @@ class FakeRunner(Runner):
         return self.result
 
 
+def _successful_main_refresh(args: list[str]) -> tuple[str, str, int]:
+    if args == ["branch", "--show-current"]:
+        return "main\n", "", 0
+    return "", "", 0
+
+
 def test_slugify_matches_issue_branch_contract() -> None:
     assert slugify("Add Implement Stage!") == "add-implement-stage"
     assert len(slugify("x" * 80)) == 40
@@ -99,20 +105,35 @@ def test_files_changed_from_diff_dedupes_paths() -> None:
     assert files_changed_from_diff(diff) == ["a.py", "b.py"]
 
 
-def test_ensure_issue_worktree_reuses_existing_worktree(tmp_path: Path) -> None:
+def test_ensure_issue_worktree_reuses_existing_worktree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     settings = Settings(app_dir=tmp_path)
     worktree_path = tmp_path / "worktrees" / "owner" / "repo" / "issue-42"
     worktree_path.mkdir(parents=True)
     (worktree_path / ".git").write_text("gitdir: source", encoding="utf-8")
+    calls: list[tuple[list[str], Path]] = []
+
+    async def fake_run_git(args: list[str], cwd: Path) -> tuple[str, str, int]:
+        calls.append((args, cwd))
+        return _successful_main_refresh(args)
+
+    source_repo_path = tmp_path / "repo"
+
+    monkeypatch.setattr("pawchestrator.implement._run_git", fake_run_git)
 
     info = asyncio.run(
         ensure_issue_worktree(
             settings,
             snapshot=_snapshot(),
-            source_repo_path=tmp_path / "repo",
+            source_repo_path=source_repo_path,
         )
     )
 
+    assert calls[-2:] == [
+        (["status", "--porcelain"], worktree_path),
+        (["merge", "--ff-only", "main"], worktree_path),
+    ]
     assert info == WorktreeInfo(
         path=worktree_path,
         branch="paw/issue-42-add-implement",
@@ -127,6 +148,8 @@ def test_ensure_issue_worktree_creates_branch_and_worktree(
 
     async def fake_run_git(args: list[str], cwd: Path) -> tuple[str, str, int]:
         calls.append((args, cwd))
+        if args[:1] in [["fetch"], ["branch"], ["status"], ["merge"]]:
+            return _successful_main_refresh(args)
         if args[:2] == ["rev-parse", "--verify"]:
             return "", "missing", 1
         return "created", "", 0
@@ -145,6 +168,13 @@ def test_ensure_issue_worktree_creates_branch_and_worktree(
     assert info.branch == "paw/issue-42-add-implement"
     assert calls == [
         (
+            ["fetch", "origin", "main:refs/remotes/origin/main"],
+            tmp_path / "source",
+        ),
+        (["branch", "--show-current"], tmp_path / "source"),
+        (["status", "--porcelain"], tmp_path / "source"),
+        (["merge", "--ff-only", "origin/main"], tmp_path / "source"),
+        (
             ["rev-parse", "--verify", "refs/heads/paw/issue-42-add-implement"],
             tmp_path / "source",
         ),
@@ -155,6 +185,7 @@ def test_ensure_issue_worktree_creates_branch_and_worktree(
                 "-b",
                 "paw/issue-42-add-implement",
                 str(info.path),
+                "main",
             ],
             tmp_path / "source",
         ),
@@ -168,6 +199,8 @@ def test_ensure_issue_worktree_uses_existing_branch(
 
     async def fake_run_git(args: list[str], cwd: Path) -> tuple[str, str, int]:
         calls.append(args)
+        if args[:1] in [["fetch"], ["branch"], ["status"], ["merge"]]:
+            return _successful_main_refresh(args)
         return "", "", 0
 
     monkeypatch.setattr("pawchestrator.implement._run_git", fake_run_git)
@@ -186,6 +219,102 @@ def test_ensure_issue_worktree_uses_existing_branch(
         str(info.path),
         "paw/issue-42-add-implement",
     ]
+
+
+def test_ensure_issue_worktree_updates_main_when_source_not_on_main(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str]] = []
+
+    async def fake_run_git(args: list[str], cwd: Path) -> tuple[str, str, int]:
+        calls.append(args)
+        if args == ["branch", "--show-current"]:
+            return "feature\n", "", 0
+        if args[:2] == ["rev-parse", "--verify"]:
+            return "", "", 0
+        if args[:2] == ["merge-base", "--is-ancestor"]:
+            return "", "", 0
+        return "", "", 0
+
+    monkeypatch.setattr("pawchestrator.implement._run_git", fake_run_git)
+
+    asyncio.run(
+        ensure_issue_worktree(
+            Settings(app_dir=tmp_path),
+            snapshot=_snapshot(),
+            source_repo_path=tmp_path / "source",
+        )
+    )
+
+    assert ["update-ref", "refs/heads/main", "refs/remotes/origin/main"] in calls
+
+
+def test_ensure_issue_worktree_fails_when_source_main_is_dirty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_run_git(args: list[str], cwd: Path) -> tuple[str, str, int]:
+        if args == ["status", "--porcelain"]:
+            return " M file.py\n", "", 0
+        return _successful_main_refresh(args)
+
+    monkeypatch.setattr("pawchestrator.implement._run_git", fake_run_git)
+
+    with pytest.raises(RuntimeError, match="source repo main has uncommitted changes"):
+        asyncio.run(
+            ensure_issue_worktree(
+                Settings(app_dir=tmp_path),
+                snapshot=_snapshot(),
+                source_repo_path=tmp_path / "source",
+            )
+        )
+
+
+def test_ensure_issue_worktree_fails_when_main_diverged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_run_git(args: list[str], cwd: Path) -> tuple[str, str, int]:
+        if args == ["branch", "--show-current"]:
+            return "feature\n", "", 0
+        if args[:2] == ["rev-parse", "--verify"]:
+            return "", "", 0
+        if args[:2] == ["merge-base", "--is-ancestor"]:
+            return "", "", 1
+        return "", "", 0
+
+    monkeypatch.setattr("pawchestrator.implement._run_git", fake_run_git)
+
+    with pytest.raises(RuntimeError, match="local main cannot fast-forward"):
+        asyncio.run(
+            ensure_issue_worktree(
+                Settings(app_dir=tmp_path),
+                snapshot=_snapshot(),
+                source_repo_path=tmp_path / "source",
+            )
+        )
+
+
+def test_ensure_issue_worktree_fails_when_existing_worktree_is_dirty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    worktree_path = tmp_path / "worktrees" / "owner" / "repo" / "issue-42"
+    worktree_path.mkdir(parents=True)
+    (worktree_path / ".git").write_text("gitdir: source", encoding="utf-8")
+
+    async def fake_run_git(args: list[str], cwd: Path) -> tuple[str, str, int]:
+        if args == ["status", "--porcelain"] and cwd == worktree_path:
+            return " M file.py\n", "", 0
+        return _successful_main_refresh(args)
+
+    monkeypatch.setattr("pawchestrator.implement._run_git", fake_run_git)
+
+    with pytest.raises(RuntimeError, match="issue worktree has uncommitted changes"):
+        asyncio.run(
+            ensure_issue_worktree(
+                Settings(app_dir=tmp_path),
+                snapshot=_snapshot(),
+                source_repo_path=tmp_path / "source",
+            )
+        )
 
 
 def test_run_implement_writes_report_log_and_records_stage(

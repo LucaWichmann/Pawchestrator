@@ -20,6 +20,8 @@ from pawchestrator.db import (
 from pawchestrator.runners import CodexRunner, Runner, RunnerTask
 
 IMPLEMENTATION_REPORT_SCHEMA = "pawchestrator.implementation_report.v1"
+DEFAULT_BASE_BRANCH = "main"
+DEFAULT_REMOTE = "origin"
 SLUG_MAX_LENGTH = 40
 
 
@@ -188,8 +190,12 @@ async def ensure_issue_worktree(
     branch = f"paw/issue-{number}-{slugify(title)}"
     path = settings.app_dir / "worktrees" / owner / repo / f"issue-{number}"
 
+    await _refresh_main_branch(source_repo_path)
+
     if path.exists():
         if (path / ".git").exists():
+            await _ensure_clean_worktree(path, "issue worktree")
+            await _run_git_checked(["merge", "--ff-only", DEFAULT_BASE_BRANCH], path)
             return WorktreeInfo(path=path, branch=branch, reused=True)
         raise RuntimeError(f"worktree path exists but is not a git worktree: {path}")
 
@@ -199,7 +205,7 @@ async def ensure_issue_worktree(
         await _run_git_checked(["worktree", "add", str(path), branch], source_repo_path)
     else:
         await _run_git_checked(
-            ["worktree", "add", "-b", branch, str(path)],
+            ["worktree", "add", "-b", branch, str(path), DEFAULT_BASE_BRANCH],
             source_repo_path,
         )
     return WorktreeInfo(path=path, branch=branch, reused=False)
@@ -309,6 +315,59 @@ async def _git_branch_exists(source_repo_path: Path, branch: str) -> bool:
         source_repo_path,
     )
     return exit_code == 0
+
+
+async def _refresh_main_branch(source_repo_path: Path) -> None:
+    remote_main = f"refs/remotes/{DEFAULT_REMOTE}/{DEFAULT_BASE_BRANCH}"
+    await _run_git_checked(
+        ["fetch", DEFAULT_REMOTE, f"{DEFAULT_BASE_BRANCH}:{remote_main}"],
+        source_repo_path,
+    )
+
+    current_branch = (
+        await _run_git_checked(["branch", "--show-current"], source_repo_path)
+    ).strip()
+    if current_branch == DEFAULT_BASE_BRANCH:
+        await _ensure_clean_worktree(source_repo_path, "source repo main")
+        await _run_git_checked(
+            ["merge", "--ff-only", f"{DEFAULT_REMOTE}/{DEFAULT_BASE_BRANCH}"],
+            source_repo_path,
+        )
+        return
+
+    local_main = f"refs/heads/{DEFAULT_BASE_BRANCH}"
+    if not await _git_ref_exists(source_repo_path, local_main):
+        raise RuntimeError(f"local {DEFAULT_BASE_BRANCH} branch not found")
+    if not await _git_is_ancestor(source_repo_path, local_main, remote_main):
+        raise RuntimeError(
+            f"local {DEFAULT_BASE_BRANCH} cannot fast-forward to "
+            f"{DEFAULT_REMOTE}/{DEFAULT_BASE_BRANCH}; resolve divergent commits first"
+        )
+    await _run_git_checked(["update-ref", local_main, remote_main], source_repo_path)
+
+
+async def _ensure_clean_worktree(cwd: Path, label: str) -> None:
+    status = await _run_git_checked(["status", "--porcelain"], cwd)
+    if status.strip():
+        raise RuntimeError(f"{label} has uncommitted changes; clean or stash them first")
+
+
+async def _git_ref_exists(source_repo_path: Path, ref: str) -> bool:
+    _, _, exit_code = await _run_git(["rev-parse", "--verify", ref], source_repo_path)
+    return exit_code == 0
+
+
+async def _git_is_ancestor(source_repo_path: Path, ancestor: str, descendant: str) -> bool:
+    stdout, stderr, exit_code = await _run_git(
+        ["merge-base", "--is-ancestor", ancestor, descendant],
+        source_repo_path,
+    )
+    if exit_code == 0:
+        return True
+    if exit_code == 1:
+        return False
+    detail = stderr.strip() or stdout.strip() or "git merge-base failed"
+    raise RuntimeError(detail)
 
 
 async def _run_git_checked(args: list[str], cwd: Path) -> str:
