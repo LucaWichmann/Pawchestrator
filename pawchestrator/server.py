@@ -2,23 +2,36 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from pawchestrator import __version__
 from pawchestrator.config import LOCAL_HOST, Settings, load_settings
 from pawchestrator.db import get_run_state, init_db, mark_run_failed
 from pawchestrator.pipeline import run_pipeline
+from pawchestrator.sessions import (
+    _pair_lock,
+    generate_token,
+    load_sessions,
+    save_sessions,
+    token_exists,
+)
 
 
 class IssueStartRequest(BaseModel):
     owner: str = Field(min_length=1)
     repo: str = Field(min_length=1)
     number: int = Field(gt=0)
+
+
+class PairResponse(BaseModel):
+    token: str
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -39,6 +52,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_headers=["*"],
     )
 
+    @app.middleware("http")
+    async def require_pairing_token(request: Request, call_next):
+        if request.method == "OPTIONS" or request.url.path in {"/health", "/pair"}:
+            return await call_next(request)
+
+        token = request.headers.get("X-Pawchestrator-Token")
+        if not token or not token_exists(runtime_settings, token):
+            return JSONResponse({"detail": "invalid pairing token"}, status_code=403)
+
+        return await call_next(request)
+
     @app.get("/health")
     async def health() -> dict[str, object]:
         return {
@@ -54,6 +78,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "localhost_only": True,
             },
         }
+
+    @app.post("/pair")
+    async def pair(request: Request) -> PairResponse:
+        if request.headers.get("origin") != "https://github.com":
+            raise HTTPException(status_code=403, detail="origin not allowed")
+
+        approved = await asyncio.get_running_loop().run_in_executor(
+            None,
+            _prompt_pairing,
+        )
+        if not approved:
+            raise HTTPException(status_code=403, detail="pairing denied")
+
+        token = generate_token()
+        sessions = load_sessions(runtime_settings)
+        sessions["tokens"].append(token)
+        save_sessions(runtime_settings, sessions)
+        return PairResponse(token=token)
 
     @app.get("/runs/{run_id}")
     async def run_state(run_id: str) -> dict[str, object]:
@@ -78,6 +120,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"run_id": run_id}
 
     return app
+
+
+def _prompt_pairing() -> bool:
+    with _pair_lock:
+        try:
+            input(
+                "Pairing request from github.com — "
+                "press Enter to approve (Ctrl+C to deny)"
+            )
+        except (EOFError, KeyboardInterrupt):
+            return False
+        return True
 
 
 async def _run_pipeline_background(

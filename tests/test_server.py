@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from pawchestrator.config import LOCAL_HOST, Settings
 from pawchestrator.db import init_db
 from pawchestrator.server import create_app
+from pawchestrator.sessions import save_sessions
 
 
 def test_health_returns_version_and_local_bind(tmp_path: Path) -> None:
@@ -27,9 +28,10 @@ def test_health_returns_version_and_local_bind(tmp_path: Path) -> None:
 def test_run_state_returns_run_stages_and_artifacts(tmp_path: Path) -> None:
     settings = Settings(app_dir=tmp_path)
     _insert_run_state(settings)
+    _seed_token(settings)
 
     with TestClient(create_app(settings)) as client:
-        response = client.get("/runs/run-123")
+        response = client.get("/runs/run-123", headers=_token_headers())
 
     assert response.status_code == 200
     payload = response.json()
@@ -41,9 +43,10 @@ def test_run_state_returns_run_stages_and_artifacts(tmp_path: Path) -> None:
 
 def test_run_state_returns_404_for_missing_run(tmp_path: Path) -> None:
     settings = Settings(app_dir=tmp_path)
+    _seed_token(settings)
 
     with TestClient(create_app(settings)) as client:
-        response = client.get("/runs/missing")
+        response = client.get("/runs/missing", headers=_token_headers())
 
     assert response.status_code == 404
 
@@ -53,6 +56,7 @@ def test_issue_start_returns_run_id_and_schedules_pipeline(
     monkeypatch,
 ) -> None:
     settings = Settings(app_dir=tmp_path)
+    _seed_token(settings)
     calls = []
 
     async def fake_run_pipeline(
@@ -70,9 +74,10 @@ def test_issue_start_returns_run_id_and_schedules_pipeline(
         response = client.post(
             "/issue/start",
             json={"owner": "owner", "repo": "repo", "number": 42},
+            headers=_token_headers(),
         )
         run_id = response.json()["run_id"]
-        state_response = client.get(f"/runs/{run_id}")
+        state_response = client.get(f"/runs/{run_id}", headers=_token_headers())
 
     assert response.status_code == 200
     assert response.json() == {"run_id": run_id}
@@ -98,6 +103,7 @@ def test_issue_start_background_failure_does_not_raise(
     monkeypatch,
 ) -> None:
     settings = Settings(app_dir=tmp_path)
+    _seed_token(settings)
 
     async def fake_run_pipeline(
         issue_url: str,
@@ -115,9 +121,10 @@ def test_issue_start_background_failure_does_not_raise(
         response = client.post(
             "/issue/start",
             json={"owner": "owner", "repo": "repo", "number": 42},
+            headers=_token_headers(),
         )
         run_id = response.json()["run_id"]
-        state_response = client.get(f"/runs/{run_id}")
+        state_response = client.get(f"/runs/{run_id}", headers=_token_headers())
 
     assert response.status_code == 200
     assert state_response.json()["status"] == "failed"
@@ -146,6 +153,68 @@ def test_cors_allows_github_for_issue_start_and_runs(tmp_path: Path) -> None:
     assert runs_response.status_code == 200
     assert issue_response.headers["access-control-allow-origin"] == "https://github.com"
     assert runs_response.headers["access-control-allow-origin"] == "https://github.com"
+
+
+def test_protected_routes_require_pairing_token(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _insert_run_state(settings)
+
+    with TestClient(create_app(settings)) as client:
+        missing_response = client.get("/runs/run-123")
+        wrong_response = client.get(
+            "/runs/run-123",
+            headers={"X-Pawchestrator-Token": "wrong-token"},
+        )
+
+    assert missing_response.status_code == 403
+    assert wrong_response.status_code == 403
+
+
+def test_protected_routes_accept_stored_pairing_token(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _insert_run_state(settings)
+    _seed_token(settings)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.get("/runs/run-123", headers=_token_headers())
+
+    assert response.status_code == 200
+
+
+def test_pair_rejects_wrong_origin(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.post("/pair", headers={"Origin": "https://example.com"})
+
+    assert response.status_code == 403
+
+
+def test_pair_returns_token_after_terminal_approval(tmp_path: Path, monkeypatch) -> None:
+    settings = Settings(app_dir=tmp_path)
+    monkeypatch.setattr("builtins.input", lambda prompt: "")
+
+    with TestClient(create_app(settings)) as client:
+        response = client.post("/pair", headers={"Origin": "https://github.com"})
+
+    assert response.status_code == 200
+    token = response.json()["token"]
+    assert len(token) == 64
+    assert token in save_and_load_tokens(settings)
+
+
+def test_pair_returns_403_after_terminal_denial(tmp_path: Path, monkeypatch) -> None:
+    settings = Settings(app_dir=tmp_path)
+
+    def deny(_prompt: str) -> str:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("builtins.input", deny)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.post("/pair", headers={"Origin": "https://github.com"})
+
+    assert response.status_code == 403
 
 
 def _insert_run_state(settings: Settings) -> None:
@@ -189,3 +258,18 @@ def _insert_run_state(settings: Settings) -> None:
             await db.commit()
 
     asyncio.run(insert())
+
+
+def _seed_token(settings: Settings, token: str = "known-token") -> None:
+    save_sessions(settings, {"tokens": [token]})
+
+
+def _token_headers(token: str = "known-token") -> dict[str, str]:
+    return {"X-Pawchestrator-Token": token}
+
+
+def save_and_load_tokens(settings: Settings) -> list[str]:
+    import json
+
+    with settings.sessions_path.open("r", encoding="utf-8") as sessions_file:
+        return json.load(sessions_file)["tokens"]
