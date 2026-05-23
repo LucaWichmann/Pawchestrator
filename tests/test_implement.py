@@ -80,7 +80,17 @@ def test_build_implement_prompt_includes_snapshot_plan_and_worktree(tmp_path: Pa
     }
     plan = {
         "schema": "pawchestrator.implementation_plan.v1",
-        "steps": [{"order": 1, "description": "Edit code."}],
+        "approach_summary": "Use existing orchestration.",
+        "steps": [
+            {
+                "order": 1,
+                "description": "Edit code.",
+                "files_to_modify": ["pawchestrator/implement.py"],
+                "notes": "Keep full artifact notes out of the prompt.",
+            }
+        ],
+        "files_to_modify": ["pawchestrator/implement.py"],
+        "estimated_risk": "low",
     }
 
     prompt = build_implement_prompt(snapshot, plan, tmp_path)
@@ -89,8 +99,40 @@ def test_build_implement_prompt_includes_snapshot_plan_and_worktree(tmp_path: Pa
     assert "Repository: owner/repo" in prompt
     assert f"Working directory: {tmp_path}" in prompt
     assert "Issue body" in prompt
-    assert "pawchestrator.implementation_plan.v1" in prompt
+    assert "Use existing orchestration." in prompt
+    assert "pawchestrator/implement.py" in prompt
+    assert "Keep full artifact notes out of the prompt." not in prompt
+    assert "estimated_risk" not in prompt
+    assert "pawchestrator.implementation_plan.v1" not in prompt
     assert "Do not run build or test commands" in prompt
+
+
+def test_build_implement_prompt_compresses_plan_for_prompt_only(tmp_path: Path) -> None:
+    approach_summary = "x" * 151
+    plan = {
+        "schema": "pawchestrator.implementation_plan.v1",
+        "approach_summary": approach_summary,
+        "steps": [
+            {
+                "order": 1,
+                "description": "Edit code.",
+                "files_to_modify": ["pawchestrator/implement.py"],
+                "notes": "drop me",
+            }
+        ],
+        "files_to_modify": ["pawchestrator/implement.py"],
+        "estimated_risk": "low",
+    }
+
+    prompt = build_implement_prompt(_snapshot(), plan, tmp_path)
+
+    assert ("x" * 150) in prompt
+    assert ("x" * 151) not in prompt
+    assert '"description": "Edit code."' in prompt
+    assert '"files_to_modify": [' in prompt
+    assert '"notes"' not in prompt
+    assert plan["approach_summary"] == approach_summary
+    assert "notes" in plan["steps"][0]
 
 
 def test_files_changed_from_diff_dedupes_paths() -> None:

@@ -23,6 +23,7 @@ IMPLEMENTATION_REPORT_SCHEMA = "pawchestrator.implementation_report.v1"
 DEFAULT_BASE_BRANCH = "main"
 DEFAULT_REMOTE = "origin"
 SLUG_MAX_LENGTH = 40
+MAX_PROMPT_APPROACH_SUMMARY_CHARS = 150
 
 
 @dataclass(frozen=True)
@@ -216,6 +217,8 @@ def build_implement_prompt(
     implementation_plan: dict[str, Any],
     worktree_path: Path,
 ) -> str:
+    prompt_plan = _prompt_implementation_plan(implementation_plan)
+
     return f"""You are implementing a GitHub issue in a local git worktree.
 
 Issue: #{snapshot.get("number")} - {snapshot.get("title", "")}
@@ -229,12 +232,38 @@ IssueSnapshot JSON:
 {json.dumps(snapshot, indent=2, sort_keys=True)}
 
 Implementation plan:
-{json.dumps(implementation_plan, indent=2, sort_keys=True)}
+{json.dumps(prompt_plan, indent=2, sort_keys=True)}
 
 Implement the changes described in the plan. Make granular, well-named commits as you go.
 Commit message format: `type(scope): description` (conventional commits).
 Do not run build or test commands - verification is handled separately.
 """
+
+
+def _prompt_implementation_plan(implementation_plan: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "approach_summary": str(implementation_plan.get("approach_summary") or "")[
+            :MAX_PROMPT_APPROACH_SUMMARY_CHARS
+        ],
+        "steps": [
+            _prompt_implementation_step(step)
+            for step in _list_value(implementation_plan.get("steps"))
+        ],
+        "files_to_modify": _list_value(implementation_plan.get("files_to_modify")),
+    }
+
+
+def _prompt_implementation_step(step: object) -> dict[str, object]:
+    if not isinstance(step, dict):
+        return {"description": str(step), "files_to_modify": []}
+    return {
+        "description": str(step.get("description") or ""),
+        "files_to_modify": _list_value(step.get("files_to_modify")),
+    }
+
+
+def _list_value(value: object) -> list[object]:
+    return value if isinstance(value, list) else []
 
 
 def build_implementation_report(
