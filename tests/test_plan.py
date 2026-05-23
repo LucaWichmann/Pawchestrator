@@ -68,7 +68,7 @@ class FakeRunner(Runner):
         return self.result
 
 
-def test_build_plan_prompt_includes_issue_and_full_scout_report() -> None:
+def test_build_plan_prompt_includes_issue_and_scout_report() -> None:
     snapshot = {
         "owner": "owner",
         "repo": "repo",
@@ -90,6 +90,37 @@ def test_build_plan_prompt_includes_issue_and_full_scout_report() -> None:
     assert '"author": "alice"' in prompt
     assert '"text": "Small change"' in prompt
     assert "pawchestrator.implementation_plan.v1" in prompt
+    assert (
+        "Be terse. Return minimal valid JSON. Keep descriptions under 20 words per step."
+        in prompt
+    )
+
+
+def test_build_plan_prompt_truncates_scout_findings_and_risks_for_prompt_only() -> None:
+    scout_report = {
+        "schema": "pawchestrator.scout_report.v1",
+        "findings": [{"kind": "scope", "text": f"finding-{index}"} for index in range(6)],
+        "risks": [{"level": "low", "text": f"risk-{index}"} for index in range(6)],
+    }
+
+    prompt = build_plan_prompt(
+        {
+            "owner": "owner",
+            "repo": "repo",
+            "number": 42,
+            "title": "Add plan",
+            "body": "Issue body",
+            "comments": [],
+        },
+        scout_report,
+    )
+
+    assert "finding-4" in prompt
+    assert "finding-5" not in prompt
+    assert "risk-4" in prompt
+    assert "risk-5" not in prompt
+    assert len(scout_report["findings"]) == 6
+    assert len(scout_report["risks"]) == 6
 
 
 def test_run_plan_writes_artifact_log_and_records_stage(tmp_path: Path) -> None:

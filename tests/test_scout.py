@@ -73,6 +73,33 @@ def test_build_scout_prompt_includes_issue_context() -> None:
     assert "Body text" in prompt
     assert "alice at 2026-05-23T00:00:00Z" in prompt
     assert "Needs tests" in prompt
+    assert "Be terse. Return minimal valid JSON. No prose outside JSON fields." in prompt
+
+
+def test_build_scout_prompt_truncates_comments_for_prompt_only() -> None:
+    comments = [
+        {
+            "author": f"user-{index}",
+            "created_at": "2026-05-23T00:00:00Z",
+            "body": "x" * 401 if index == 0 else f"comment-{index}",
+        }
+        for index in range(11)
+    ]
+
+    prompt = build_scout_prompt(
+        {
+            "owner": "owner",
+            "repo": "repo",
+            "number": 42,
+            "title": "Add scout",
+            "body": "Body text",
+            "comments": comments,
+        }
+    )
+
+    assert "[truncated]" + ("x" * 400) in prompt
+    assert "comment-10" not in prompt
+    assert comments[0]["body"] == "x" * 401
 
 
 def test_run_scout_writes_artifact_log_and_records_stage(tmp_path: Path) -> None:
