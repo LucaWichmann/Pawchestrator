@@ -84,13 +84,13 @@ class CodexRunner(Runner):
     kind = "agent"
 
     async def check_health(self) -> tuple[bool, str]:
-        path = shutil.which("codex")
+        path = _resolve_binary("codex")
         if path is None:
             return False, "codex not found"
 
         try:
             proc = await asyncio.create_subprocess_exec(
-                "codex",
+                path,
                 "--version",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -109,8 +109,23 @@ class CodexRunner(Runner):
         return False, message
 
     async def run_task(self, task: RunnerTask) -> RunnerResult:
+        codex_path = _resolve_binary("codex")
+        if codex_path is None:
+            stdout = ""
+            stderr = "codex binary not found on PATH"
+            exit_code = 127
+            await _write_runner_log(task, stdout=stdout, stderr=stderr)
+            diff = await _capture_git_diff(task.cwd)
+            return RunnerResult(
+                exit_code=exit_code,
+                stdout=stdout,
+                stderr=stderr,
+                artifact=None,
+                diff=diff,
+            )
+
         cmd = [
-            "codex",
+            codex_path,
             "exec",
             task.prompt,
             "-C",
@@ -121,7 +136,7 @@ class CodexRunner(Runner):
         stdout, stderr, exit_code = await _run_process(cmd, cwd=task.cwd)
         if exit_code != 0 and "CreateProcessWithLogonW failed: 1326" in stderr:
             fallback_cmd = [
-                "codex",
+                codex_path,
                 "exec",
                 task.prompt,
                 "-C",
@@ -162,6 +177,10 @@ async def _run_process(cmd: list[str], cwd: Path) -> tuple[str, str, int]:
     stdout = stdout_bytes.decode("utf-8", errors="replace")
     stderr = stderr_bytes.decode("utf-8", errors="replace")
     return stdout, stderr, proc.returncode or 0
+
+
+def _resolve_binary(name: str) -> str | None:
+    return shutil.which(name)
 
 
 async def _write_runner_log(task: RunnerTask, stdout: str, stderr: str) -> None:

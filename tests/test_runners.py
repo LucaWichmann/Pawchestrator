@@ -110,6 +110,8 @@ def test_codex_runner_reports_missing_binary(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_codex_runner_reports_found_binary(monkeypatch: pytest.MonkeyPatch) -> None:
+    codex_path = "C:\\bin\\codex.CMD"
+
     class FakeProcess:
         returncode = 0
 
@@ -117,14 +119,14 @@ def test_codex_runner_reports_found_binary(monkeypatch: pytest.MonkeyPatch) -> N
             return b"codex 1.2.3", b""
 
     async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
-        assert list(cmd) == ["codex", "--version"]
+        assert list(cmd) == [codex_path, "--version"]
         assert kwargs["stdout"] == asyncio.subprocess.PIPE
         assert kwargs["stderr"] == asyncio.subprocess.PIPE
         return FakeProcess()
 
     monkeypatch.setattr(
         "pawchestrator.runners.shutil.which",
-        lambda name: "C:\\bin\\codex.exe" if name == "codex" else None,
+        lambda name: codex_path if name == "codex" else None,
     )
     monkeypatch.setattr(
         "pawchestrator.runners.asyncio.create_subprocess_exec",
@@ -134,7 +136,7 @@ def test_codex_runner_reports_found_binary(monkeypatch: pytest.MonkeyPatch) -> N
     healthy, message = asyncio.run(CodexRunner().check_health())
 
     assert healthy is True
-    assert message == "found at C:\\bin\\codex.exe (codex 1.2.3)"
+    assert message == f"found at {codex_path} (codex 1.2.3)"
 
 
 def test_codex_runner_reports_spawn_failure_as_unhealthy(
@@ -182,6 +184,7 @@ def test_run_process_reports_missing_executable(
 def test_codex_runner_invokes_expected_command_logs_and_captures_diff(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    codex_path = "C:\\bin\\codex.CMD"
     calls: list[dict[str, object]] = []
 
     class FakeProcess:
@@ -210,6 +213,10 @@ def test_codex_runner_invokes_expected_command_logs_and_captures_diff(
         "pawchestrator.runners.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
+    monkeypatch.setattr(
+        "pawchestrator.runners.shutil.which",
+        lambda name: codex_path if name == "codex" else None,
+    )
 
     task = RunnerTask(
         prompt="implement issue",
@@ -221,7 +228,7 @@ def test_codex_runner_invokes_expected_command_logs_and_captures_diff(
     result = asyncio.run(CodexRunner().run_task(task))
 
     assert calls[0]["cmd"] == [
-        "codex",
+        codex_path,
         "exec",
         "implement issue",
         "-C",
@@ -245,6 +252,7 @@ def test_codex_runner_invokes_expected_command_logs_and_captures_diff(
 def test_codex_runner_falls_back_for_windows_sandbox_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    codex_path = "C:\\bin\\codex.CMD"
     calls: list[list[str]] = []
 
     class FakeProcess:
@@ -268,6 +276,10 @@ def test_codex_runner_falls_back_for_windows_sandbox_error(
         "pawchestrator.runners.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
+    monkeypatch.setattr(
+        "pawchestrator.runners.shutil.which",
+        lambda name: codex_path if name == "codex" else None,
+    )
 
     task = RunnerTask(
         prompt="implement issue",
@@ -279,7 +291,7 @@ def test_codex_runner_falls_back_for_windows_sandbox_error(
     result = asyncio.run(CodexRunner().run_task(task))
 
     assert calls[0] == [
-        "codex",
+        codex_path,
         "exec",
         "implement issue",
         "-C",
@@ -288,7 +300,7 @@ def test_codex_runner_falls_back_for_windows_sandbox_error(
         "workspace-write",
     ]
     assert calls[1] == [
-        "codex",
+        codex_path,
         "exec",
         "implement issue",
         "-C",
@@ -297,3 +309,44 @@ def test_codex_runner_falls_back_for_windows_sandbox_error(
     ]
     assert result.exit_code == 0
     assert result.stdout == "fallback stdout"
+
+
+def test_codex_runner_reports_missing_binary_at_run_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str]] = []
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return b"diff --git a/file.py b/file.py\n", b""
+
+    async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
+        calls.append(list(cmd))
+        return FakeProcess()
+
+    monkeypatch.setattr("pawchestrator.runners.shutil.which", lambda name: None)
+    monkeypatch.setattr(
+        "pawchestrator.runners.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+
+    task = RunnerTask(
+        prompt="implement issue",
+        cwd=tmp_path,
+        run_id="run-missing",
+        stage_name="implement",
+    )
+
+    result = asyncio.run(CodexRunner().run_task(task))
+
+    assert calls == [["git", "diff", "HEAD"]]
+    assert result.exit_code == 127
+    assert result.stdout == ""
+    assert result.stderr == "codex binary not found on PATH"
+    assert result.diff == "diff --git a/file.py b/file.py\n"
+    assert result.artifact is None
+    assert (tmp_path / "runs" / "run-missing" / "stdout" / "implement.log").read_text(
+        encoding="utf-8"
+    ) == "codex binary not found on PATH"
