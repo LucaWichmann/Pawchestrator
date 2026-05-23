@@ -18,6 +18,7 @@ from pawchestrator.doctor import (
     check_codex_runner,
     check_port_available,
     check_sqlite_writable,
+    check_wsl,
     has_required_failures,
 )
 
@@ -105,6 +106,43 @@ def test_codex_runner_check_passes_when_healthy(monkeypatch) -> None:
     assert result.label == "codex"
     assert result.status == STATUS_PASS
     assert result.required is False
+
+
+def test_wsl_check_warns_when_missing_on_windows(monkeypatch) -> None:
+    monkeypatch.setattr("pawchestrator.doctor.sys.platform", "win32")
+    monkeypatch.setattr("pawchestrator.doctor.shutil.which", lambda name: None)
+
+    result = check_wsl(Settings())
+
+    assert result.label == "WSL"
+    assert result.status == STATUS_WARN
+    assert result.required is False
+    assert result.message == "wsl.exe not found"
+
+
+def test_wsl_check_passes_when_available(monkeypatch) -> None:
+    class Completed:
+        returncode = 0
+        stdout = "Default Distribution: Ubuntu"
+        stderr = ""
+
+    monkeypatch.setattr("pawchestrator.doctor.sys.platform", "win32")
+    monkeypatch.setattr(
+        "pawchestrator.doctor.shutil.which",
+        lambda name: "C:\\Windows\\System32\\wsl.exe"
+        if name in {"wsl.exe", "wsl"}
+        else None,
+    )
+    monkeypatch.setattr(
+        "pawchestrator.doctor.subprocess.run",
+        lambda *args, **kwargs: Completed(),
+    )
+
+    result = check_wsl(Settings())
+
+    assert result.label == "WSL"
+    assert result.status == STATUS_PASS
+    assert "available" in result.message
 
 
 def test_runner_checks_use_configured_settings(monkeypatch) -> None:

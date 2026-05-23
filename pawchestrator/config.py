@@ -29,8 +29,14 @@ class ClaudeRunnerSettings(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore")
 
     binary: str = "claude"
+    execution: Literal["native", "wsl"] = "native"
+    wsl_enabled: bool = True
+    wsl_distro: str | None = None
+    wsl_binary: str | None = None
     model: str = "sonnet"
     effort: Literal["low", "medium", "high", "xhigh", "max"] = "low"
+    allowed_tools: list[str] = Field(default_factory=lambda: ["Read", "Glob", "Grep"])
+    bypass_permissions: bool = False
 
 
 class CodexRunnerSettings(BaseSettings):
@@ -39,8 +45,49 @@ class CodexRunnerSettings(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore")
 
     binary: str = "codex"
+    execution: Literal["auto", "native", "wsl"] = "auto"
+    wsl_enabled: bool = True
+    wsl_distro: str | None = None
+    wsl_binary: str | None = None
     model: str = "gpt-5.5"
     reasoning_effort: Literal["low", "medium", "high", "xhigh"] = "low"
+    sandbox: Literal["read-only", "workspace-write", "danger-full-access"] = (
+        "workspace-write"
+    )
+    approval_policy: Literal["untrusted", "on-failure", "on-request", "never"] = "never"
+    bypass_sandbox: bool = False
+
+
+class ClaudeStageSettings(BaseSettings):
+    """Per-stage Claude permission overrides."""
+
+    model_config = SettingsConfigDict(extra="ignore")
+
+    allowed_tools: list[str] | None = None
+    bypass_permissions: bool | None = None
+
+
+class CodexStageSettings(BaseSettings):
+    """Per-stage Codex permission overrides."""
+
+    model_config = SettingsConfigDict(extra="ignore")
+
+    execution: Literal["auto", "native", "wsl"] | None = None
+    wsl_enabled: bool | None = None
+    wsl_distro: str | None = None
+    wsl_binary: str | None = None
+    sandbox: Literal["read-only", "workspace-write", "danger-full-access"] | None = None
+    approval_policy: Literal["untrusted", "on-failure", "on-request", "never"] | None = None
+    bypass_sandbox: bool | None = None
+
+
+class StageSettings(BaseSettings):
+    """Per-stage runner permission overrides."""
+
+    model_config = SettingsConfigDict(extra="ignore")
+
+    claude: ClaudeStageSettings = Field(default_factory=ClaudeStageSettings)
+    codex: CodexStageSettings = Field(default_factory=CodexStageSettings)
 
 
 class RunnerSettings(BaseSettings):
@@ -61,6 +108,7 @@ class Settings(BaseSettings):
     debug: bool = False
     backend: BackendSettings = Field(default_factory=BackendSettings)
     runners: RunnerSettings = Field(default_factory=RunnerSettings)
+    stages: dict[str, StageSettings] = Field(default_factory=dict)
 
     @property
     def config_path(self) -> Path:
@@ -83,12 +131,14 @@ def load_settings(config_path: Path | None = None) -> Settings:
     app_data = data.get("app", {})
     backend_data = data.get("backend", {})
     runners_data = data.get("runners", {})
+    stages_data = data.get("stages", {})
     app_dir = Path(app_data.get("app_dir", default_app_dir)).expanduser()
     return Settings(
         app_dir=app_dir,
         debug=bool(app_data.get("debug", False)),
         backend=BackendSettings(**backend_data),
         runners=RunnerSettings(**runners_data),
+        stages={name: StageSettings(**stage) for name, stage in stages_data.items()},
     )
 
 

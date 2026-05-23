@@ -162,6 +162,36 @@ def test_run_scout_records_failure_and_log(tmp_path: Path) -> None:
     assert stage == ("failed", "not signed in")
 
 
+def test_run_scout_rejects_empty_findings(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    run_id = "run-123"
+    asyncio.run(_insert_snapshot_run(settings, run_id))
+    _write_snapshot(settings, run_id)
+    runner = FakeRunner(
+        result=RunnerResult(
+            exit_code=0,
+            stdout='{"result": {}}',
+            stderr="",
+            artifact={"schema": "pawchestrator.scout_report.v1", "findings": []},
+        )
+    )
+
+    with pytest.raises(ValueError, match="findings"):
+        asyncio.run(run_scout(run_id, settings, repo_path=tmp_path, runner=runner))
+
+    with sqlite3.connect(tmp_path / "database.sqlite") as db:
+        stage = db.execute(
+            """
+            SELECT status, error FROM workflow_stages
+            WHERE run_id = ? AND stage_name = 'scout'
+            """,
+            (run_id,),
+        ).fetchone()
+
+    assert stage[0] == "failed"
+    assert "findings" in stage[1]
+
+
 def test_run_scout_requires_snapshot(tmp_path: Path) -> None:
     settings = Settings(app_dir=tmp_path)
     asyncio.run(_insert_snapshot_run(settings, "run-123"))

@@ -6,6 +6,7 @@ import asyncio
 import shutil
 import socket
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -33,6 +34,7 @@ def run_checks(settings: Settings, port: int = DEFAULT_PORT) -> list[CheckResult
         check_binary("git", required=True),
         check_binary("gh", required=True),
         check_gh_auth(),
+        check_wsl(settings),
         check_claude_runner(settings),
         check_codex_runner(settings),
         check_port_available(port),
@@ -76,6 +78,34 @@ def check_codex_runner(settings: Settings | None = None) -> CheckResult:
     )
     status = STATUS_PASS if healthy else STATUS_WARN
     return CheckResult("codex", status, message, required=False)
+
+
+def check_wsl(settings: Settings | None = None) -> CheckResult:
+    runtime_settings = settings or Settings()
+    if not _uses_wsl(runtime_settings):
+        return CheckResult("WSL", STATUS_PASS, "not configured for runner use", required=False)
+    if not sys.platform.startswith("win"):
+        return CheckResult("WSL", STATUS_WARN, "WSL runner execution is Windows-only", required=False)
+    wsl_path = shutil.which("wsl.exe") or shutil.which("wsl")
+    if wsl_path is None:
+        return CheckResult("WSL", STATUS_WARN, "wsl.exe not found", required=False)
+
+    try:
+        completed = subprocess.run(
+            [wsl_path, "--status"],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        return CheckResult("WSL", STATUS_WARN, "wsl.exe --status timed out", required=False)
+
+    if completed.returncode == 0:
+        distro = runtime_settings.runners.codex.wsl_distro or "default distro"
+        return CheckResult("WSL", STATUS_PASS, f"available via {distro}", required=False)
+    message = (completed.stderr or completed.stdout).strip() or "wsl.exe --status failed"
+    return CheckResult("WSL", STATUS_WARN, message.splitlines()[0], required=False)
 
 
 def check_gh_auth() -> CheckResult:
@@ -156,3 +186,12 @@ def _display_path(path: Path) -> str:
         return str(path.relative_to(Path.home()))
     except ValueError:
         return str(path)
+
+
+def _uses_wsl(settings: Settings) -> bool:
+    return (
+        settings.runners.claude.execution == "wsl"
+        or settings.runners.codex.execution in {"auto", "wsl"}
+    ) and (
+        settings.runners.claude.wsl_enabled or settings.runners.codex.wsl_enabled
+    )

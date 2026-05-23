@@ -4,7 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from pawchestrator.config import ClaudeRunnerSettings, CodexRunnerSettings
+from pawchestrator.config import (
+    ClaudeRunnerSettings,
+    CodexRunnerSettings,
+    StageSettings,
+)
 from pawchestrator.runners import RUNNERS, ClaudeRunner, CodexRunner, Runner, RunnerTask
 
 
@@ -96,8 +100,7 @@ def test_claude_runner_invokes_expected_command_and_parses_result(
         "--output-format",
         "json",
         "--allowedTools",
-        "Read,Bash,Glob,Grep",
-        "--dangerously-skip-permissions",
+        "Read,Glob,Grep",
     ]
     assert calls["cwd"] == str(tmp_path)
     assert result.exit_code == 0
@@ -107,6 +110,198 @@ def test_claude_runner_invokes_expected_command_and_parses_result(
         "status": "success",
         "readiness": "ready",
     }
+
+
+def test_claude_runner_parses_fenced_json_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return (
+                json.dumps(
+                    {
+                        "result": (
+                            "Done.\n\n```json\n"
+                            '{"schema":"pawchestrator.scout_report.v1",'
+                            '"findings":[{"kind":"scope","text":"Small"}]}'
+                            "\n```"
+                        )
+                    }
+                ).encode(),
+                b"",
+            )
+
+    async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
+        return FakeProcess()
+
+    monkeypatch.setattr(
+        "pawchestrator.runners.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+
+    task = RunnerTask(
+        prompt="repo scout prompt",
+        cwd=tmp_path,
+        run_id="run-123",
+        stage_name="scout",
+    )
+
+    result = asyncio.run(ClaudeRunner().run_task(task))
+
+    assert result.artifact == {
+        "schema": "pawchestrator.scout_report.v1",
+        "findings": [{"kind": "scope", "text": "Small"}],
+    }
+
+
+def test_claude_runner_parses_direct_fenced_json_stdout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return (
+                b'Done.\n```json\n{"schema":"pawchestrator.scout_report.v1"}\n```',
+                b"",
+            )
+
+    async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
+        return FakeProcess()
+
+    monkeypatch.setattr(
+        "pawchestrator.runners.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+
+    task = RunnerTask(
+        prompt="repo scout prompt",
+        cwd=tmp_path,
+        run_id="run-123",
+        stage_name="scout",
+    )
+
+    result = asyncio.run(ClaudeRunner().run_task(task))
+
+    assert result.artifact == {"schema": "pawchestrator.scout_report.v1"}
+
+
+def test_claude_runner_uses_stage_permission_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: dict[str, object] = {}
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return b'{"result": {"status": "success"}}', b""
+
+    async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
+        calls["cmd"] = list(cmd)
+        return FakeProcess()
+
+    monkeypatch.setattr(
+        "pawchestrator.runners.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+
+    task = RunnerTask(
+        prompt="repo scout prompt",
+        cwd=tmp_path,
+        run_id="run-123",
+        stage_name="scout",
+    )
+
+    asyncio.run(
+        ClaudeRunner(
+            stage_overrides={
+                "scout": StageSettings(
+                    claude={
+                        "allowed_tools": ["Read"],
+                        "bypass_permissions": True,
+                    }
+                )
+            }
+        ).run_task(task)
+    )
+
+    assert "--allowedTools" in calls["cmd"]
+    assert calls["cmd"][calls["cmd"].index("--allowedTools") + 1] == "Read"
+    assert "--dangerously-skip-permissions" in calls["cmd"]
+
+
+def test_claude_runner_wsl_mode_invokes_wsl_and_preserves_tools(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[dict[str, object]] = []
+    wsl_path = "C:\\Windows\\System32\\wsl.exe"
+
+    class FakeProcess:
+        def __init__(self, stdout: bytes, stderr: bytes = b"", returncode: int = 0) -> None:
+            self._stdout = stdout
+            self._stderr = stderr
+            self.returncode = returncode
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return self._stdout, self._stderr
+
+    async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
+        calls.append({"cmd": list(cmd), "cwd": kwargs["cwd"]})
+        if "wslpath" in cmd:
+            return FakeProcess(b"/mnt/c/repo\n")
+        return FakeProcess(b'{"result": {"status": "success"}}')
+
+    monkeypatch.setattr("pawchestrator.runners.sys.platform", "win32")
+    monkeypatch.setattr(
+        "pawchestrator.runners.shutil.which",
+        lambda name: wsl_path if name in {"wsl.exe", "wsl"} else None,
+    )
+    monkeypatch.setattr(
+        "pawchestrator.runners.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+
+    task = RunnerTask(
+        prompt="repo scout prompt",
+        cwd=tmp_path,
+        run_id="run-123",
+        stage_name="scout",
+    )
+
+    result = asyncio.run(
+        ClaudeRunner(
+            ClaudeRunnerSettings(
+                execution="wsl",
+                wsl_distro="Ubuntu",
+                wsl_binary="claude-linux",
+                allowed_tools=["Read"],
+            )
+        ).run_task(task)
+    )
+
+    assert result.exit_code == 0
+    assert calls[1]["cmd"] == [
+        wsl_path,
+        "-d",
+        "Ubuntu",
+        "--cd",
+        "/mnt/c/repo",
+        "--exec",
+        "claude-linux",
+        "-p",
+        "repo scout prompt",
+        "--model",
+        "sonnet",
+        "--effort",
+        "low",
+        "--output-format",
+        "json",
+        "--allowedTools",
+        "Read",
+    ]
 
 
 def test_claude_runner_debug_prints_command_and_output(
@@ -149,7 +344,7 @@ def test_codex_runner_reports_missing_binary(monkeypatch: pytest.MonkeyPatch) ->
     healthy, message = asyncio.run(CodexRunner().check_health())
 
     assert healthy is False
-    assert message == "codex not found"
+    assert message == "wsl.exe not found"
 
 
 def test_codex_runner_reports_found_binary(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -290,6 +485,8 @@ def test_codex_runner_invokes_expected_command_logs_and_captures_diff(
         "gpt-5.5",
         "-c",
         'model_reasoning_effort="low"',
+        "-c",
+        'approval_policy="never"',
     ]
     assert calls[0]["cwd"] == str(tmp_path)
     assert calls[1]["cmd"] == ["git", "diff", "HEAD"]
@@ -350,10 +547,11 @@ def test_codex_runner_debug_prints_command_and_output(
     assert "codex stderr" in output
 
 
-def test_codex_runner_falls_back_for_windows_sandbox_error(
+def test_codex_runner_auto_retries_wsl_for_windows_sandbox_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     codex_path = "C:\\bin\\codex.CMD"
+    wsl_path = "C:\\Windows\\System32\\wsl.exe"
     calls: list[list[str]] = []
 
     class FakeProcess:
@@ -367,19 +565,28 @@ def test_codex_runner_falls_back_for_windows_sandbox_error(
 
     async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
         calls.append(list(cmd))
-        if len(calls) == 1:
+        if cmd[:3] == ("git", "diff", "HEAD"):
+            return FakeProcess(0, b"fallback diff", b"")
+        if cmd[0] == codex_path:
             return FakeProcess(1, b"", b"CreateProcessWithLogonW failed: 1326")
-        if len(calls) == 2:
-            return FakeProcess(0, b"fallback stdout", b"")
-        return FakeProcess(0, b"fallback diff", b"")
+        if "wslpath" in cmd:
+            return FakeProcess(0, b"/mnt/c/repo\n", b"")
+        if cmd[0] == wsl_path:
+            return FakeProcess(0, b"wsl stdout", b"")
+        raise AssertionError(f"unexpected command: {cmd}")
 
     monkeypatch.setattr(
         "pawchestrator.runners.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
+    monkeypatch.setattr("pawchestrator.runners.sys.platform", "win32")
     monkeypatch.setattr(
         "pawchestrator.runners.shutil.which",
-        lambda name: codex_path if name == "codex" else None,
+        lambda name: codex_path
+        if name == "codex"
+        else wsl_path
+        if name in {"wsl.exe", "wsl"}
+        else None,
     )
 
     task = RunnerTask(
@@ -411,21 +618,121 @@ def test_codex_runner_falls_back_for_windows_sandbox_error(
         "gpt-5.5-fast",
         "-c",
         'model_reasoning_effort="medium"',
+        "-c",
+        'approval_policy="never"',
     ]
-    assert calls[1] == [
-        codex_path,
+    assert calls[1] == [wsl_path, "--exec", "wslpath", "-a", str(tmp_path)]
+    assert calls[2] == [
+        wsl_path,
+        "--cd",
+        "/mnt/c/repo",
+        "--exec",
+        "codex",
         "exec",
         "implement issue",
         "-C",
-        str(tmp_path),
-        "--dangerously-bypass-approvals-and-sandbox",
+        "/mnt/c/repo",
+        "-s",
+        "workspace-write",
         "--model",
         "gpt-5.5-fast",
         "-c",
         'model_reasoning_effort="medium"',
+        "-c",
+        'approval_policy="never"',
     ]
+    assert all("--dangerously-bypass-approvals-and-sandbox" not in call for call in calls)
     assert result.exit_code == 0
-    assert result.stdout == "fallback stdout"
+    assert result.stdout == "wsl stdout"
+
+
+def test_codex_runner_auto_does_not_bypass_when_wsl_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    codex_path = "C:\\bin\\codex.CMD"
+    calls: list[list[str]] = []
+
+    class FakeProcess:
+        def __init__(self, returncode: int, stdout: bytes, stderr: bytes) -> None:
+            self.returncode = returncode
+            self._stdout = stdout
+            self._stderr = stderr
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return self._stdout, self._stderr
+
+    async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
+        calls.append(list(cmd))
+        if len(calls) == 1:
+            return FakeProcess(1, b"", b"windows sandbox: spawn setup refresh")
+        return FakeProcess(0, b"", b"")
+
+    monkeypatch.setattr(
+        "pawchestrator.runners.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr("pawchestrator.runners.sys.platform", "win32")
+    monkeypatch.setattr(
+        "pawchestrator.runners.shutil.which",
+        lambda name: codex_path if name == "codex" else None,
+    )
+
+    task = RunnerTask(
+        prompt="implement issue",
+        cwd=tmp_path,
+        run_id="run-456",
+        stage_name="implement",
+    )
+
+    result = asyncio.run(
+        CodexRunner(
+            CodexRunnerSettings(wsl_enabled=False)
+        ).run_task(task)
+    )
+
+    assert len(calls) == 2
+    assert calls[0][0] == codex_path
+    assert calls[1] == ["git", "diff", "HEAD"]
+    assert "--dangerously-bypass-approvals-and-sandbox" not in calls[0]
+    assert result.exit_code == 1
+
+
+def test_codex_runner_uses_explicit_bypass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    codex_path = "C:\\bin\\codex.CMD"
+    calls: list[list[str]] = []
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return b"", b""
+
+    async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
+        calls.append(list(cmd))
+        return FakeProcess()
+
+    monkeypatch.setattr(
+        "pawchestrator.runners.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr(
+        "pawchestrator.runners.shutil.which",
+        lambda name: codex_path if name == "codex" else None,
+    )
+
+    task = RunnerTask(
+        prompt="implement issue",
+        cwd=tmp_path,
+        run_id="run-456",
+        stage_name="implement",
+    )
+
+    asyncio.run(CodexRunner(CodexRunnerSettings(bypass_sandbox=True)).run_task(task))
+
+    assert "--dangerously-bypass-approvals-and-sandbox" in calls[0]
+    assert "-s" not in calls[0]
 
 
 def test_codex_runner_reports_missing_binary_at_run_time(

@@ -301,6 +301,71 @@ def test_run_implement_records_failure_and_error_report(tmp_path: Path) -> None:
     assert "implementation plan not found" in stage[1]
 
 
+def test_run_implement_fails_when_codex_changes_no_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    run_id = "run-123"
+    asyncio.run(_insert_plan_run(settings, run_id))
+    _write_snapshot(settings, run_id)
+    _write_plan(settings, run_id)
+    worktree_path = tmp_path / "worktree"
+    runner = FakeRunner(
+        result=RunnerResult(
+            exit_code=0,
+            stdout="no changes\n",
+            stderr="",
+            artifact=None,
+            diff="",
+        )
+    )
+
+    async def fake_ensure_issue_worktree(
+        settings: Settings,
+        *,
+        snapshot: dict[str, Any],
+        source_repo_path: Path,
+    ) -> WorktreeInfo:
+        return WorktreeInfo(
+            path=worktree_path,
+            branch="paw/issue-42-add-implement",
+            reused=False,
+        )
+
+    monkeypatch.setattr(
+        "pawchestrator.implement.ensure_issue_worktree",
+        fake_ensure_issue_worktree,
+    )
+
+    with pytest.raises(RuntimeError, match="without changing files"):
+        asyncio.run(
+            run_implement(run_id, settings, repo_path=tmp_path / "source", runner=runner)
+        )
+
+    report_path = tmp_path / "runs" / run_id / "implementation_report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["status"] == "error"
+    assert report["files_changed"] == []
+    assert report["error"] == "Codex completed without changing files"
+
+    with sqlite3.connect(tmp_path / "database.sqlite") as db:
+        run = db.execute(
+            "SELECT status, current_stage FROM workflow_runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+        stage = db.execute(
+            """
+            SELECT status, error FROM workflow_stages
+            WHERE run_id = ? AND stage_name = 'implement'
+            """,
+            (run_id,),
+        ).fetchone()
+
+    assert run == ("implement_failed", "implement")
+    assert stage[0] == "failed"
+    assert "without changing files" in stage[1]
+
+
 def test_run_implement_command_prints_summary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

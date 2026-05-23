@@ -91,7 +91,6 @@ async def _run_pipeline_background(
             issue_url_value,
             settings,
             run_id=run_id,
-            allow_empty_commit=True,
         )
     except Exception as error:
         await mark_run_failed(settings, run_id=run_id)

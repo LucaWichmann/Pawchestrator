@@ -10,11 +10,24 @@ def test_runner_settings_defaults_match_low_token_profile() -> None:
     settings = Settings()
 
     assert settings.runners.claude.binary == "claude"
+    assert settings.runners.claude.execution == "native"
+    assert settings.runners.claude.wsl_enabled is True
+    assert settings.runners.claude.wsl_distro is None
+    assert settings.runners.claude.wsl_binary is None
     assert settings.runners.claude.model == "sonnet"
     assert settings.runners.claude.effort == "low"
+    assert settings.runners.claude.allowed_tools == ["Read", "Glob", "Grep"]
+    assert settings.runners.claude.bypass_permissions is False
     assert settings.runners.codex.binary == "codex"
+    assert settings.runners.codex.execution == "auto"
+    assert settings.runners.codex.wsl_enabled is True
+    assert settings.runners.codex.wsl_distro is None
+    assert settings.runners.codex.wsl_binary is None
     assert settings.runners.codex.model == "gpt-5.5"
     assert settings.runners.codex.reasoning_effort == "low"
+    assert settings.runners.codex.sandbox == "workspace-write"
+    assert settings.runners.codex.approval_policy == "never"
+    assert settings.runners.codex.bypass_sandbox is False
     assert settings.debug is False
 
 
@@ -29,13 +42,35 @@ debug = true
 
 [runners.claude]
 binary = "claude-beta"
+execution = "wsl"
+wsl_enabled = true
+wsl_distro = "Ubuntu"
+wsl_binary = "claude-linux"
 model = "opus"
 effort = "medium"
+allowed_tools = ["Read", "Glob"]
+bypass_permissions = true
 
 [runners.codex]
 binary = "codex-dev"
+execution = "wsl"
+wsl_enabled = true
+wsl_distro = "Ubuntu"
+wsl_binary = "codex-linux"
 model = "gpt-5.5-fast"
 reasoning_effort = "medium"
+sandbox = "read-only"
+approval_policy = "on-request"
+bypass_sandbox = true
+
+[stages.scout.claude]
+allowed_tools = ["Read"]
+bypass_permissions = false
+
+[stages.implement.codex]
+execution = "native"
+sandbox = "danger-full-access"
+approval_policy = "never"
 """,
         encoding="utf-8",
     )
@@ -45,11 +80,29 @@ reasoning_effort = "medium"
     assert settings.app_dir == app_dir
     assert settings.debug is True
     assert settings.runners.claude.binary == "claude-beta"
+    assert settings.runners.claude.execution == "wsl"
+    assert settings.runners.claude.wsl_enabled is True
+    assert settings.runners.claude.wsl_distro == "Ubuntu"
+    assert settings.runners.claude.wsl_binary == "claude-linux"
     assert settings.runners.claude.model == "opus"
     assert settings.runners.claude.effort == "medium"
+    assert settings.runners.claude.allowed_tools == ["Read", "Glob"]
+    assert settings.runners.claude.bypass_permissions is True
     assert settings.runners.codex.binary == "codex-dev"
+    assert settings.runners.codex.execution == "wsl"
+    assert settings.runners.codex.wsl_enabled is True
+    assert settings.runners.codex.wsl_distro == "Ubuntu"
+    assert settings.runners.codex.wsl_binary == "codex-linux"
     assert settings.runners.codex.model == "gpt-5.5-fast"
     assert settings.runners.codex.reasoning_effort == "medium"
+    assert settings.runners.codex.sandbox == "read-only"
+    assert settings.runners.codex.approval_policy == "on-request"
+    assert settings.runners.codex.bypass_sandbox is True
+    assert settings.stages["scout"].claude.allowed_tools == ["Read"]
+    assert settings.stages["scout"].claude.bypass_permissions is False
+    assert settings.stages["implement"].codex.execution == "native"
+    assert settings.stages["implement"].codex.sandbox == "danger-full-access"
+    assert settings.stages["implement"].codex.approval_policy == "never"
 
 
 def test_load_settings_rejects_invalid_runner_effort(tmp_path: Path) -> None:

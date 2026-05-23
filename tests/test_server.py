@@ -77,7 +77,7 @@ def test_issue_start_returns_run_id_and_schedules_pipeline(
     assert response.status_code == 200
     assert response.json() == {"run_id": run_id}
     assert calls == [
-        ("https://github.com/owner/repo/issues/42", tmp_path, run_id, True),
+        ("https://github.com/owner/repo/issues/42", tmp_path, run_id, False),
     ]
     payload = state_response.json()
     assert payload["id"] == run_id
@@ -106,7 +106,7 @@ def test_issue_start_background_failure_does_not_raise(
         run_id: str,
         allow_empty_commit: bool = False,
     ):
-        assert allow_empty_commit is True
+        assert allow_empty_commit is False
         raise RuntimeError("pipeline exploded")
 
     monkeypatch.setattr("pawchestrator.server.run_pipeline", fake_run_pipeline)

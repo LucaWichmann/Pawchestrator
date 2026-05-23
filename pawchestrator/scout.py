@@ -48,6 +48,7 @@ async def run_scout(
     active_runner = runner or ClaudeRunner(
         settings.runners.claude,
         debug=settings.debug,
+        stage_overrides=settings.stages,
     )
     log_path = _scout_log_path(settings, run_id)
     artifact_path = _scout_artifact_path(settings, run_id)
@@ -137,13 +138,16 @@ Use your Read, Glob, Grep tools to explore the repository as needed.
 def normalize_scout_report(artifact: dict[str, Any] | None) -> dict[str, Any]:
     if artifact is None:
         raise ValueError("Claude did not return a JSON artifact")
+    findings = _list_value(artifact.get("findings"))
+    if not findings:
+        raise ValueError("Scout report missing required findings")
 
     return {
         "schema": str(artifact.get("schema") or SCOUT_REPORT_SCHEMA),
         "status": str(artifact.get("status") or "success"),
         "readiness": str(artifact.get("readiness") or "needs_info"),
         "risk": str(artifact.get("risk") or "medium"),
-        "findings": _list_value(artifact.get("findings")),
+        "findings": findings,
         "risks": _list_value(artifact.get("risks")),
         "next_recommended_stage": str(
             artifact.get("next_recommended_stage") or "grill"

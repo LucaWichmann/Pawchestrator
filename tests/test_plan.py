@@ -208,6 +208,7 @@ def test_run_plan_requires_scout_report(tmp_path: Path) -> None:
 def test_normalize_implementation_plan_dedupes_files_and_defaults() -> None:
     plan = normalize_implementation_plan(
         {
+            "approach_summary": "Edit plan.",
             "steps": [
                 {
                     "description": "Edit plan",
@@ -219,10 +220,32 @@ def test_normalize_implementation_plan_dedupes_files_and_defaults() -> None:
     )
 
     assert plan["schema"] == "pawchestrator.implementation_plan.v1"
-    assert plan["approach_summary"] == ""
+    assert plan["approach_summary"] == "Edit plan."
     assert plan["steps"][0]["order"] == 1
     assert plan["files_to_modify"] == ["pawchestrator/plan.py"]
     assert plan["estimated_risk"] == "medium"
+
+
+@pytest.mark.parametrize(
+    ("artifact", "message"),
+    [
+        ({}, "approach_summary"),
+        ({"approach_summary": "Do it."}, "steps"),
+        (
+            {
+                "approach_summary": "Do it.",
+                "steps": [{"description": "Edit", "files_to_modify": []}],
+            },
+            "files_to_modify",
+        ),
+    ],
+)
+def test_normalize_implementation_plan_rejects_missing_required_content(
+    artifact: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        normalize_implementation_plan(artifact)
 
 
 def test_run_plan_command_prints_human_summary(

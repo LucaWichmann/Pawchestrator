@@ -54,6 +54,7 @@ async def run_plan(
     active_runner = runner or ClaudeRunner(
         settings.runners.claude,
         debug=settings.debug,
+        stage_overrides=settings.stages,
     )
     log_path = _plan_log_path(settings, run_id)
     artifact_path = _plan_artifact_path(settings, run_id)
@@ -157,9 +158,17 @@ def normalize_implementation_plan(artifact: dict[str, Any] | None) -> dict[str, 
     if estimated_risk not in VALID_RISKS:
         estimated_risk = "medium"
 
+    approach_summary = str(artifact.get("approach_summary") or "").strip()
+    if not approach_summary:
+        raise ValueError("Implementation plan missing required approach_summary")
+    if not steps:
+        raise ValueError("Implementation plan missing required steps")
+    if not files_to_modify:
+        raise ValueError("Implementation plan missing required files_to_modify")
+
     return {
         "schema": str(artifact.get("schema") or IMPLEMENTATION_PLAN_SCHEMA),
-        "approach_summary": str(artifact.get("approach_summary") or ""),
+        "approach_summary": approach_summary,
         "steps": steps,
         "files_to_modify": files_to_modify,
         "estimated_risk": estimated_risk,

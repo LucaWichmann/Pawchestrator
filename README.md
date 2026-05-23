@@ -22,15 +22,29 @@ These defaults keep token use low while still letting you raise effort when need
 debug = true
 
 [runners.claude]
+execution = "native"
 model = "sonnet"
 effort = "low"
+allowed_tools = ["Read", "Glob", "Grep"]
+bypass_permissions = false
 
 [runners.codex]
+execution = "auto"
 model = "gpt-5.5"
 reasoning_effort = "low"
+sandbox = "workspace-write"
+approval_policy = "never"
+bypass_sandbox = false
 ```
 
 Set Claude `effort = "medium"` when scout or plan stages need deeper thinking.
+Scout and plan default to read-only Claude tools. Codex implementation defaults to
+workspace-write sandboxing. On Windows, Codex `execution = "auto"` tries native
+first and may retry through Ubuntu WSL for known Windows sandbox failures. It never
+turns on dangerous bypass automatically. To bypass permissions completely, set
+`bypass_permissions = true` for Claude or `bypass_sandbox = true` for Codex explicitly.
+Per-stage permission overrides can be set under `[stages.<stage>.claude]` and
+`[stages.<stage>.codex]`.
 When `[app] debug = true`, Pawchestrator prints runner argv plus captured stdout/stderr
 to the console. Prompts are redacted to their character count so issue content does not
 flood the terminal.

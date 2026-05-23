@@ -56,6 +56,7 @@ async def run_implement(
     active_runner = runner or CodexRunner(
         settings.runners.codex,
         debug=settings.debug,
+        stage_overrides=settings.stages,
     )
     log_path = _implement_log_path(settings, run_id)
     artifact_path = _implementation_report_path(settings, run_id)
@@ -106,15 +107,23 @@ async def run_implement(
         _write_implement_log(log_path, result.stdout, result.stderr)
 
         files_changed = files_changed_from_diff(result.diff)
+        no_changes_error = _no_changes_error(
+            exit_code=result.exit_code,
+            files_changed=files_changed,
+            implementation_plan=implementation_plan,
+        )
         report = build_implementation_report(
-            status="success" if result.exit_code == 0 else "error",
+            status="error" if no_changes_error or result.exit_code != 0 else "success",
             files_changed=files_changed,
             diff=result.diff,
             stdout=result.stdout,
             stderr=result.stderr,
-            error=None,
+            error=no_changes_error,
         )
         _write_report(artifact_path, report)
+
+        if no_changes_error:
+            raise RuntimeError(no_changes_error)
 
         if result.exit_code != 0:
             detail = result.stderr.strip() or result.stdout.strip() or "Codex runner failed"
@@ -235,6 +244,24 @@ def build_implementation_report(
         "codex_output": f"{stdout}{stderr}",
         "error": error,
     }
+
+
+def _no_changes_error(
+    *,
+    exit_code: int,
+    files_changed: list[str],
+    implementation_plan: dict[str, Any],
+) -> str | None:
+    if exit_code != 0 or files_changed:
+        return None
+    if _plan_has_steps(implementation_plan):
+        return "Codex completed without changing files"
+    return None
+
+
+def _plan_has_steps(implementation_plan: dict[str, Any]) -> bool:
+    steps = implementation_plan.get("steps")
+    return isinstance(steps, list) and len(steps) > 0
 
 
 def slugify(title: str) -> str:

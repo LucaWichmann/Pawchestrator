@@ -6,12 +6,17 @@ import asyncio
 import json
 import shutil
 import shlex
+import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from pawchestrator.config import ClaudeRunnerSettings, CodexRunnerSettings
+from pawchestrator.config import (
+    ClaudeRunnerSettings,
+    CodexRunnerSettings,
+    StageSettings,
+)
 
 
 @dataclass(frozen=True)
@@ -53,41 +58,70 @@ class ClaudeRunner(Runner):
         config: ClaudeRunnerSettings | None = None,
         *,
         debug: bool = False,
+        stage_overrides: dict[str, StageSettings] | None = None,
     ) -> None:
         self.config = config or ClaudeRunnerSettings()
         self.debug = debug
+        self.stage_overrides = stage_overrides or {}
 
     async def check_health(self) -> tuple[bool, str]:
+        if self.config.execution == "wsl":
+            return await _check_wsl_binary(
+                self.config.wsl_binary or self.config.binary,
+                distro=self.config.wsl_distro,
+                enabled=self.config.wsl_enabled,
+                label=self.config.binary,
+            )
         path = shutil.which(self.config.binary)
         if path is None:
             return False, f"{self.config.binary} binary not found on PATH"
         return True, f"found at {path}"
 
     async def run_task(self, task: RunnerTask) -> RunnerResult:
+        config = _effective_claude_config(self.config, self.stage_overrides, task.stage_name)
+        binary = config.wsl_binary or config.binary
         cmd = [
-            self.config.binary,
+            binary,
             "-p",
             task.prompt,
             "--model",
-            self.config.model,
+            config.model,
             "--effort",
-            self.config.effort,
+            config.effort,
             "--output-format",
             "json",
             "--allowedTools",
-            "Read,Bash,Glob,Grep",
-            "--dangerously-skip-permissions",
+            ",".join(config.allowed_tools),
         ]
+        if config.bypass_permissions:
+            cmd.append("--dangerously-skip-permissions")
+        cwd = task.cwd
+        if config.execution == "wsl":
+            prepared = await _prepare_wsl_command(
+                cmd,
+                cwd=task.cwd,
+                distro=config.wsl_distro,
+                enabled=config.wsl_enabled,
+            )
+            if prepared is None:
+                return RunnerResult(
+                    exit_code=127,
+                    stdout="",
+                    stderr="WSL is not available",
+                    artifact=None,
+                )
+            cmd, cwd = prepared
+        prompt_index = _prompt_index(cmd, task.prompt)
         _debug_print_command(
             enabled=self.debug,
             runner_id=self.id,
             task=task,
             cmd=cmd,
-            prompt_index=2,
+            prompt_index=prompt_index,
         )
         proc = await asyncio.create_subprocess_exec(
             *cmd,
-            cwd=str(task.cwd),
+            cwd=str(cwd),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -119,13 +153,30 @@ class CodexRunner(Runner):
         config: CodexRunnerSettings | None = None,
         *,
         debug: bool = False,
+        stage_overrides: dict[str, StageSettings] | None = None,
     ) -> None:
         self.config = config or CodexRunnerSettings()
         self.debug = debug
+        self.stage_overrides = stage_overrides or {}
 
     async def check_health(self) -> tuple[bool, str]:
+        if self.config.execution == "wsl":
+            return await _check_wsl_binary(
+                self.config.wsl_binary or self.config.binary,
+                distro=self.config.wsl_distro,
+                enabled=self.config.wsl_enabled,
+                label=self.config.binary,
+            )
+
         path = _resolve_binary(self.config.binary)
         if path is None:
+            if self.config.execution == "auto":
+                return await _check_wsl_binary(
+                    self.config.wsl_binary or self.config.binary,
+                    distro=self.config.wsl_distro,
+                    enabled=self.config.wsl_enabled,
+                    label=self.config.binary,
+                )
             return False, f"{self.config.binary} not found"
 
         try:
@@ -149,7 +200,16 @@ class CodexRunner(Runner):
         return False, message
 
     async def run_task(self, task: RunnerTask) -> RunnerResult:
+        config = _effective_codex_config(self.config, self.stage_overrides, task.stage_name)
         codex_path = _resolve_binary(self.config.binary)
+        if config.execution == "wsl":
+            return await self._run_task_wsl(task, config)
+
+        if codex_path is None and config.execution == "auto":
+            wsl_result = await self._run_task_wsl(task, config)
+            if wsl_result is not None:
+                return wsl_result
+
         if codex_path is None:
             stdout = ""
             stderr = f"{self.config.binary} binary not found on PATH"
@@ -164,19 +224,12 @@ class CodexRunner(Runner):
                 diff=diff,
             )
 
-        cmd = [
+        cmd = _codex_command(
             codex_path,
-            "exec",
-            task.prompt,
-            "-C",
-            str(task.cwd),
-            "-s",
-            "workspace-write",
-            "--model",
-            self.config.model,
-            "-c",
-            f'model_reasoning_effort="{self.config.reasoning_effort}"',
-        ]
+            task=task,
+            config=config,
+            bypass=config.bypass_sandbox,
+        )
         stdout, stderr, exit_code = await _run_process(
             cmd,
             cwd=task.cwd,
@@ -185,28 +238,66 @@ class CodexRunner(Runner):
             task=task,
             prompt_index=2,
         )
-        if exit_code != 0 and "CreateProcessWithLogonW failed: 1326" in stderr:
-            fallback_cmd = [
-                codex_path,
-                "exec",
-                task.prompt,
-                "-C",
-                str(task.cwd),
-                "--dangerously-bypass-approvals-and-sandbox",
-                "--model",
-                self.config.model,
-                "-c",
-                f'model_reasoning_effort="{self.config.reasoning_effort}"',
-            ]
-            stdout, stderr, exit_code = await _run_process(
-                fallback_cmd,
-                cwd=task.cwd,
-                debug=self.debug,
-                runner_id=self.id,
-                task=task,
-                prompt_index=2,
-            )
+        if (
+            exit_code != 0
+            and not config.bypass_sandbox
+            and config.execution == "auto"
+            and _looks_like_windows_sandbox_error(stdout, stderr)
+        ):
+            wsl_result = await self._run_task_wsl(task, config)
+            if wsl_result is not None:
+                return wsl_result
 
+        await _write_runner_log(task, stdout=stdout, stderr=stderr)
+        diff = await _capture_git_diff(task.cwd)
+        return RunnerResult(
+            exit_code=exit_code,
+            stdout=stdout,
+            stderr=stderr,
+            artifact=None,
+            diff=diff,
+        )
+
+    async def _run_task_wsl(
+        self,
+        task: RunnerTask,
+        config: CodexRunnerSettings,
+    ) -> RunnerResult | None:
+        if (
+            not config.wsl_enabled
+            or not sys.platform.startswith("win")
+            or (_resolve_binary("wsl.exe") or _resolve_binary("wsl")) is None
+        ):
+            return None
+        binary = config.wsl_binary or config.binary
+        linux_cwd = await _wslpath(task.cwd, distro=config.wsl_distro)
+        if linux_cwd is None:
+            return None
+        cmd = _codex_command(
+            binary,
+            task=task,
+            config=config,
+            bypass=config.bypass_sandbox,
+            cwd_arg=linux_cwd,
+        )
+        prepared = await _prepare_wsl_command(
+            cmd,
+            cwd=task.cwd,
+            distro=config.wsl_distro,
+            enabled=config.wsl_enabled,
+            linux_cwd=linux_cwd,
+        )
+        if prepared is None:
+            return None
+        wsl_cmd, native_cwd = prepared
+        stdout, stderr, exit_code = await _run_process(
+            wsl_cmd,
+            cwd=native_cwd,
+            debug=self.debug,
+            runner_id=self.id,
+            task=task,
+            prompt_index=_prompt_index(wsl_cmd, task.prompt),
+        )
         await _write_runner_log(task, stdout=stdout, stderr=stderr)
         diff = await _capture_git_diff(task.cwd)
         return RunnerResult(
@@ -271,6 +362,161 @@ def _resolve_binary(name: str) -> str | None:
     return shutil.which(name)
 
 
+def _effective_claude_config(
+    config: ClaudeRunnerSettings,
+    stage_overrides: dict[str, StageSettings],
+    stage_name: str,
+) -> ClaudeRunnerSettings:
+    override = stage_overrides.get(stage_name)
+    if override is None:
+        return config
+
+    updates: dict[str, object] = {}
+    if override.claude.allowed_tools is not None:
+        updates["allowed_tools"] = override.claude.allowed_tools
+    if override.claude.bypass_permissions is not None:
+        updates["bypass_permissions"] = override.claude.bypass_permissions
+    return config.model_copy(update=updates)
+
+
+def _effective_codex_config(
+    config: CodexRunnerSettings,
+    stage_overrides: dict[str, StageSettings],
+    stage_name: str,
+) -> CodexRunnerSettings:
+    override = stage_overrides.get(stage_name)
+    if override is None:
+        return config
+
+    updates: dict[str, object] = {}
+    if override.codex.execution is not None:
+        updates["execution"] = override.codex.execution
+    if override.codex.wsl_enabled is not None:
+        updates["wsl_enabled"] = override.codex.wsl_enabled
+    if override.codex.wsl_distro is not None:
+        updates["wsl_distro"] = override.codex.wsl_distro
+    if override.codex.wsl_binary is not None:
+        updates["wsl_binary"] = override.codex.wsl_binary
+    if override.codex.sandbox is not None:
+        updates["sandbox"] = override.codex.sandbox
+    if override.codex.approval_policy is not None:
+        updates["approval_policy"] = override.codex.approval_policy
+    if override.codex.bypass_sandbox is not None:
+        updates["bypass_sandbox"] = override.codex.bypass_sandbox
+    return config.model_copy(update=updates)
+
+
+def _codex_command(
+    codex_path: str,
+    *,
+    task: RunnerTask,
+    config: CodexRunnerSettings,
+    bypass: bool,
+    cwd_arg: str | None = None,
+) -> list[str]:
+    cmd = [
+        codex_path,
+        "exec",
+        task.prompt,
+        "-C",
+        cwd_arg or str(task.cwd),
+    ]
+    if bypass:
+        cmd.append("--dangerously-bypass-approvals-and-sandbox")
+    else:
+        cmd.extend(["-s", config.sandbox])
+    cmd.extend(
+        [
+            "--model",
+            config.model,
+            "-c",
+            f'model_reasoning_effort="{config.reasoning_effort}"',
+            "-c",
+            f'approval_policy="{config.approval_policy}"',
+        ]
+    )
+    return cmd
+
+
+async def _prepare_wsl_command(
+    cmd: list[str],
+    *,
+    cwd: Path,
+    distro: str | None,
+    enabled: bool,
+    linux_cwd: str | None = None,
+) -> tuple[list[str], Path] | None:
+    if not enabled or not sys.platform.startswith("win"):
+        return None
+    wsl_path = _resolve_binary("wsl.exe") or _resolve_binary("wsl")
+    if wsl_path is None:
+        return None
+    linux_cwd = linux_cwd or await _wslpath(cwd, distro=distro)
+    if linux_cwd is None:
+        return None
+    wsl_cmd = [wsl_path]
+    if distro:
+        wsl_cmd.extend(["-d", distro])
+    wsl_cmd.extend(["--cd", linux_cwd, "--exec", *cmd])
+    return wsl_cmd, cwd
+
+
+async def _wslpath(path: Path, *, distro: str | None) -> str | None:
+    wsl_path = _resolve_binary("wsl.exe") or _resolve_binary("wsl")
+    if wsl_path is None:
+        return None
+    cmd = [wsl_path]
+    if distro:
+        cmd.extend(["-d", distro])
+    cmd.extend(["--exec", "wslpath", "-a", str(path)])
+    stdout, _, exit_code = await _run_process(cmd, cwd=path)
+    if exit_code != 0:
+        return None
+    converted = stdout.strip().replace("\x00", "")
+    return converted or None
+
+
+async def _check_wsl_binary(
+    binary: str,
+    *,
+    distro: str | None,
+    enabled: bool,
+    label: str,
+) -> tuple[bool, str]:
+    if not enabled:
+        return False, "WSL execution disabled"
+    if not sys.platform.startswith("win"):
+        return False, "WSL execution is only supported on Windows"
+    wsl_path = _resolve_binary("wsl.exe") or _resolve_binary("wsl")
+    if wsl_path is None:
+        return False, "wsl.exe not found"
+    cmd = [wsl_path]
+    if distro:
+        cmd.extend(["-d", distro])
+    cmd.extend(["--exec", "sh", "-lc", f"command -v {shlex.quote(binary)}"])
+    stdout, stderr, exit_code = await _run_process(cmd, cwd=Path.cwd())
+    if exit_code != 0:
+        detail = stderr.strip() or stdout.strip() or f"{binary} not found in WSL"
+        return False, detail
+    resolved = stdout.strip().splitlines()[0]
+    prefix = f"found in WSL distro {distro}" if distro else "found in WSL"
+    return True, f"{prefix}: {label} at {resolved}"
+
+
+def _looks_like_windows_sandbox_error(stdout: str, stderr: str) -> bool:
+    if not sys.platform.startswith("win"):
+        return False
+    combined = f"{stdout}\n{stderr}"
+    return any(
+        marker in combined
+        for marker in (
+            "CreateProcessWithLogonW failed: 1326",
+            "windows sandbox:",
+            "spawn setup refresh",
+        )
+    )
+
+
 def _debug_print_command(
     *,
     enabled: bool,
@@ -295,6 +541,13 @@ def _debug_print_command(
         f"[pawchestrator:debug] argv={shlex.join(rendered_cmd)}",
         flush=True,
     )
+
+
+def _prompt_index(cmd: list[str], prompt: str) -> int | None:
+    try:
+        return cmd.index(prompt)
+    except ValueError:
+        return None
 
 
 def _debug_print_result(
@@ -347,7 +600,7 @@ def _parse_json_artifact(stdout: str) -> dict[str, Any] | None:
     try:
         parsed = json.loads(stripped)
     except json.JSONDecodeError:
-        return None
+        return _extract_json_object(stripped)
 
     if not isinstance(parsed, dict):
         return None
@@ -356,11 +609,60 @@ def _parse_json_artifact(stdout: str) -> dict[str, Any] | None:
     if isinstance(result, dict):
         return result
     if isinstance(result, str):
-        try:
-            result_parsed = json.loads(result)
-        except json.JSONDecodeError:
-            return parsed
-        if isinstance(result_parsed, dict):
+        result_parsed = _parse_json_object(result)
+        if result_parsed is not None:
             return result_parsed
+        extracted = _extract_json_object(result)
+        if extracted is not None:
+            return extracted
+        return parsed
 
     return parsed
+
+
+def _parse_json_object(text: str) -> dict[str, Any] | None:
+    try:
+        parsed = json.loads(text.strip())
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _extract_json_object(text: str) -> dict[str, Any] | None:
+    fenced = _extract_fenced_json_object(text)
+    if fenced is not None:
+        return fenced
+
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            parsed, _ = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def _extract_fenced_json_object(text: str) -> dict[str, Any] | None:
+    fence = "```"
+    start = 0
+    while True:
+        open_index = text.find(fence, start)
+        if open_index == -1:
+            return None
+        content_start = open_index + len(fence)
+        first_newline = text.find("\n", content_start)
+        if first_newline == -1:
+            return None
+        language = text[content_start:first_newline].strip().lower()
+        close_index = text.find(fence, first_newline + 1)
+        if close_index == -1:
+            return None
+        if language in {"json", ""}:
+            parsed = _parse_json_object(text[first_newline + 1 : close_index])
+            if parsed is not None:
+                return parsed
+        start = close_index + len(fence)
