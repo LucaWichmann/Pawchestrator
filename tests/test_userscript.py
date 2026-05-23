@@ -44,4 +44,7 @@ def test_userscript_polls_every_three_seconds_and_reinjects() -> None:
     assert "window.setInterval" in source
     assert "new MutationObserver" in source
     assert 'document.querySelector(\'[data-testid="sidebar"]\')' in source
+    assert 'document.querySelector(\'[data-testid="issue-viewer-sidebar"]\')' in source
     assert 'document.querySelector(".Layout-sidebar")' in source
+    assert "document.body" in source
+    assert "pawchestrator-floating" in source

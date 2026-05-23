@@ -15,6 +15,7 @@
   const PANEL_ID = "pawchestrator-panel";
   const STATUS_ID = "pawchestrator-status";
   const START_ID = "pawchestrator-start";
+  const FLOATING_CLASS = "pawchestrator-floating";
   const POLL_INTERVAL_MS = 3000;
   const PAW = "\uD83D\uDC3E";
   const OFFLINE_MESSAGE = "Pawchestrator not running \u2014 start with `pawchestrator serve`";
@@ -28,6 +29,20 @@
       padding-top: 16px;
       color: var(--fgColor-default, #24292f);
       font-size: 12px;
+    }
+
+    #${PANEL_ID}.${FLOATING_CLASS} {
+      background: var(--bgColor-default, #ffffff);
+      border: 1px solid var(--borderColor-default, #d0d7de);
+      border-radius: 6px;
+      bottom: 16px;
+      box-shadow: var(--shadow-floating-small, 0 8px 24px rgba(140, 149, 159, 0.2));
+      margin: 0;
+      padding: 12px;
+      position: fixed;
+      right: 16px;
+      width: min(280px, calc(100vw - 32px));
+      z-index: 99999;
     }
 
     #${PANEL_ID} strong {
@@ -85,7 +100,11 @@
 
   function findSidebar() {
     return document.querySelector('[data-testid="sidebar"]')
-      || document.querySelector(".Layout-sidebar");
+      || document.querySelector('[data-testid="issue-viewer-sidebar"]')
+      || document.querySelector(".Layout-sidebar")
+      || document.querySelector(".discussion-sidebar")
+      || document.querySelector('aside[aria-label*="Issue"]')
+      || document.querySelector('aside[aria-label*="issue"]');
   }
 
   function setStatus(message) {
@@ -223,16 +242,7 @@
     }
   }
 
-  function injectPanel() {
-    if (document.getElementById(PANEL_ID)) {
-      return;
-    }
-
-    const sidebar = findSidebar();
-    if (!sidebar) {
-      return;
-    }
-
+  function createPanel() {
     const panel = document.createElement("div");
     panel.id = PANEL_ID;
 
@@ -250,7 +260,23 @@
     button.addEventListener("click", startRun);
 
     panel.append(title, status, button);
-    sidebar.append(panel);
+    return panel;
+  }
+
+  function injectPanel() {
+    const sidebar = findSidebar();
+    const target = sidebar || document.body;
+    if (!target) {
+      return;
+    }
+
+    const panel = document.getElementById(PANEL_ID) || createPanel();
+    panel.classList.toggle(FLOATING_CLASS, !sidebar);
+
+    if (panel.parentElement !== target) {
+      target.append(panel);
+    }
+
     checkBackend();
   }
 
