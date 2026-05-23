@@ -92,6 +92,7 @@ async def run_implement(
         if not healthy:
             raise RuntimeError(message)
 
+        base_commit = await _git_rev_parse_head(worktree_info.path)
         result = await active_runner.run_task(
             RunnerTask(
                 prompt=build_implement_prompt(
@@ -106,7 +107,10 @@ async def run_implement(
         )
         _write_implement_log(log_path, result.stdout, result.stderr)
 
-        files_changed = files_changed_from_diff(result.diff)
+        diff = await _diff_since(worktree_info.path, base_commit)
+        if not diff.strip():
+            diff = result.diff
+        files_changed = files_changed_from_diff(diff)
         no_changes_error = _no_changes_error(
             exit_code=result.exit_code,
             files_changed=files_changed,
@@ -115,7 +119,7 @@ async def run_implement(
         report = build_implementation_report(
             status="error" if no_changes_error or result.exit_code != 0 else "success",
             files_changed=files_changed,
-            diff=result.diff,
+            diff=diff,
             stdout=result.stdout,
             stderr=result.stderr,
             error=no_changes_error,
@@ -312,6 +316,17 @@ async def _run_git_checked(args: list[str], cwd: Path) -> str:
     if exit_code != 0:
         detail = stderr.strip() or stdout.strip() or "git command failed"
         raise RuntimeError(detail)
+    return stdout
+
+
+async def _git_rev_parse_head(cwd: Path) -> str:
+    return (await _run_git_checked(["rev-parse", "HEAD"], cwd)).strip()
+
+
+async def _diff_since(cwd: Path, base_commit: str) -> str:
+    stdout, _, exit_code = await _run_git(["diff", base_commit], cwd)
+    if exit_code != 0:
+        return ""
     return stdout
 
 

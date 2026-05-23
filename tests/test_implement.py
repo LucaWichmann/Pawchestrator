@@ -23,6 +23,10 @@ from pawchestrator.implement import (
 from pawchestrator.runners import Runner, RunnerResult, RunnerTask
 
 
+async def _async_value(value: Any) -> Any:
+    return value
+
+
 class FakeRunner(Runner):
     id = "fake"
     kind = "agent"
@@ -212,6 +216,14 @@ def test_run_implement_writes_report_log_and_records_stage(
         "pawchestrator.implement.ensure_issue_worktree",
         fake_ensure_issue_worktree,
     )
+    monkeypatch.setattr(
+        "pawchestrator.implement._git_rev_parse_head",
+        lambda cwd: _async_value("base-sha"),
+    )
+    monkeypatch.setattr(
+        "pawchestrator.implement._diff_since",
+        lambda cwd, base_commit: _async_value(runner.result.diff),
+    )
 
     result = asyncio.run(
         run_implement(
@@ -336,6 +348,14 @@ def test_run_implement_fails_when_codex_changes_no_files(
         "pawchestrator.implement.ensure_issue_worktree",
         fake_ensure_issue_worktree,
     )
+    monkeypatch.setattr(
+        "pawchestrator.implement._git_rev_parse_head",
+        lambda cwd: _async_value("base-sha"),
+    )
+    monkeypatch.setattr(
+        "pawchestrator.implement._diff_since",
+        lambda cwd, base_commit: _async_value(""),
+    )
 
     with pytest.raises(RuntimeError, match="without changing files"):
         asyncio.run(
@@ -364,6 +384,65 @@ def test_run_implement_fails_when_codex_changes_no_files(
     assert run == ("implement_failed", "implement")
     assert stage[0] == "failed"
     assert "without changing files" in stage[1]
+
+
+def test_run_implement_detects_committed_changes_since_base(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    run_id = "run-123"
+    asyncio.run(_insert_plan_run(settings, run_id))
+    _write_snapshot(settings, run_id)
+    _write_plan(settings, run_id)
+    worktree_path = tmp_path / "worktree"
+    committed_diff = "diff --git a/pawchestrator/db.py b/pawchestrator/db.py\n"
+    runner = FakeRunner(
+        result=RunnerResult(
+            exit_code=0,
+            stdout="committed changes\n",
+            stderr="",
+            artifact=None,
+            diff="",
+        )
+    )
+
+    async def fake_ensure_issue_worktree(
+        settings: Settings,
+        *,
+        snapshot: dict[str, Any],
+        source_repo_path: Path,
+    ) -> WorktreeInfo:
+        return WorktreeInfo(
+            path=worktree_path,
+            branch="paw/issue-42-add-implement",
+            reused=True,
+        )
+
+    monkeypatch.setattr(
+        "pawchestrator.implement.ensure_issue_worktree",
+        fake_ensure_issue_worktree,
+    )
+    monkeypatch.setattr(
+        "pawchestrator.implement._git_rev_parse_head",
+        lambda cwd: _async_value("base-sha"),
+    )
+    monkeypatch.setattr(
+        "pawchestrator.implement._diff_since",
+        lambda cwd, base_commit: _async_value(committed_diff),
+    )
+
+    result = asyncio.run(
+        run_implement(
+            run_id,
+            settings,
+            repo_path=tmp_path / "source",
+            runner=runner,
+        )
+    )
+
+    assert result.report["status"] == "success"
+    assert result.report["files_changed"] == ["pawchestrator/db.py"]
+    assert result.report["diff_summary"] == "1 file changed: pawchestrator/db.py"
 
 
 def test_run_implement_command_prints_summary(

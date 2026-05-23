@@ -48,7 +48,7 @@ def test_claude_runner_invokes_expected_command_and_parses_result(
     class FakeProcess:
         returncode = 0
 
-        async def communicate(self) -> tuple[bytes, bytes]:
+        async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
             return (
                 json.dumps(
                     {
@@ -118,7 +118,7 @@ def test_claude_runner_parses_fenced_json_result(
     class FakeProcess:
         returncode = 0
 
-        async def communicate(self) -> tuple[bytes, bytes]:
+        async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
             return (
                 json.dumps(
                     {
@@ -162,7 +162,7 @@ def test_claude_runner_parses_direct_fenced_json_stdout(
     class FakeProcess:
         returncode = 0
 
-        async def communicate(self) -> tuple[bytes, bytes]:
+        async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
             return (
                 b'Done.\n```json\n{"schema":"pawchestrator.scout_report.v1"}\n```',
                 b"",
@@ -196,7 +196,7 @@ def test_claude_runner_uses_stage_permission_override(
     class FakeProcess:
         returncode = 0
 
-        async def communicate(self) -> tuple[bytes, bytes]:
+        async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
             return b'{"result": {"status": "success"}}', b""
 
     async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
@@ -245,7 +245,7 @@ def test_claude_runner_wsl_mode_invokes_wsl_and_preserves_tools(
             self._stderr = stderr
             self.returncode = returncode
 
-        async def communicate(self) -> tuple[bytes, bytes]:
+        async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
             return self._stdout, self._stderr
 
     async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
@@ -310,7 +310,7 @@ def test_claude_runner_debug_prints_command_and_output(
     class FakeProcess:
         returncode = 0
 
-        async def communicate(self) -> tuple[bytes, bytes]:
+        async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
             return b'{"result": {"status": "success"}}', b"claude warning"
 
     async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
@@ -353,7 +353,7 @@ def test_codex_runner_reports_found_binary(monkeypatch: pytest.MonkeyPatch) -> N
     class FakeProcess:
         returncode = 0
 
-        async def communicate(self) -> tuple[bytes, bytes]:
+        async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
             return b"codex 1.2.3", b""
 
     async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
@@ -431,7 +431,8 @@ def test_codex_runner_invokes_expected_command_logs_and_captures_diff(
             self._stdout = stdout
             self._stderr = stderr
 
-        async def communicate(self) -> tuple[bytes, bytes]:
+        async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
+            calls[-1]["stdin_input"] = input
             return self._stdout, self._stderr
 
     async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
@@ -457,7 +458,7 @@ def test_codex_runner_invokes_expected_command_logs_and_captures_diff(
     )
 
     task = RunnerTask(
-        prompt="implement issue",
+        prompt="implement issue\nsecond line",
         cwd=tmp_path,
         run_id="run-123",
         stage_name="implement",
@@ -476,7 +477,6 @@ def test_codex_runner_invokes_expected_command_logs_and_captures_diff(
     assert calls[0]["cmd"] == [
         codex_path,
         "exec",
-        "implement issue",
         "-C",
         str(tmp_path),
         "-s",
@@ -487,7 +487,10 @@ def test_codex_runner_invokes_expected_command_logs_and_captures_diff(
         'model_reasoning_effort="low"',
         "-c",
         'approval_policy="never"',
+        "-",
     ]
+    assert "implement issue\nsecond line" not in calls[0]["cmd"]
+    assert calls[0]["stdin_input"] == b"implement issue\nsecond line"
     assert calls[0]["cwd"] == str(tmp_path)
     assert calls[1]["cmd"] == ["git", "diff", "HEAD"]
     assert calls[1]["cwd"] == str(tmp_path)
@@ -512,7 +515,7 @@ def test_codex_runner_debug_prints_command_and_output(
             self._stdout = stdout
             self._stderr = stderr
 
-        async def communicate(self) -> tuple[bytes, bytes]:
+        async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
             return self._stdout, self._stderr
 
     async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
@@ -540,7 +543,7 @@ def test_codex_runner_debug_prints_command_and_output(
 
     output = capsys.readouterr().out
     assert "[pawchestrator:debug] run=run-debug stage=implement runner=codex" in output
-    assert "<prompt chars=12>" in output
+    assert "<prompt stdin chars=12>" in output
     assert "--model gpt-5.5" in output
     assert "-c 'model_reasoning_effort=\"low\"'" in output
     assert "codex stdout" in output
@@ -553,6 +556,7 @@ def test_codex_runner_auto_retries_wsl_for_windows_sandbox_error(
     codex_path = "C:\\bin\\codex.CMD"
     wsl_path = "C:\\Windows\\System32\\wsl.exe"
     calls: list[list[str]] = []
+    stdins: list[bytes | None] = []
 
     class FakeProcess:
         def __init__(self, returncode: int, stdout: bytes, stderr: bytes) -> None:
@@ -560,7 +564,8 @@ def test_codex_runner_auto_retries_wsl_for_windows_sandbox_error(
             self._stdout = stdout
             self._stderr = stderr
 
-        async def communicate(self) -> tuple[bytes, bytes]:
+        async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
+            stdins.append(input)
             return self._stdout, self._stderr
 
     async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
@@ -611,7 +616,6 @@ def test_codex_runner_auto_retries_wsl_for_windows_sandbox_error(
     assert calls[0] == [
         codex_path,
         "exec",
-        "implement issue",
         "-C",
         str(tmp_path),
         "-s",
@@ -622,6 +626,7 @@ def test_codex_runner_auto_retries_wsl_for_windows_sandbox_error(
         'model_reasoning_effort="medium"',
         "-c",
         'approval_policy="never"',
+        "-",
     ]
     assert calls[1] == ["git", "diff", "HEAD"]
     assert calls[2] == [wsl_path, "--exec", "wslpath", "-a", str(tmp_path)]
@@ -634,7 +639,6 @@ def test_codex_runner_auto_retries_wsl_for_windows_sandbox_error(
         "--exec",
         "codex",
         "exec",
-        "implement issue",
         "-C",
         "/mnt/c/repo",
         "-s",
@@ -645,7 +649,10 @@ def test_codex_runner_auto_retries_wsl_for_windows_sandbox_error(
         'model_reasoning_effort="medium"',
         "-c",
         'approval_policy="never"',
+        "-",
     ]
+    assert stdins[0] == b"implement issue"
+    assert stdins[4] == b"implement issue"
     assert all("--dangerously-bypass-approvals-and-sandbox" not in call for call in calls)
     assert result.exit_code == 0
     assert result.stdout == "wsl stdout"
@@ -663,7 +670,7 @@ def test_codex_runner_auto_does_not_bypass_when_wsl_unavailable(
             self._stdout = stdout
             self._stderr = stderr
 
-        async def communicate(self) -> tuple[bytes, bytes]:
+        async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
             return self._stdout, self._stderr
 
     async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
@@ -715,7 +722,7 @@ def test_codex_runner_auto_retries_wsl_when_successful_run_only_reports_sandbox_
             self._stdout = stdout
             self._stderr = stderr
 
-        async def communicate(self) -> tuple[bytes, bytes]:
+        async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
             return self._stdout, self._stderr
 
     async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
@@ -783,7 +790,7 @@ def test_codex_runner_auto_keeps_successful_sandbox_output_when_diff_exists(
             self._stdout = stdout
             self._stderr = stderr
 
-        async def communicate(self) -> tuple[bytes, bytes]:
+        async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
             return self._stdout, self._stderr
 
     async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
@@ -841,7 +848,7 @@ def test_codex_runner_auto_keeps_successful_sandbox_output_when_wsl_unavailable(
             self._stdout = stdout
             self._stderr = stderr
 
-        async def communicate(self) -> tuple[bytes, bytes]:
+        async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
             return self._stdout, self._stderr
 
     async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
@@ -890,7 +897,7 @@ def test_codex_runner_auto_keeps_native_result_when_wsl_codex_preflight_fails(
             self._stdout = stdout
             self._stderr = stderr
 
-        async def communicate(self) -> tuple[bytes, bytes]:
+        async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
             return self._stdout, self._stderr
 
     async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
@@ -956,7 +963,7 @@ def test_codex_runner_explicit_wsl_reports_unavailable_codex(
             self._stdout = stdout
             self._stderr = stderr
 
-        async def communicate(self) -> tuple[bytes, bytes]:
+        async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
             return self._stdout, self._stderr
 
     async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
@@ -1013,7 +1020,7 @@ def test_codex_runner_wsl_health_checks_version_command(
     class FakeProcess:
         returncode = 1
 
-        async def communicate(self) -> tuple[bytes, bytes]:
+        async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
             return (
                 b"/mnt/c/Users/lucam/AppData/Roaming/npm/codex\n",
                 b"Error: Missing optional dependency @openai/codex-linux-x64\n",
@@ -1052,7 +1059,7 @@ def test_codex_runner_uses_explicit_bypass(
     class FakeProcess:
         returncode = 0
 
-        async def communicate(self) -> tuple[bytes, bytes]:
+        async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
             return b"", b""
 
     async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
@@ -1093,7 +1100,7 @@ def test_codex_runner_reports_missing_binary_at_run_time(
     class FakeProcess:
         returncode = 0
 
-        async def communicate(self) -> tuple[bytes, bytes]:
+        async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
             return b"diff --git a/file.py b/file.py\n", b""
 
     async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:

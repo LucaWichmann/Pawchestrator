@@ -245,10 +245,12 @@ class CodexRunner(Runner):
         stdout, stderr, exit_code = await _run_process(
             cmd,
             cwd=task.cwd,
+            stdin_text=task.prompt,
             debug=self.debug,
             runner_id=self.id,
             task=task,
-            prompt_index=2,
+            prompt_index=_prompt_index(cmd, "-"),
+            prompt_stdin_chars=len(task.prompt),
         )
         diff = await _capture_git_diff(task.cwd)
         if (
@@ -336,10 +338,12 @@ class CodexRunner(Runner):
         stdout, stderr, exit_code = await _run_process(
             wsl_cmd,
             cwd=native_cwd,
+            stdin_text=task.prompt,
             debug=self.debug,
             runner_id=self.id,
             task=task,
-            prompt_index=_prompt_index(wsl_cmd, task.prompt),
+            prompt_index=_prompt_index(wsl_cmd, "-"),
+            prompt_stdin_chars=len(task.prompt),
         )
         await _write_runner_log(task, stdout=stdout, stderr=stderr)
         diff = await _capture_git_diff(task.cwd)
@@ -362,10 +366,12 @@ async def _run_process(
     cmd: list[str],
     cwd: Path,
     *,
+    stdin_text: str | None = None,
     debug: bool = False,
     runner_id: str | None = None,
     task: RunnerTask | None = None,
     prompt_index: int | None = None,
+    prompt_stdin_chars: int | None = None,
 ) -> tuple[str, str, int]:
     if debug and runner_id and task:
         _debug_print_command(
@@ -374,18 +380,30 @@ async def _run_process(
             task=task,
             cmd=cmd,
             prompt_index=prompt_index,
+            prompt_stdin_chars=prompt_stdin_chars,
         )
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=str(cwd),
+            stdin=asyncio.subprocess.PIPE if stdin_text is not None else None,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
     except FileNotFoundError as error:
         return "", str(error), 127
 
-    stdout_bytes, stderr_bytes = await proc.communicate()
+    if debug and runner_id and task and hasattr(proc, "stdout") and hasattr(proc, "stderr"):
+        stdout_bytes, stderr_bytes = await _communicate_with_debug_streaming(
+            proc,
+            stdin_text=stdin_text,
+        )
+    elif stdin_text is None:
+        stdout_bytes, stderr_bytes = await proc.communicate()
+    else:
+        stdout_bytes, stderr_bytes = await proc.communicate(
+            stdin_text.encode("utf-8")
+        )
     stdout = stdout_bytes.decode("utf-8", errors="replace")
     stderr = stderr_bytes.decode("utf-8", errors="replace")
     exit_code = proc.returncode or 0
@@ -399,6 +417,44 @@ async def _run_process(
             stderr=stderr,
         )
     return stdout, stderr, exit_code
+
+
+async def _communicate_with_debug_streaming(
+    proc: asyncio.subprocess.Process,
+    *,
+    stdin_text: str | None,
+) -> tuple[bytes, bytes]:
+    async def write_stdin() -> None:
+        if stdin_text is None or proc.stdin is None:
+            return
+        proc.stdin.write(stdin_text.encode("utf-8"))
+        await proc.stdin.drain()
+        proc.stdin.close()
+        if hasattr(proc.stdin, "wait_closed"):
+            await proc.stdin.wait_closed()
+
+    async def read_stream(
+        stream: asyncio.StreamReader | None,
+        label: str,
+    ) -> bytes:
+        if stream is None:
+            return b""
+        chunks: list[bytes] = []
+        while chunk := await stream.read(4096):
+            chunks.append(chunk)
+            text = chunk.decode("utf-8", errors="replace")
+            print(f"[pawchestrator:debug] {label}:\n{text}", end="", flush=True)
+            if not text.endswith("\n"):
+                print(flush=True)
+        return b"".join(chunks)
+
+    _, stdout_bytes, stderr_bytes = await asyncio.gather(
+        write_stdin(),
+        read_stream(proc.stdout, "stdout"),
+        read_stream(proc.stderr, "stderr"),
+    )
+    await proc.wait()
+    return stdout_bytes, stderr_bytes
 
 
 def _resolve_binary(name: str) -> str | None:
@@ -460,7 +516,6 @@ def _codex_command(
     cmd = [
         codex_path,
         "exec",
-        task.prompt,
         "-C",
         cwd_arg or str(task.cwd),
     ]
@@ -476,6 +531,7 @@ def _codex_command(
             f'model_reasoning_effort="{config.reasoning_effort}"',
             "-c",
             f'approval_policy="{config.approval_policy}"',
+            "-",
         ]
     )
     return cmd
@@ -631,13 +687,17 @@ def _debug_print_command(
     task: RunnerTask,
     cmd: list[str],
     prompt_index: int | None,
+    prompt_stdin_chars: int | None = None,
 ) -> None:
     if not enabled:
         return
 
     rendered_cmd = list(cmd)
     if prompt_index is not None and 0 <= prompt_index < len(rendered_cmd):
-        rendered_cmd[prompt_index] = f"<prompt chars={len(rendered_cmd[prompt_index])}>"
+        if prompt_stdin_chars is None:
+            rendered_cmd[prompt_index] = f"<prompt chars={len(rendered_cmd[prompt_index])}>"
+        else:
+            rendered_cmd[prompt_index] = f"<prompt stdin chars={prompt_stdin_chars}>"
 
     print(
         f"[pawchestrator:debug] run={task.run_id} stage={task.stage_name} "
