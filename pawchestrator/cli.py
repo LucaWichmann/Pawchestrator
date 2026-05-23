@@ -14,6 +14,7 @@ from pawchestrator.config import DEFAULT_PORT, LOCAL_HOST, load_settings
 from pawchestrator.doctor import STATUS_FAIL, STATUS_PASS, STATUS_WARN, has_required_failures, run_checks
 from pawchestrator.implement import run_implement
 from pawchestrator.issues import snapshot_issue
+from pawchestrator.pipeline import run_pipeline
 from pawchestrator.plan import run_plan
 from pawchestrator.pr import run_pr
 from pawchestrator.scout import run_scout
@@ -78,6 +79,34 @@ def issue_snapshot(github_issue_url: str) -> None:
     typer.echo(f"Run ID: {result.run_id}")
     typer.echo(f"Snapshot: {result.artifact_path}")
     typer.echo(f"Issue: #{result.issue_number} - {result.title}")
+
+
+@issue_app.command("start")
+def issue_start(
+    github_issue_url: str,
+    repo_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--repo-path",
+            exists=True,
+            file_okay=False,
+            dir_okay=True,
+            resolve_path=True,
+            help="Source repository path for git worktree creation.",
+        ),
+    ] = None,
+) -> None:
+    """Run the full issue-to-PR pipeline for a GitHub issue."""
+
+    settings = load_settings()
+    try:
+        result = asyncio.run(run_pipeline(github_issue_url, settings, repo_path=repo_path))
+    except Exception as error:
+        typer.secho(f"Pipeline failed: {error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from error
+
+    typer.echo(f"Run ID: {result.run_id}")
+    typer.echo(f"Draft PR: {result.pr_url}")
 
 
 @run_app.command("scout")
