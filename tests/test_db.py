@@ -3,7 +3,14 @@ import sqlite3
 from pathlib import Path
 
 from pawchestrator.config import Settings
-from pawchestrator.db import create_pipeline_run, init_db, list_tables, upsert_worktree_record
+from pawchestrator.db import (
+    create_pipeline_run,
+    get_github_comment_id,
+    init_db,
+    list_tables,
+    store_github_comment_id,
+    upsert_worktree_record,
+)
 
 
 def test_init_db_creates_mvp0_tables(tmp_path: Path) -> None:
@@ -18,6 +25,14 @@ def test_init_db_creates_mvp0_tables(tmp_path: Path) -> None:
         "artifacts",
         "worktrees",
     }
+
+    with sqlite3.connect(database_path) as db:
+        columns = {
+            row[1]
+            for row in db.execute("PRAGMA table_info(workflow_runs)").fetchall()
+        }
+
+    assert "github_comment_id" in columns
 
 
 def test_upsert_worktree_record_inserts_and_updates(tmp_path: Path) -> None:
@@ -104,3 +119,22 @@ def test_create_pipeline_run_inserts_all_pending_stages(tmp_path: Path) -> None:
         ("verify", "pending"),
         ("pr", "pending"),
     ]
+
+
+def test_github_comment_id_helpers_store_and_fetch_id(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    asyncio.run(
+        create_pipeline_run(
+            settings,
+            run_id="run-123",
+            owner="owner",
+            repo="repo",
+            issue_number=42,
+        )
+    )
+
+    assert asyncio.run(get_github_comment_id(settings, "run-123")) is None
+
+    asyncio.run(store_github_comment_id(settings, "run-123", 99))
+
+    assert asyncio.run(get_github_comment_id(settings, "run-123")) == 99
