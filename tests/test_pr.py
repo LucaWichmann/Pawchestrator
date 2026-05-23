@@ -69,6 +69,8 @@ def test_run_pr_pushes_branch_creates_pr_writes_artifact_and_records_stage(
 
     async def fake_run_process(cmd: list[str], cwd: Path) -> tuple[str, str, int]:
         calls.append((cmd, cwd))
+        if cmd[:3] == ["git", "rev-list", "--count"]:
+            return "1\n", "", 0
         if cmd[:2] == ["git", "push"]:
             return "pushed", "", 0
         if cmd[:3] == ["gh", "pr", "create"]:
@@ -83,10 +85,14 @@ def test_run_pr_pushes_branch_creates_pr_writes_artifact_and_records_stage(
     assert result.branch == "paw/issue-42-test"
     assert result.title == "fix: Add PR command (#42)"
     assert calls[0] == (
+        ["git", "rev-list", "--count", "main..HEAD"],
+        worktree_path,
+    )
+    assert calls[1] == (
         ["git", "push", "-u", "origin", "paw/issue-42-test"],
         worktree_path,
     )
-    assert calls[1][0][:6] == [
+    assert calls[2][0][:6] == [
         "gh",
         "pr",
         "create",
@@ -94,10 +100,10 @@ def test_run_pr_pushes_branch_creates_pr_writes_artifact_and_records_stage(
         "--title",
         "fix: Add PR command (#42)",
     ]
-    assert "--base" in calls[1][0]
-    assert "main" in calls[1][0]
-    assert "--head" in calls[1][0]
-    assert "paw/issue-42-test" in calls[1][0]
+    assert "--base" in calls[2][0]
+    assert "main" in calls[2][0]
+    assert "--head" in calls[2][0]
+    assert "paw/issue-42-test" in calls[2][0]
 
     draft = json.loads(result.artifact_path.read_text(encoding="utf-8"))
     assert result.artifact_path == tmp_path / "runs" / run_id / "pr_draft.json"
@@ -147,6 +153,8 @@ def test_run_pr_reuses_existing_pr_for_branch(
 
     async def fake_run_process(cmd: list[str], cwd: Path) -> tuple[str, str, int]:
         calls.append(cmd)
+        if cmd[:3] == ["git", "rev-list", "--count"]:
+            return "1\n", "", 0
         if cmd[:2] == ["git", "push"]:
             return "pushed", "", 0
         if cmd[:3] == ["gh", "pr", "create"]:
@@ -170,6 +178,81 @@ def test_run_pr_reuses_existing_pr_for_branch(
         "--jq",
         ".url",
     ]
+
+
+def test_run_pr_creates_empty_commit_when_allowed_and_branch_has_no_commits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    run_id = "run-123"
+    worktree_path = tmp_path / "worktree"
+    worktree_path.mkdir()
+    asyncio.run(_insert_verify_run(settings, run_id, worktree_path=worktree_path))
+    _write_artifacts(settings, run_id)
+    calls: list[list[str]] = []
+
+    async def fake_run_process(cmd: list[str], cwd: Path) -> tuple[str, str, int]:
+        calls.append(cmd)
+        if cmd[:3] == ["git", "rev-list", "--count"]:
+            return "0\n", "", 0
+        if cmd[:3] == ["git", "commit", "--allow-empty"]:
+            return "[paw/issue-42-test abc123] no-op", "", 0
+        if cmd[:2] == ["git", "push"]:
+            return "pushed", "", 0
+        if cmd[:3] == ["gh", "pr", "create"]:
+            return "https://github.com/owner/repo/pull/99\n", "", 0
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr("pawchestrator.pr._run_process", fake_run_process)
+
+    result = asyncio.run(run_pr(run_id, settings, allow_empty_commit=True))
+
+    assert result.pr_url == "https://github.com/owner/repo/pull/99"
+    assert calls[:3] == [
+        ["git", "rev-list", "--count", "main..HEAD"],
+        [
+            "git",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "chore(paw): record no-op for issue #42",
+        ],
+        ["git", "push", "-u", "origin", "paw/issue-42-test"],
+    ]
+    with sqlite3.connect(tmp_path / "database.sqlite") as db:
+        run = db.execute(
+            "SELECT status, current_stage, pr_url FROM workflow_runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+
+    assert run == ("pr_complete", "pr", "https://github.com/owner/repo/pull/99")
+
+
+def test_run_pr_fails_before_create_when_empty_commit_not_allowed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    run_id = "run-123"
+    worktree_path = tmp_path / "worktree"
+    worktree_path.mkdir()
+    asyncio.run(_insert_verify_run(settings, run_id, worktree_path=worktree_path))
+    _write_artifacts(settings, run_id)
+    calls: list[list[str]] = []
+
+    async def fake_run_process(cmd: list[str], cwd: Path) -> tuple[str, str, int]:
+        calls.append(cmd)
+        if cmd[:3] == ["git", "rev-list", "--count"]:
+            return "0\n", "", 0
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr("pawchestrator.pr._run_process", fake_run_process)
+
+    message = "branch has no commits relative to main; cannot create PR"
+    with pytest.raises(RuntimeError, match=message):
+        asyncio.run(run_pr(run_id, settings))
+
+    assert calls == [["git", "rev-list", "--count", "main..HEAD"]]
+    _assert_pr_failed(settings, run_id, message)
 
 
 def test_run_pr_reports_missing_run(tmp_path: Path) -> None:
@@ -226,6 +309,8 @@ def test_run_pr_records_failure_when_gh_fails(
     _write_artifacts(settings, run_id)
 
     async def fake_run_process(cmd: list[str], cwd: Path) -> tuple[str, str, int]:
+        if cmd[:3] == ["git", "rev-list", "--count"]:
+            return "1\n", "", 0
         if cmd[:2] == ["git", "push"]:
             return "pushed", "", 0
         return "", "gh auth failed", 1
@@ -243,9 +328,15 @@ def test_run_pr_command_prints_url(
 ) -> None:
     monkeypatch.setattr(cli, "load_settings", lambda: Settings(app_dir=tmp_path))
 
-    async def fake_run_pr(run_id: str, settings: Settings) -> PrDraftResult:
+    async def fake_run_pr(
+        run_id: str,
+        settings: Settings,
+        *,
+        allow_empty_commit: bool = False,
+    ) -> PrDraftResult:
         assert run_id == "run-123"
         assert settings.app_dir == tmp_path
+        assert allow_empty_commit is False
         return PrDraftResult(
             run_id=run_id,
             artifact_path=tmp_path / "runs" / run_id / "pr_draft.json",

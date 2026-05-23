@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from pawchestrator.config import ClaudeRunnerSettings, CodexRunnerSettings
 from pawchestrator.runners import RUNNERS, ClaudeRunner, CodexRunner, Runner, RunnerTask
 
 
@@ -78,12 +79,20 @@ def test_claude_runner_invokes_expected_command_and_parses_result(
         stage_name="scout",
     )
 
-    result = asyncio.run(ClaudeRunner().run_task(task))
+    result = asyncio.run(
+        ClaudeRunner(
+            ClaudeRunnerSettings(binary="claude-beta", model="sonnet", effort="medium")
+        ).run_task(task)
+    )
 
     assert calls["cmd"] == [
-        "claude",
+        "claude-beta",
         "-p",
         "repo scout prompt",
+        "--model",
+        "sonnet",
+        "--effort",
+        "medium",
         "--output-format",
         "json",
         "--allowedTools",
@@ -225,7 +234,15 @@ def test_codex_runner_invokes_expected_command_logs_and_captures_diff(
         stage_name="implement",
     )
 
-    result = asyncio.run(CodexRunner().run_task(task))
+    result = asyncio.run(
+        CodexRunner(
+            CodexRunnerSettings(
+                binary="codex",
+                model="gpt-5.5",
+                reasoning_effort="low",
+            )
+        ).run_task(task)
+    )
 
     assert calls[0]["cmd"] == [
         codex_path,
@@ -235,6 +252,10 @@ def test_codex_runner_invokes_expected_command_logs_and_captures_diff(
         str(tmp_path),
         "-s",
         "workspace-write",
+        "--model",
+        "gpt-5.5",
+        "-c",
+        'model_reasoning_effort="low"',
     ]
     assert calls[0]["cwd"] == str(tmp_path)
     assert calls[1]["cmd"] == ["git", "diff", "HEAD"]
@@ -288,7 +309,15 @@ def test_codex_runner_falls_back_for_windows_sandbox_error(
         stage_name="implement",
     )
 
-    result = asyncio.run(CodexRunner().run_task(task))
+    result = asyncio.run(
+        CodexRunner(
+            CodexRunnerSettings(
+                binary="codex",
+                model="gpt-5.5-fast",
+                reasoning_effort="medium",
+            )
+        ).run_task(task)
+    )
 
     assert calls[0] == [
         codex_path,
@@ -298,6 +327,10 @@ def test_codex_runner_falls_back_for_windows_sandbox_error(
         str(tmp_path),
         "-s",
         "workspace-write",
+        "--model",
+        "gpt-5.5-fast",
+        "-c",
+        'model_reasoning_effort="medium"',
     ]
     assert calls[1] == [
         codex_path,
@@ -306,6 +339,10 @@ def test_codex_runner_falls_back_for_windows_sandbox_error(
         "-C",
         str(tmp_path),
         "--dangerously-bypass-approvals-and-sandbox",
+        "--model",
+        "gpt-5.5-fast",
+        "-c",
+        'model_reasoning_effort="medium"',
     ]
     assert result.exit_code == 0
     assert result.stdout == "fallback stdout"

@@ -128,9 +128,36 @@ def test_run_pipeline_stops_on_failure_and_marks_run_failed(
     assert ("implement", "pending", None) in stages
 
 
+def test_run_pipeline_passes_allow_empty_commit_to_pr_stage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    calls: list[str] = []
+    allow_empty_commit_values: list[bool] = []
+    _patch_successful_stages(
+        monkeypatch,
+        calls,
+        allow_empty_commit_values=allow_empty_commit_values,
+    )
+
+    asyncio.run(
+        run_pipeline(
+            "https://github.com/owner/repo/issues/42",
+            settings,
+            repo_path=tmp_path,
+            allow_empty_commit=True,
+        )
+    )
+
+    assert allow_empty_commit_values == [True]
+
+
 def _patch_successful_stages(
     monkeypatch: pytest.MonkeyPatch,
     calls: list[str],
+    *,
+    allow_empty_commit_values: list[bool] | None = None,
 ) -> None:
     async def fake_snapshot(issue_url: str, settings: Settings, *, run_id: str):
         calls.append("snapshot")
@@ -209,8 +236,15 @@ def _patch_successful_stages(
         )
         return SimpleNamespace(report={"status": "passed"})
 
-    async def fake_pr(run_id: str, settings: Settings):
+    async def fake_pr(
+        run_id: str,
+        settings: Settings,
+        *,
+        allow_empty_commit: bool = False,
+    ):
         calls.append("pr")
+        if allow_empty_commit_values is not None:
+            allow_empty_commit_values.append(allow_empty_commit)
         stage_id = await start_pr_run(settings, run_id=run_id)
         artifact_path = settings.app_dir / "runs" / run_id / "pr_draft.json"
         artifact_path.parent.mkdir(parents=True, exist_ok=True)

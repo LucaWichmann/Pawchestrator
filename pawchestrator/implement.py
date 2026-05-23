@@ -53,7 +53,7 @@ async def run_implement(
 
     stage_id = await start_implement_run(settings, run_id=run_id)
     source_repo_path = (repo_path or Path.cwd()).resolve()
-    active_runner = runner or CodexRunner()
+    active_runner = runner or CodexRunner(settings.runners.codex)
     log_path = _implement_log_path(settings, run_id)
     artifact_path = _implementation_report_path(settings, run_id)
     worktree_info: WorktreeInfo | None = None

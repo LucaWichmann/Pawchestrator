@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from pawchestrator.config import ClaudeRunnerSettings, CodexRunnerSettings
+
 
 @dataclass(frozen=True)
 class RunnerTask:
@@ -45,17 +47,24 @@ class ClaudeRunner(Runner):
     id = "claude"
     kind = "agent"
 
+    def __init__(self, config: ClaudeRunnerSettings | None = None) -> None:
+        self.config = config or ClaudeRunnerSettings()
+
     async def check_health(self) -> tuple[bool, str]:
-        path = shutil.which("claude")
+        path = shutil.which(self.config.binary)
         if path is None:
-            return False, "claude binary not found on PATH"
+            return False, f"{self.config.binary} binary not found on PATH"
         return True, f"found at {path}"
 
     async def run_task(self, task: RunnerTask) -> RunnerResult:
         cmd = [
-            "claude",
+            self.config.binary,
             "-p",
             task.prompt,
+            "--model",
+            self.config.model,
+            "--effort",
+            self.config.effort,
             "--output-format",
             "json",
             "--allowedTools",
@@ -83,10 +92,13 @@ class CodexRunner(Runner):
     id = "codex"
     kind = "agent"
 
+    def __init__(self, config: CodexRunnerSettings | None = None) -> None:
+        self.config = config or CodexRunnerSettings()
+
     async def check_health(self) -> tuple[bool, str]:
-        path = _resolve_binary("codex")
+        path = _resolve_binary(self.config.binary)
         if path is None:
-            return False, "codex not found"
+            return False, f"{self.config.binary} not found"
 
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -109,10 +121,10 @@ class CodexRunner(Runner):
         return False, message
 
     async def run_task(self, task: RunnerTask) -> RunnerResult:
-        codex_path = _resolve_binary("codex")
+        codex_path = _resolve_binary(self.config.binary)
         if codex_path is None:
             stdout = ""
-            stderr = "codex binary not found on PATH"
+            stderr = f"{self.config.binary} binary not found on PATH"
             exit_code = 127
             await _write_runner_log(task, stdout=stdout, stderr=stderr)
             diff = await _capture_git_diff(task.cwd)
@@ -132,6 +144,10 @@ class CodexRunner(Runner):
             str(task.cwd),
             "-s",
             "workspace-write",
+            "--model",
+            self.config.model,
+            "-c",
+            f'model_reasoning_effort="{self.config.reasoning_effort}"',
         ]
         stdout, stderr, exit_code = await _run_process(cmd, cwd=task.cwd)
         if exit_code != 0 and "CreateProcessWithLogonW failed: 1326" in stderr:
@@ -142,6 +158,10 @@ class CodexRunner(Runner):
                 "-C",
                 str(task.cwd),
                 "--dangerously-bypass-approvals-and-sandbox",
+                "--model",
+                self.config.model,
+                "-c",
+                f'model_reasoning_effort="{self.config.reasoning_effort}"',
             ]
             stdout, stderr, exit_code = await _run_process(fallback_cmd, cwd=task.cwd)
 

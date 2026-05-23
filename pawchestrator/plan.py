@@ -51,7 +51,7 @@ async def run_plan(
     scout_report = json.loads(scout_path.read_text(encoding="utf-8"))
     local_repo_path = (repo_path or Path.cwd()).resolve()
     stage_id = await start_plan_run(settings, run_id=run_id)
-    active_runner = runner or ClaudeRunner()
+    active_runner = runner or ClaudeRunner(settings.runners.claude)
     log_path = _plan_log_path(settings, run_id)
     artifact_path = _plan_artifact_path(settings, run_id)
 

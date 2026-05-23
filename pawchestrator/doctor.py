@@ -33,8 +33,8 @@ def run_checks(settings: Settings, port: int = DEFAULT_PORT) -> list[CheckResult
         check_binary("git", required=True),
         check_binary("gh", required=True),
         check_gh_auth(),
-        check_claude_runner(),
-        check_codex_runner(),
+        check_claude_runner(settings),
+        check_codex_runner(settings),
         check_port_available(port),
         check_sqlite_writable(settings),
     ]
@@ -54,14 +54,16 @@ def check_binary(name: str, required: bool) -> CheckResult:
     return CheckResult(name, status, f"{need} binary not found on PATH", required=required)
 
 
-def check_claude_runner() -> CheckResult:
-    healthy, message = asyncio.run(ClaudeRunner().check_health())
+def check_claude_runner(settings: Settings | None = None) -> CheckResult:
+    config = (settings or Settings()).runners.claude
+    healthy, message = asyncio.run(ClaudeRunner(config).check_health())
     status = STATUS_PASS if healthy else STATUS_WARN
     return CheckResult("claude", status, message, required=False)
 
 
-def check_codex_runner() -> CheckResult:
-    healthy, message = asyncio.run(CodexRunner().check_health())
+def check_codex_runner(settings: Settings | None = None) -> CheckResult:
+    config = (settings or Settings()).runners.codex
+    healthy, message = asyncio.run(CodexRunner(config).check_health())
     status = STATUS_PASS if healthy else STATUS_WARN
     return CheckResult("codex", status, message, required=False)
 

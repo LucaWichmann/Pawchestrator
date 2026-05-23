@@ -12,6 +12,23 @@ uv run pawchestrator serve
 
 The local backend binds to `127.0.0.1:38472` and exposes `GET /health`.
 
+## Runner configuration
+
+Pawchestrator reads optional runner defaults from `~/.pawchestrator/config.toml`.
+These defaults keep token use low while still letting you raise effort when needed:
+
+```toml
+[runners.claude]
+model = "sonnet"
+effort = "low"
+
+[runners.codex]
+model = "gpt-5.5"
+reasoning_effort = "low"
+```
+
+Set Claude `effort = "medium"` when scout or plan stages need deeper thinking.
+
 ## Tampermonkey userscript
 
 1. Start the local backend:

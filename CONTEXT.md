@@ -170,12 +170,24 @@ MVP 1: GitHub OAuth device flow, PAT support.
 
 ---
 
-## GitHub comment policy
+## GitHub comment and label policy
 
-- One start comment per run (optional in MVP 0).
-- One editable status comment updated at each stage.
-- One final summary comment with PR link.
-- Internal artifacts stay local. Public comments get summaries only.
+**Active from post-MVP0. On by default for all repos.**
+
+**Comment shape (one editable comment per run):**
+- Pawchestrator posts one comment when the run starts and edits it in-place at each stage transition.
+- Comment body is a **static template** with factual data only: run ID, branch, current stage, timestamps, PR URL on completion.
+- **No LLM-generated text in GitHub comments.** Output tokens are significantly more expensive than input tokens; spending them on comment summaries is wasteful. All comment content is produced by Pawchestrator from structured state.
+- One final edit posts the PR URL when the run completes.
+- The comment ID is stored in SQLite (`workflow_runs.github_comment_id`) so subsequent stage transitions can edit it.
+- Internal artifacts stay local. GitHub comments show only factual run state.
+
+**Label strategy:**
+- Apply `pawchestrator:running` when a run starts, replace with stage label (`pawchestrator:scouting`, `pawchestrator:planning`, etc.) as stages progress.
+- On completion: replace with `pawchestrator:pr-ready`. On failure: `pawchestrator:failed`.
+- Only one stage label active at a time.
+- **Auto-create missing labels** on first use with a default color. Never fail a run because a label is missing.
+- Label names are defined in PRD section 9.4.
 
 ---
 
@@ -188,27 +200,70 @@ Example: `paw/issue-42-handler-memoization`
 
 ---
 
-## Non-goals for MVP 0
+## Token efficiency — first-class principle
 
-- No workflow YAML engine
-- No Tampermonkey pairing/security token
-- No human gates (auto-approve everything)
-- No repair loop
-- No desktop app (Tampermonkey only)
-- No Codex API key / billing mode
-- No multi-repo workflows
-- No parallel stages
-- No skill file loading system
-- No org/team features
+Output tokens from LLMs (Claude, Codex) are significantly more expensive than input tokens. Pawchestrator must minimize output token spend:
+
+- **Prompts must instruct agents to be terse.** No verbose narrative in JSON artifacts.
+- **Inter-stage context must be compact.** When passing artifacts as input to the next stage, summarize or compress rather than including raw verbose JSON.
+- **GitHub comments contain zero LLM-generated text.** All comment content is template-driven from structured state data.
+- This principle overrides "richer outputs are better" — useful and cheap beats comprehensive and expensive.
 
 ---
 
-## Open decisions (deferred to MVP 1)
+## Current development phase (post-MVP0)
 
-- Desktop app framework: PyWebView vs Electron+Python sidecar
-- Workflow YAML engine design
-- Tampermonkey pairing token and session security
-- Human gate UI
+MVP0 pipeline is complete and end-to-end verified (snapshot → scout → plan → implement → verify → PR).
+
+**Next sprint targets (confirmed):**
+1. **GitHub comments + labels** — template-driven, no LLM tokens, one editable comment per run, auto-create missing labels
+2. **Repo registry** — `pawchestrator repo add <path>` registers a local clone; browser-triggered runs look up owner/repo in registry instead of falling back to `Path.cwd()`
+3. **Pairing token** — shared secret between backend and userscript; all `/issue/start` and `/runs/*` requests must include `X-Pawchestrator-Token` header
+4. **Prompt quality** — terse prompts that instruct agents to minimize output tokens; compressed inter-stage artifact context
+
+**Deferred until these are solid:**
+- Tauri desktop viewer (MVP1 per PRD)
+- Workflow YAML engine
+- Human gates UI (push + PR approval)
+- Repair loop (max 2 verify retries)
+- Skill file loading
+
+**`Path.cwd()` bug:** When `POST /issue/start` is triggered from Tampermonkey, no `repo_path` is provided. `pipeline.py` falls back to `Path.cwd()`, which is the server's working directory — almost certainly wrong. Repo registry fixes this: the pipeline looks up `owner/repo` in the registry to get the correct local path.
+
+---
+
+## Repo registry
+
+`pawchestrator repo add <path>` reads the git remote of `<path>` to determine `owner/repo`, then stores the mapping in SQLite (`github_repos` table: `owner, repo, local_path`).
+
+When a run starts via browser trigger, the pipeline looks up `(owner, repo)` in the registry to find `local_path`. If no match: run fails immediately with a clear error ("Repo not registered — run `pawchestrator repo add <path>` first").
+
+`pawchestrator doctor` reports how many repos are registered.
+
+---
+
+## Pairing token
+
+**Threat model:** CORS (`allow_origins=["https://github.com"]`) + localhost-only bind already blocks cross-origin requests. The pairing token defends against rogue scripts on other GitHub tabs triggering runs. DH key exchange was considered and rejected — it prevents eavesdropping (no threat on localhost) but cannot authenticate "legitimate userscript" vs "any JS on github.com." Simple token + terminal confirmation is sufficient.
+
+**Flow (one-time per browser install):**
+1. Userscript calls `POST /pair` on first load (unauthenticated, no token yet).
+2. Backend logs `Pairing request from github.com — press Enter to approve (Ctrl+C to deny)` to the terminal.
+3. User presses Enter → backend generates a 32-byte random session token, persists it to `~/.pawchestrator/sessions.json`, returns it in the response.
+4. Userscript stores token via `GM_setValue("pawchestrator_token", token)`.
+5. All subsequent requests include `X-Pawchestrator-Token: {token}`. Backend returns 403 if missing or wrong.
+6. `/health` is exempt from token check (used for offline detection).
+7. If user presses Ctrl+C / denies: backend returns 403, userscript shows "Pairing denied".
+
+**Re-pair:** `pawchestrator sessions clear` revokes all tokens. Userscript detects 403 and re-initiates pairing.
+
+**No secrets in script source.** Token lives in browser's Tampermonkey storage (GM_getValue/GM_setValue), never in `.user.js`.
+
+---
+
+## Open decisions
+
+- Desktop app framework: decision deferred. Python + userscript is the active mode.
 - Configurable stage-to-runner mapping via workflow YAML
 - Skill files format and loading
 - GitHub REST API direct PR creation (replacing `gh` dependency)

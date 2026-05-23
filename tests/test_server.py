@@ -55,8 +55,14 @@ def test_issue_start_returns_run_id_and_schedules_pipeline(
     settings = Settings(app_dir=tmp_path)
     calls = []
 
-    async def fake_run_pipeline(issue_url: str, runtime_settings: Settings, *, run_id: str):
-        calls.append((issue_url, runtime_settings.app_dir, run_id))
+    async def fake_run_pipeline(
+        issue_url: str,
+        runtime_settings: Settings,
+        *,
+        run_id: str,
+        allow_empty_commit: bool = False,
+    ):
+        calls.append((issue_url, runtime_settings.app_dir, run_id, allow_empty_commit))
 
     monkeypatch.setattr("pawchestrator.server.run_pipeline", fake_run_pipeline)
 
@@ -71,7 +77,7 @@ def test_issue_start_returns_run_id_and_schedules_pipeline(
     assert response.status_code == 200
     assert response.json() == {"run_id": run_id}
     assert calls == [
-        ("https://github.com/owner/repo/issues/42", tmp_path, run_id),
+        ("https://github.com/owner/repo/issues/42", tmp_path, run_id, True),
     ]
     payload = state_response.json()
     assert payload["id"] == run_id
@@ -93,7 +99,14 @@ def test_issue_start_background_failure_does_not_raise(
 ) -> None:
     settings = Settings(app_dir=tmp_path)
 
-    async def fake_run_pipeline(issue_url: str, runtime_settings: Settings, *, run_id: str):
+    async def fake_run_pipeline(
+        issue_url: str,
+        runtime_settings: Settings,
+        *,
+        run_id: str,
+        allow_empty_commit: bool = False,
+    ):
+        assert allow_empty_commit is True
         raise RuntimeError("pipeline exploded")
 
     monkeypatch.setattr("pawchestrator.server.run_pipeline", fake_run_pipeline)

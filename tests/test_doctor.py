@@ -1,7 +1,13 @@
 import socket
 from pathlib import Path
 
-from pawchestrator.config import LOCAL_HOST, DEFAULT_PORT
+from pawchestrator.config import (
+    LOCAL_HOST,
+    DEFAULT_PORT,
+    ClaudeRunnerSettings,
+    CodexRunnerSettings,
+    RunnerSettings,
+)
 from pawchestrator.config import Settings
 from pawchestrator.doctor import (
     STATUS_FAIL,
@@ -51,6 +57,8 @@ def test_claude_runner_check_is_optional_warning(
     monkeypatch,
 ) -> None:
     async def fake_check_health(self) -> tuple[bool, str]:
+        assert self.config.model == "sonnet"
+        assert self.config.effort == "low"
         return False, "claude binary not found on PATH"
 
     monkeypatch.setattr(
@@ -58,7 +66,7 @@ def test_claude_runner_check_is_optional_warning(
         fake_check_health,
     )
 
-    result = check_claude_runner()
+    result = check_claude_runner(Settings())
 
     assert result.label == "claude"
     assert result.status == STATUS_WARN
@@ -67,6 +75,8 @@ def test_claude_runner_check_is_optional_warning(
 
 def test_codex_runner_check_is_optional_warning(monkeypatch) -> None:
     async def fake_check_health(self) -> tuple[bool, str]:
+        assert self.config.model == "gpt-5.5"
+        assert self.config.reasoning_effort == "low"
         return False, "codex not found"
 
     monkeypatch.setattr(
@@ -74,7 +84,7 @@ def test_codex_runner_check_is_optional_warning(monkeypatch) -> None:
         fake_check_health,
     )
 
-    result = check_codex_runner()
+    result = check_codex_runner(Settings())
 
     assert result.label == "codex"
     assert result.status == STATUS_WARN
@@ -95,3 +105,39 @@ def test_codex_runner_check_passes_when_healthy(monkeypatch) -> None:
     assert result.label == "codex"
     assert result.status == STATUS_PASS
     assert result.required is False
+
+
+def test_runner_checks_use_configured_settings(monkeypatch) -> None:
+    seen = {}
+
+    async def fake_claude_check_health(self) -> tuple[bool, str]:
+        seen["claude"] = self.config
+        return True, "ok"
+
+    async def fake_codex_check_health(self) -> tuple[bool, str]:
+        seen["codex"] = self.config
+        return True, "ok"
+
+    monkeypatch.setattr(
+        "pawchestrator.doctor.ClaudeRunner.check_health",
+        fake_claude_check_health,
+    )
+    monkeypatch.setattr(
+        "pawchestrator.doctor.CodexRunner.check_health",
+        fake_codex_check_health,
+    )
+
+    settings = Settings(
+        runners=RunnerSettings(
+            claude=ClaudeRunnerSettings(model="opus", effort="medium"),
+            codex=CodexRunnerSettings(model="gpt-5.5-fast", reasoning_effort="medium"),
+        )
+    )
+
+    check_claude_runner(settings)
+    check_codex_runner(settings)
+
+    assert seen["claude"].model == "opus"
+    assert seen["claude"].effort == "medium"
+    assert seen["codex"].model == "gpt-5.5-fast"
+    assert seen["codex"].reasoning_effort == "medium"

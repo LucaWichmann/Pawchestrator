@@ -87,7 +87,12 @@ async def _run_pipeline_background(
     run_id: str,
 ) -> None:
     try:
-        await run_pipeline(issue_url_value, settings, run_id=run_id)
+        await run_pipeline(
+            issue_url_value,
+            settings,
+            run_id=run_id,
+            allow_empty_commit=True,
+        )
     except Exception as error:
         await mark_run_failed(settings, run_id=run_id)
         print(f"[run {run_id}] failed: {error}")

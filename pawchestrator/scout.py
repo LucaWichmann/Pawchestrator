@@ -45,7 +45,7 @@ async def run_scout(
     snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
     local_repo_path = (repo_path or Path.cwd()).resolve()
     stage_id = await start_scout_run(settings, run_id=run_id)
-    active_runner = runner or ClaudeRunner()
+    active_runner = runner or ClaudeRunner(settings.runners.claude)
     log_path = _scout_log_path(settings, run_id)
     artifact_path = _scout_artifact_path(settings, run_id)
 

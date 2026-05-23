@@ -31,7 +31,12 @@ class PrDraftResult:
     draft: dict[str, Any]
 
 
-async def run_pr(run_id: str, settings: Settings) -> PrDraftResult:
+async def run_pr(
+    run_id: str,
+    settings: Settings,
+    *,
+    allow_empty_commit: bool = False,
+) -> PrDraftResult:
     state = await get_run_state(settings, run_id)
     if state is None:
         raise ValueError(f"run not found: {run_id}")
@@ -58,6 +63,11 @@ async def run_pr(run_id: str, settings: Settings) -> PrDraftResult:
         title = f"fix: {issue_title} (#{issue_number})"
         body = build_pr_body(state, plan, verification)
 
+        await _ensure_branch_has_pr_commits(
+            worktree_path,
+            issue_number=issue_number,
+            allow_empty_commit=allow_empty_commit,
+        )
         await _run_git_checked(["push", "-u", "origin", branch], worktree_path)
         pr_url = await _create_or_find_pr(
             title=title,
@@ -180,6 +190,35 @@ async def _create_or_find_pr(
         raise RuntimeError(f"{detail}; failed to retrieve existing PR: {view_detail}")
 
     raise RuntimeError(detail)
+
+
+async def _ensure_branch_has_pr_commits(
+    cwd: Path,
+    *,
+    issue_number: int,
+    allow_empty_commit: bool,
+) -> None:
+    commit_count = (await _run_git_checked(
+        ["rev-list", "--count", f"{DEFAULT_BASE_BRANCH}..HEAD"],
+        cwd,
+    )).strip()
+    if commit_count != "0":
+        return
+
+    if not allow_empty_commit:
+        raise RuntimeError(
+            f"branch has no commits relative to {DEFAULT_BASE_BRANCH}; cannot create PR"
+        )
+
+    await _run_git_checked(
+        [
+            "commit",
+            "--allow-empty",
+            "-m",
+            f"chore(paw): record no-op for issue #{issue_number}",
+        ],
+        cwd,
+    )
 
 
 async def _run_git_checked(args: list[str], cwd: Path) -> str:

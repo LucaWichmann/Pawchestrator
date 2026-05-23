@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import tomllib
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -23,6 +23,35 @@ class BackendSettings(BaseSettings):
     port: int = DEFAULT_PORT
 
 
+class ClaudeRunnerSettings(BaseSettings):
+    """Claude Code runner settings."""
+
+    model_config = SettingsConfigDict(extra="ignore")
+
+    binary: str = "claude"
+    model: str = "sonnet"
+    effort: Literal["low", "medium", "high", "xhigh", "max"] = "low"
+
+
+class CodexRunnerSettings(BaseSettings):
+    """Codex runner settings."""
+
+    model_config = SettingsConfigDict(extra="ignore")
+
+    binary: str = "codex"
+    model: str = "gpt-5.5"
+    reasoning_effort: Literal["low", "medium", "high", "xhigh"] = "low"
+
+
+class RunnerSettings(BaseSettings):
+    """Local agent runner settings."""
+
+    model_config = SettingsConfigDict(extra="ignore")
+
+    claude: ClaudeRunnerSettings = Field(default_factory=ClaudeRunnerSettings)
+    codex: CodexRunnerSettings = Field(default_factory=CodexRunnerSettings)
+
+
 class Settings(BaseSettings):
     """Runtime settings loaded from defaults and optional config.toml."""
 
@@ -30,6 +59,7 @@ class Settings(BaseSettings):
 
     app_dir: Path = Field(default_factory=lambda: Path.home() / APP_DIR_NAME)
     backend: BackendSettings = Field(default_factory=BackendSettings)
+    runners: RunnerSettings = Field(default_factory=RunnerSettings)
 
     @property
     def config_path(self) -> Path:
@@ -51,8 +81,13 @@ def load_settings(config_path: Path | None = None) -> Settings:
     data = _read_toml(resolved_config_path)
     app_data = data.get("app", {})
     backend_data = data.get("backend", {})
+    runners_data = data.get("runners", {})
     app_dir = Path(app_data.get("app_dir", default_app_dir)).expanduser()
-    return Settings(app_dir=app_dir, backend=BackendSettings(**backend_data))
+    return Settings(
+        app_dir=app_dir,
+        backend=BackendSettings(**backend_data),
+        runners=RunnerSettings(**runners_data),
+    )
 
 
 def ensure_app_dir(settings: Settings) -> Path:

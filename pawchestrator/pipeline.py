@@ -32,6 +32,7 @@ async def run_pipeline(
     *,
     run_id: str | None = None,
     repo_path: Path | None = None,
+    allow_empty_commit: bool = False,
     progress: ProgressFn = print,
 ) -> PipelineResult:
     reference = parse_issue_url(issue_url)
@@ -61,7 +62,11 @@ async def run_pipeline(
         return await run_verify(active_run_id, settings)
 
     async def pr_stage() -> PrDraftResult:
-        return await run_pr(active_run_id, settings)
+        return await run_pr(
+            active_run_id,
+            settings,
+            allow_empty_commit=allow_empty_commit,
+        )
 
     pr_url = ""
     try:
