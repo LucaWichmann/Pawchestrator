@@ -14,6 +14,7 @@ DEFAULT_PORT = 38472
 APP_DIR_NAME = ".pawchestrator"
 CONFIG_FILE_NAME = "config.toml"
 DATABASE_FILE_NAME = "database.sqlite"
+SESSIONS_FILE_NAME = "sessions.json"
 
 
 class BackendSettings(BaseSettings):
@@ -117,6 +118,10 @@ class Settings(BaseSettings):
     @property
     def database_path(self) -> Path:
         return self.app_dir / DATABASE_FILE_NAME
+
+    @property
+    def sessions_path(self) -> Path:
+        return self.app_dir / SESSIONS_FILE_NAME
 
 
 def load_settings(config_path: Path | None = None) -> Settings:
