@@ -81,6 +81,60 @@ def test_issue_start_command_runs_pipeline(tmp_path, monkeypatch) -> None:
     assert "Draft PR: https://github.com/owner/repo/pull/99" in result.output
 
 
+def test_repo_add_accepts_credentialed_https_remote(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cli, "load_settings", lambda: Settings(app_dir=tmp_path))
+
+    class Completed:
+        returncode = 0
+        stdout = (
+            "origin https://TOKEN@github.com/owner/repo.git (fetch)\n"
+            "origin https://TOKEN@github.com/owner/repo.git (push)\n"
+        )
+        stderr = ""
+
+    monkeypatch.setattr(cli.subprocess, "run", lambda *args, **kwargs: Completed())
+
+    result = CliRunner().invoke(cli.app, ["repo", "add", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert f"Registered owner/repo -> {tmp_path}" in result.output
+
+
+def test_github_remote_parser_accepts_supported_github_url_forms(tmp_path, monkeypatch) -> None:
+    remotes = [
+        "https://github.com/owner/repo.git",
+        "https://TOKEN@github.com/owner/repo.git",
+        "https://user:TOKEN@github.com/owner/repo.git",
+        "git@github.com:owner/repo.git",
+    ]
+
+    for remote in remotes:
+        class Completed:
+            returncode = 0
+            stdout = f"origin {remote} (fetch)\n"
+            stderr = ""
+
+        monkeypatch.setattr(cli.subprocess, "run", lambda *args, **kwargs: Completed())
+
+        assert cli._github_remote_owner_repo(tmp_path) == ("owner", "repo")
+
+
+def test_github_remote_parser_rejects_non_github_remote(tmp_path, monkeypatch) -> None:
+    class Completed:
+        returncode = 0
+        stdout = "origin https://example.com/owner/repo.git (fetch)\n"
+        stderr = ""
+
+    monkeypatch.setattr(cli.subprocess, "run", lambda *args, **kwargs: Completed())
+
+    try:
+        cli._github_remote_owner_repo(tmp_path)
+    except ValueError as error:
+        assert str(error) == f"{tmp_path} has no github.com remote"
+    else:
+        raise AssertionError("expected non-GitHub remote to fail")
+
+
 def test_sessions_clear_deletes_sessions_file(tmp_path, monkeypatch) -> None:
     settings = Settings(app_dir=tmp_path)
     save_sessions(settings, {"tokens": ["known-token"]})

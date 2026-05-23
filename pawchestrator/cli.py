@@ -34,7 +34,8 @@ app.add_typer(repo_app, name="repo")
 app.add_typer(sessions_app, name="sessions")
 
 GITHUB_REMOTE_RE = re.compile(
-    r"(?:https://github\.com/|git@github\.com:)(?P<owner>[^/\s:]+)/(?P<repo>[^/\s]+?)(?:\.git)?$"
+    r"(?:https://(?:[^@\s/]+@)?github\.com/|git@github\.com:)"
+    r"(?P<owner>[^/\s:]+)/(?P<repo>[^/\s]+?)(?:\.git)?$"
 )
 
 
@@ -161,7 +162,7 @@ def repo_list() -> None:
     registrations = asyncio.run(list_repo_registrations(settings))
     for registration in registrations:
         typer.echo(
-            f"{registration['owner']}/{registration['repo']} → {registration['local_path']}"
+            f"{registration['owner']}/{registration['repo']} -> {registration['local_path']}"
         )
 
 
