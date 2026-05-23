@@ -13,6 +13,14 @@ from pawchestrator.db import utc_now_iso
 
 ISSUE_SNAPSHOT_SCHEMA = "pawchestrator.issue_snapshot.v1"
 GITHUB_API_BASE = "https://api.github.com"
+RUN_STAGE_LABELS = {
+    "snapshot": "Snapshot",
+    "scout": "Scout",
+    "plan": "Plan",
+    "implement": "Implement",
+    "verify": "Verify",
+    "pr": "PR",
+}
 
 
 class GitHubError(RuntimeError):
@@ -86,14 +94,9 @@ class GitHubIssueClient:
         self._transport = transport
 
     async def fetch_snapshot(self, reference: IssueReference) -> dict[str, Any]:
-        headers = {
-            "Authorization": f"Bearer {self._token}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-        }
         async with httpx.AsyncClient(
             base_url=self._api_base,
-            headers=headers,
+            headers=self._headers(),
             transport=self._transport,
         ) as client:
             issue = await self._get_json(
@@ -134,6 +137,53 @@ class GitHubIssueClient:
             "fetched_at": utc_now_iso(),
         }
 
+    async def post_comment(
+        self,
+        owner: str,
+        repo: str,
+        issue_number: int,
+        body: str,
+    ) -> int:
+        async with httpx.AsyncClient(
+            base_url=self._api_base,
+            headers=self._headers(),
+            transport=self._transport,
+        ) as client:
+            response = await client.post(
+                f"/repos/{owner}/{repo}/issues/{issue_number}/comments",
+                json={"body": body},
+            )
+            self._raise_for_status(response)
+            payload = response.json()
+        if not isinstance(payload, dict) or "id" not in payload:
+            raise GitHubError("GitHub comment response did not include an id")
+        return int(payload["id"])
+
+    async def edit_comment(
+        self,
+        owner: str,
+        repo: str,
+        comment_id: int,
+        body: str,
+    ) -> None:
+        async with httpx.AsyncClient(
+            base_url=self._api_base,
+            headers=self._headers(),
+            transport=self._transport,
+        ) as client:
+            response = await client.patch(
+                f"/repos/{owner}/{repo}/issues/comments/{comment_id}",
+                json={"body": body},
+            )
+            self._raise_for_status(response)
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self._token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+
     async def _get_json(self, client: httpx.AsyncClient, url: str) -> dict[str, Any]:
         response = await client.get(url)
         self._raise_for_status(response)
@@ -165,3 +215,70 @@ class GitHubIssueClient:
         except ValueError:
             message = response.text
         raise GitHubError(f"GitHub API error {response.status_code}: {message}")
+
+
+def format_run_comment(run_state: dict[str, Any]) -> str:
+    current_stage = str(run_state.get("current_stage") or "pending")
+    status = str(run_state.get("status") or "pending")
+    started_at = str(run_state.get("created_at") or run_state.get("started_at") or "")
+    updated_at = str(run_state.get("updated_at") or "")
+    pr_url = run_state.get("pr_url")
+    failed_stage = run_state.get("failed_stage") or _failed_stage_from_state(run_state)
+    error = run_state.get("error") or _error_from_state(run_state)
+
+    lines = [
+        "## Pawchestrator run",
+        "",
+        f"- Run ID: `{run_state.get('id') or run_state.get('run_id') or ''}`",
+        f"- Repository: `{run_state.get('owner') or ''}/{run_state.get('repo') or ''}`",
+        f"- Issue: `#{run_state.get('issue_number') or ''}`",
+        f"- Branch: `{run_state.get('branch') or ''}`",
+        f"- Status: `{status}`",
+        f"- Current stage: `{current_stage}`",
+        f"- Started at: `{started_at}`",
+        f"- Updated at: `{updated_at}`",
+    ]
+    if pr_url:
+        lines.append(f"- PR: {pr_url}")
+    if status == "failed" or failed_stage or error:
+        lines.append(f"- Failed stage: `{failed_stage or current_stage}`")
+        if error:
+            lines.append(f"- Error: `{error}`")
+    lines.extend(["", _format_stage_table(run_state)])
+    return "\n".join(lines)
+
+
+def _format_stage_table(run_state: dict[str, Any]) -> str:
+    stages = run_state.get("stages")
+    if not isinstance(stages, list):
+        return ""
+
+    lines = ["| Stage | Status |", "| --- | --- |"]
+    for stage in stages:
+        if not isinstance(stage, dict):
+            continue
+        name = str(stage.get("stage_name") or "")
+        status = str(stage.get("status") or "pending")
+        label = RUN_STAGE_LABELS.get(name, name)
+        lines.append(f"| {label} | `{status}` |")
+    return "\n".join(lines)
+
+
+def _failed_stage_from_state(run_state: dict[str, Any]) -> str | None:
+    stages = run_state.get("stages")
+    if not isinstance(stages, list):
+        return None
+    for stage in stages:
+        if isinstance(stage, dict) and stage.get("status") == "failed":
+            return str(stage.get("stage_name") or "")
+    return None
+
+
+def _error_from_state(run_state: dict[str, Any]) -> str | None:
+    stages = run_state.get("stages")
+    if not isinstance(stages, list):
+        return None
+    for stage in stages:
+        if isinstance(stage, dict) and stage.get("status") == "failed" and stage.get("error"):
+            return str(stage["error"])
+    return None
