@@ -12,6 +12,7 @@ import uvicorn
 from pawchestrator.config import DEFAULT_PORT, LOCAL_HOST, load_settings
 from pawchestrator.doctor import STATUS_FAIL, STATUS_PASS, STATUS_WARN, has_required_failures, run_checks
 from pawchestrator.issues import snapshot_issue
+from pawchestrator.plan import run_plan
 from pawchestrator.scout import run_scout
 
 app = typer.Typer(add_completion=False, help="Local Pawchestrator backend tools.")
@@ -87,6 +88,22 @@ def run_scout_command(run_id: str) -> None:
         raise typer.Exit(code=1) from error
 
     typer.echo(json.dumps(result.report, indent=2, sort_keys=True))
+
+
+@run_app.command("plan")
+def run_plan_command(run_id: str) -> None:
+    """Run the ImplementationPlan stage for an existing scout run."""
+
+    settings = load_settings()
+    try:
+        result = asyncio.run(run_plan(run_id, settings))
+    except Exception as error:
+        typer.secho(f"Plan failed: {error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from error
+
+    typer.echo(result.plan["approach_summary"])
+    for step in result.plan["steps"]:
+        typer.echo(f"{step['order']}. {step['description']}")
 
 
 def _print_result(label: str, status: str, message: str) -> None:
