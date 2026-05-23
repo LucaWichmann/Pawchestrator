@@ -54,6 +54,15 @@ CREATE TABLE IF NOT EXISTS worktrees (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS github_repos (
+  id TEXT PRIMARY KEY,
+  owner TEXT NOT NULL,
+  repo TEXT NOT NULL,
+  local_path TEXT NOT NULL,
+  added_at TEXT NOT NULL,
+  UNIQUE(owner, repo)
+);
 """
 
 
@@ -403,6 +412,67 @@ async def upsert_worktree_record(
             ),
         )
         await db.commit()
+
+
+async def insert_repo_registration(
+    settings: Settings,
+    *,
+    owner: str,
+    repo: str,
+    local_path: Path,
+) -> None:
+    await init_db(settings)
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            INSERT INTO github_repos (id, owner, repo, local_path, added_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(owner, repo) DO UPDATE SET
+              local_path = excluded.local_path,
+              added_at = excluded.added_at
+            """,
+            (str(uuid4()), owner, repo, str(local_path), now),
+        )
+        await db.commit()
+
+
+async def lookup_repo_path(settings: Settings, *, owner: str, repo: str) -> Path | None:
+    await init_db(settings)
+    async with aiosqlite.connect(settings.database_path) as db:
+        cursor = await db.execute(
+            """
+            SELECT local_path
+            FROM github_repos
+            WHERE owner = ? AND repo = ?
+            """,
+            (owner, repo),
+        )
+        row = await cursor.fetchone()
+    return Path(row[0]) if row is not None else None
+
+
+async def list_repo_registrations(settings: Settings) -> list[dict[str, str]]:
+    await init_db(settings)
+    async with aiosqlite.connect(settings.database_path) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT owner, repo, local_path, added_at
+            FROM github_repos
+            ORDER BY owner, repo
+            """
+        )
+        rows = await cursor.fetchall()
+    return [dict(row) for row in rows]
+
+
+async def count_registered_repos(settings: Settings) -> int:
+    await init_db(settings)
+    async with aiosqlite.connect(settings.database_path) as db:
+        cursor = await db.execute("SELECT COUNT(*) FROM github_repos")
+        row = await cursor.fetchone()
+    return int(row[0])
 
 
 async def start_implement_run(settings: Settings, *, run_id: str) -> str:
