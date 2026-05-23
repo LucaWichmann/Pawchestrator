@@ -8,7 +8,12 @@ from typing import Awaitable, Callable
 from uuid import uuid4
 
 from pawchestrator.config import Settings
-from pawchestrator.db import create_pipeline_run, mark_run_completed, mark_run_failed
+from pawchestrator.db import (
+    create_pipeline_run,
+    lookup_repo_path,
+    mark_run_completed,
+    mark_run_failed,
+)
 from pawchestrator.github import parse_issue_url
 from pawchestrator.implement import run_implement
 from pawchestrator.issues import SnapshotResult, snapshot_issue
@@ -36,6 +41,17 @@ async def run_pipeline(
     progress: ProgressFn = print,
 ) -> PipelineResult:
     reference = parse_issue_url(issue_url)
+    resolved_repo_path = repo_path.resolve() if repo_path is not None else None
+    if resolved_repo_path is None:
+        resolved_repo_path = await lookup_repo_path(
+            settings,
+            owner=reference.owner,
+            repo=reference.repo,
+        )
+        if resolved_repo_path is None:
+            raise ValueError("Repo not registered — run `pawchestrator repo add <path>` first")
+        resolved_repo_path = resolved_repo_path.resolve()
+
     active_run_id = run_id or str(uuid4())
     if run_id is None:
         await create_pipeline_run(
@@ -50,13 +66,13 @@ async def run_pipeline(
         return await snapshot_issue(issue_url, settings, run_id=active_run_id)
 
     async def scout_stage() -> ScoutResult:
-        return await run_scout(active_run_id, settings, repo_path=repo_path)
+        return await run_scout(active_run_id, settings, repo_path=resolved_repo_path)
 
     async def plan_stage() -> ImplementationPlanResult:
-        return await run_plan(active_run_id, settings, repo_path=repo_path)
+        return await run_plan(active_run_id, settings, repo_path=resolved_repo_path)
 
     async def implement_stage():
-        return await run_implement(active_run_id, settings, repo_path=repo_path)
+        return await run_implement(active_run_id, settings, repo_path=resolved_repo_path)
 
     async def verify_stage() -> VerificationResult:
         return await run_verify(active_run_id, settings)
