@@ -40,6 +40,18 @@ CREATE TABLE IF NOT EXISTS artifacts (
   file_path TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS worktrees (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL UNIQUE REFERENCES workflow_runs(id),
+  owner TEXT NOT NULL,
+  repo TEXT NOT NULL,
+  issue_number INTEGER NOT NULL,
+  branch TEXT NOT NULL,
+  path TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 """
 
 
@@ -317,6 +329,137 @@ async def fail_plan_run(
             """
             UPDATE workflow_runs
             SET status = 'plan_failed', current_stage = 'plan', updated_at = ?
+            WHERE id = ?
+            """,
+            (now, run_id),
+        )
+        await db.execute(
+            """
+            UPDATE workflow_stages
+            SET status = 'failed', error = ?, completed_at = ?
+            WHERE id = ?
+            """,
+            (error, now, stage_id),
+        )
+        await db.commit()
+
+
+async def upsert_worktree_record(
+    settings: Settings,
+    *,
+    run_id: str,
+    owner: str,
+    repo: str,
+    issue_number: int,
+    branch: str,
+    path: Path,
+) -> None:
+    await init_db(settings)
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            INSERT INTO worktrees (
+              id, run_id, owner, repo, issue_number, branch, path, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(run_id) DO UPDATE SET
+              owner = excluded.owner,
+              repo = excluded.repo,
+              issue_number = excluded.issue_number,
+              branch = excluded.branch,
+              path = excluded.path,
+              updated_at = excluded.updated_at
+            """,
+            (
+                str(uuid4()),
+                run_id,
+                owner,
+                repo,
+                issue_number,
+                branch,
+                str(path),
+                now,
+                now,
+            ),
+        )
+        await db.commit()
+
+
+async def start_implement_run(settings: Settings, *, run_id: str) -> str:
+    await init_db(settings)
+    stage_id = str(uuid4())
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET status = 'implement_running', current_stage = 'implement', updated_at = ?
+            WHERE id = ?
+            """,
+            (now, run_id),
+        )
+        await db.execute(
+            """
+            INSERT INTO workflow_stages (
+              id, run_id, stage_name, status, started_at
+            )
+            VALUES (?, ?, 'implement', 'running', ?)
+            """,
+            (stage_id, run_id, now),
+        )
+        await db.commit()
+    return stage_id
+
+
+async def complete_implement_run(
+    settings: Settings,
+    *,
+    run_id: str,
+    stage_id: str,
+    artifact_path: Path,
+) -> None:
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET status = 'implement_complete', current_stage = 'implement', updated_at = ?
+            WHERE id = ?
+            """,
+            (now, run_id),
+        )
+        await db.execute(
+            """
+            UPDATE workflow_stages
+            SET status = 'complete', completed_at = ?
+            WHERE id = ?
+            """,
+            (now, stage_id),
+        )
+        await db.execute(
+            """
+            INSERT INTO artifacts (id, run_id, artifact_type, file_path, created_at)
+            VALUES (?, ?, 'implementation_report', ?, ?)
+            """,
+            (str(uuid4()), run_id, str(artifact_path), now),
+        )
+        await db.commit()
+
+
+async def fail_implement_run(
+    settings: Settings,
+    *,
+    run_id: str,
+    stage_id: str,
+    error: str,
+) -> None:
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET status = 'implement_failed', current_stage = 'implement', updated_at = ?
             WHERE id = ?
             """,
             (now, run_id),
