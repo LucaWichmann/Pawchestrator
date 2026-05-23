@@ -11,7 +11,7 @@ from pathlib import Path
 
 from pawchestrator.config import DEFAULT_PORT, LOCAL_HOST, Settings
 from pawchestrator.db import init_db
-from pawchestrator.runners import ClaudeRunner
+from pawchestrator.runners import ClaudeRunner, CodexRunner
 
 STATUS_PASS = "pass"
 STATUS_WARN = "warn"
@@ -34,7 +34,7 @@ def run_checks(settings: Settings, port: int = DEFAULT_PORT) -> list[CheckResult
         check_binary("gh", required=True),
         check_gh_auth(),
         check_claude_runner(),
-        check_binary("codex", required=False),
+        check_codex_runner(),
         check_port_available(port),
         check_sqlite_writable(settings),
     ]
@@ -58,6 +58,12 @@ def check_claude_runner() -> CheckResult:
     healthy, message = asyncio.run(ClaudeRunner().check_health())
     status = STATUS_PASS if healthy else STATUS_WARN
     return CheckResult("claude", status, message, required=False)
+
+
+def check_codex_runner() -> CheckResult:
+    healthy, message = asyncio.run(CodexRunner().check_health())
+    status = STATUS_PASS if healthy else STATUS_WARN
+    return CheckResult("codex", status, message, required=False)
 
 
 def check_gh_auth() -> CheckResult:
