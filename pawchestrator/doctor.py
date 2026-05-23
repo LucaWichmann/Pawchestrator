@@ -11,6 +11,7 @@ from pathlib import Path
 
 from pawchestrator.config import DEFAULT_PORT, LOCAL_HOST, Settings
 from pawchestrator.db import init_db
+from pawchestrator.runners import ClaudeRunner
 
 STATUS_PASS = "pass"
 STATUS_WARN = "warn"
@@ -32,7 +33,7 @@ def run_checks(settings: Settings, port: int = DEFAULT_PORT) -> list[CheckResult
         check_binary("git", required=True),
         check_binary("gh", required=True),
         check_gh_auth(),
-        check_binary("claude", required=False),
+        check_claude_runner(),
         check_binary("codex", required=False),
         check_port_available(port),
         check_sqlite_writable(settings),
@@ -51,6 +52,12 @@ def check_binary(name: str, required: bool) -> CheckResult:
     status = STATUS_FAIL if required else STATUS_WARN
     need = "required" if required else "optional"
     return CheckResult(name, status, f"{need} binary not found on PATH", required=required)
+
+
+def check_claude_runner() -> CheckResult:
+    healthy, message = asyncio.run(ClaudeRunner().check_health())
+    status = STATUS_PASS if healthy else STATUS_WARN
+    return CheckResult("claude", status, message, required=False)
 
 
 def check_gh_auth() -> CheckResult:

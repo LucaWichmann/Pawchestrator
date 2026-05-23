@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Annotated
 
 import typer
@@ -11,10 +12,13 @@ import uvicorn
 from pawchestrator.config import DEFAULT_PORT, LOCAL_HOST, load_settings
 from pawchestrator.doctor import STATUS_FAIL, STATUS_PASS, STATUS_WARN, has_required_failures, run_checks
 from pawchestrator.issues import snapshot_issue
+from pawchestrator.scout import run_scout
 
 app = typer.Typer(add_completion=False, help="Local Pawchestrator backend tools.")
 issue_app = typer.Typer(add_completion=False, help="GitHub issue tools.")
+run_app = typer.Typer(add_completion=False, help="Workflow run tools.")
 app.add_typer(issue_app, name="issue")
+app.add_typer(run_app, name="run")
 
 
 @app.command()
@@ -69,6 +73,20 @@ def issue_snapshot(github_issue_url: str) -> None:
     typer.echo(f"Run ID: {result.run_id}")
     typer.echo(f"Snapshot: {result.artifact_path}")
     typer.echo(f"Issue: #{result.issue_number} - {result.title}")
+
+
+@run_app.command("scout")
+def run_scout_command(run_id: str) -> None:
+    """Run the RepoScout stage for an existing issue snapshot run."""
+
+    settings = load_settings()
+    try:
+        result = asyncio.run(run_scout(run_id, settings))
+    except Exception as error:
+        typer.secho(f"Scout failed: {error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from error
+
+    typer.echo(json.dumps(result.report, indent=2, sort_keys=True))
 
 
 def _print_result(label: str, status: str, message: str) -> None:
