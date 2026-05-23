@@ -1,0 +1,181 @@
+"""Scout stage orchestration."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from pawchestrator.config import Settings
+from pawchestrator.db import (
+    complete_scout_run,
+    fail_scout_run,
+    get_run_state,
+    start_scout_run,
+)
+from pawchestrator.runners import ClaudeRunner, Runner, RunnerTask
+
+SCOUT_REPORT_SCHEMA = "pawchestrator.scout_report.v1"
+
+
+@dataclass(frozen=True)
+class ScoutResult:
+    run_id: str
+    artifact_path: Path
+    log_path: Path
+    report: dict[str, Any]
+
+
+async def run_scout(
+    run_id: str,
+    settings: Settings,
+    *,
+    repo_path: Path | None = None,
+    runner: Runner | None = None,
+) -> ScoutResult:
+    state = await get_run_state(settings, run_id)
+    if state is None:
+        raise ValueError(f"run not found: {run_id}")
+
+    snapshot_path = _snapshot_artifact_path(settings, run_id)
+    if not snapshot_path.exists():
+        raise FileNotFoundError(f"issue snapshot not found: {snapshot_path}")
+
+    snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    local_repo_path = (repo_path or Path.cwd()).resolve()
+    stage_id = await start_scout_run(settings, run_id=run_id)
+    active_runner = runner or ClaudeRunner()
+    log_path = _scout_log_path(settings, run_id)
+    artifact_path = _scout_artifact_path(settings, run_id)
+
+    try:
+        healthy, message = await active_runner.check_health()
+        if not healthy:
+            raise RuntimeError(message)
+
+        result = await active_runner.run_task(
+            RunnerTask(
+                prompt=build_scout_prompt(snapshot),
+                cwd=local_repo_path,
+                run_id=run_id,
+                stage_name="scout",
+            )
+        )
+        _write_scout_log(log_path, result.stdout, result.stderr)
+
+        if result.exit_code != 0:
+            detail = result.stderr.strip() or result.stdout.strip() or "Claude runner failed"
+            raise RuntimeError(detail)
+
+        report = normalize_scout_report(result.artifact)
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        artifact_path.write_text(
+            json.dumps(report, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        await complete_scout_run(
+            settings,
+            run_id=run_id,
+            stage_id=stage_id,
+            artifact_path=artifact_path,
+        )
+    except Exception as error:
+        if not log_path.exists():
+            _write_scout_log(log_path, "", str(error))
+        await fail_scout_run(
+            settings,
+            run_id=run_id,
+            stage_id=stage_id,
+            error=str(error),
+        )
+        raise
+
+    return ScoutResult(
+        run_id=run_id,
+        artifact_path=artifact_path,
+        log_path=log_path,
+        report=report,
+    )
+
+
+def build_scout_prompt(snapshot: dict[str, Any]) -> str:
+    comments = snapshot.get("comments") or []
+    rendered_comments = "\n\n".join(_render_comment(comment) for comment in comments)
+    if not rendered_comments:
+        rendered_comments = "(none)"
+
+    return f"""You are scouting a GitHub issue for implementation readiness.
+
+Issue: #{snapshot.get("number")} - {snapshot.get("title", "")}
+Repository: {snapshot.get("owner", "")}/{snapshot.get("repo", "")}
+
+Issue body:
+{snapshot.get("body", "")}
+
+Comments:
+{rendered_comments}
+
+Analyze this issue and return a JSON object matching this schema exactly:
+{{
+  "schema": "pawchestrator.scout_report.v1",
+  "status": "success" | "error",
+  "readiness": "ready" | "needs_info" | "blocked",
+  "risk": "low" | "medium" | "high",
+  "findings": [{{"kind": "string", "text": "string"}}],
+  "risks": [{{"level": "string", "text": "string"}}],
+  "next_recommended_stage": "grill" | "plan" | "implement"
+}}
+
+Use your Read, Glob, Grep tools to explore the repository as needed.
+"""
+
+
+def normalize_scout_report(artifact: dict[str, Any] | None) -> dict[str, Any]:
+    if artifact is None:
+        raise ValueError("Claude did not return a JSON artifact")
+
+    return {
+        "schema": str(artifact.get("schema") or SCOUT_REPORT_SCHEMA),
+        "status": str(artifact.get("status") or "success"),
+        "readiness": str(artifact.get("readiness") or "needs_info"),
+        "risk": str(artifact.get("risk") or "medium"),
+        "findings": _list_value(artifact.get("findings")),
+        "risks": _list_value(artifact.get("risks")),
+        "next_recommended_stage": str(
+            artifact.get("next_recommended_stage") or "grill"
+        ),
+    }
+
+
+def _render_comment(comment: object) -> str:
+    if not isinstance(comment, dict):
+        return str(comment)
+    author = comment.get("author") or "unknown"
+    created_at = comment.get("created_at") or "unknown time"
+    body = comment.get("body") or ""
+    return f"{author} at {created_at}:\n{body}"
+
+
+def _list_value(value: object) -> list[object]:
+    return value if isinstance(value, list) else []
+
+
+def _snapshot_artifact_path(settings: Settings, run_id: str) -> Path:
+    return settings.app_dir / "runs" / run_id / "issue.snapshot.json"
+
+
+def _scout_artifact_path(settings: Settings, run_id: str) -> Path:
+    return settings.app_dir / "runs" / run_id / "scout_report.json"
+
+
+def _scout_log_path(settings: Settings, run_id: str) -> Path:
+    return settings.app_dir / "runs" / run_id / "stdout" / "scout.log"
+
+
+def _write_scout_log(log_path: Path, stdout: str, stderr: str) -> None:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text(
+        f"[stdout]\n{stdout}\n[stderr]\n{stderr}\n",
+        encoding="utf-8",
+    )
