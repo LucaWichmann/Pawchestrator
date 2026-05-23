@@ -6,6 +6,9 @@
 // @match        https://github.com/*/*/issues/*
 // @run-at       document-idle
 // @grant        GM_addStyle
+// @grant        GM_deleteValue
+// @grant        GM_getValue
+// @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
 // @connect      127.0.0.1
 // ==/UserScript==
@@ -17,6 +20,7 @@
   const STATUS_ID = "pawchestrator-status";
   const START_ID = "pawchestrator-start";
   const POLL_INTERVAL_MS = 3000;
+  const TOKEN_KEY = "pawchestrator_token";
   const PAW = "\uD83D\uDC3E";
   const OFFLINE_MESSAGE = "Pawchestrator not running - start with `pawchestrator serve`";
 
@@ -147,7 +151,7 @@
     }
   }
 
-  function requestJson(path, options = {}) {
+  function rawRequestJson(path, options = {}) {
     return new Promise((resolve, reject) => {
       GM_xmlhttpRequest({
         method: options.method || "GET",
@@ -157,7 +161,9 @@
         timeout: 5000,
         onload: (response) => {
           if (response.status < 200 || response.status >= 300) {
-            reject(new Error(`${options.label || "Request"} failed (${response.status})`));
+            const error = new Error(`${options.label || "Request"} failed (${response.status})`);
+            error.status = response.status;
+            reject(error);
             return;
           }
 
@@ -176,6 +182,51 @@
         ontimeout: () => reject(new Error(OFFLINE_MESSAGE)),
       });
     });
+  }
+
+  async function getOrAcquireToken() {
+    const storedToken = await GM_getValue(TOKEN_KEY);
+    if (storedToken) {
+      return storedToken;
+    }
+
+    setStatus("Pairing - approve in terminal...");
+    const response = await rawRequestJson("/pair", {
+      method: "POST",
+      label: "Pairing request",
+    });
+    await GM_setValue(TOKEN_KEY, response.token);
+    return response.token;
+  }
+
+  async function requestJson(path, options = {}) {
+    if (path === "/health" || path === "/pair") {
+      return rawRequestJson(path, options);
+    }
+
+    const token = await getOrAcquireToken();
+    const headers = {
+      ...(options.headers || {}),
+      "X-Pawchestrator-Token": token,
+    };
+
+    try {
+      return await rawRequestJson(path, { ...options, headers });
+    } catch (error) {
+      if (error.status !== 403) {
+        throw error;
+      }
+
+      await GM_deleteValue(TOKEN_KEY);
+      const freshToken = await getOrAcquireToken();
+      return rawRequestJson(path, {
+        ...options,
+        headers: {
+          ...(options.headers || {}),
+          "X-Pawchestrator-Token": freshToken,
+        },
+      });
+    }
   }
 
   async function fetchRun(runId) {
@@ -226,6 +277,7 @@
 
     try {
       const issue = parseIssueReference();
+      await getOrAcquireToken();
       setStatus("[snapshot] starting...");
       const payload = await requestJson("/issue/start", {
         method: "POST",
