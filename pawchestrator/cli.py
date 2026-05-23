@@ -15,6 +15,7 @@ from pawchestrator.doctor import STATUS_FAIL, STATUS_PASS, STATUS_WARN, has_requ
 from pawchestrator.implement import run_implement
 from pawchestrator.issues import snapshot_issue
 from pawchestrator.plan import run_plan
+from pawchestrator.pr import run_pr
 from pawchestrator.scout import run_scout
 from pawchestrator.verify import run_verify
 
@@ -159,6 +160,20 @@ def run_verify_command(run_id: str) -> None:
         marker = "PASS" if exit_code == 0 else "FAIL"
         typer.echo(f"[verify] {name}... exit {exit_code} {marker}")
     typer.echo(f"[verify] {result.report['status'].upper()}")
+
+
+@run_app.command("pr")
+def run_pr_command(run_id: str) -> None:
+    """Create a draft GitHub pull request for a verified run."""
+
+    settings = load_settings()
+    try:
+        result = asyncio.run(run_pr(run_id, settings))
+    except Exception as error:
+        typer.secho(f"PR failed: {error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from error
+
+    typer.echo(result.pr_url)
 
 
 def _print_result(label: str, status: str, message: str) -> None:
