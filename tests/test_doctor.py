@@ -108,6 +108,30 @@ def test_codex_runner_check_passes_when_healthy(monkeypatch) -> None:
     assert result.required is False
 
 
+def test_codex_runner_check_warns_for_explicit_wsl_health_failure(monkeypatch) -> None:
+    async def fake_check_health(self) -> tuple[bool, str]:
+        assert self.config.execution == "wsl"
+        return False, "codex is not runnable in WSL: missing linux package"
+
+    monkeypatch.setattr(
+        "pawchestrator.doctor.CodexRunner.check_health",
+        fake_check_health,
+    )
+
+    result = check_codex_runner(
+        Settings(
+            runners=RunnerSettings(
+                codex=CodexRunnerSettings(execution="wsl"),
+            )
+        )
+    )
+
+    assert result.label == "codex"
+    assert result.status == STATUS_WARN
+    assert "not runnable in WSL" in result.message
+    assert result.required is False
+
+
 def test_wsl_check_warns_when_missing_on_windows(monkeypatch) -> None:
     monkeypatch.setattr("pawchestrator.doctor.sys.platform", "win32")
     monkeypatch.setattr("pawchestrator.doctor.shutil.which", lambda name: None)

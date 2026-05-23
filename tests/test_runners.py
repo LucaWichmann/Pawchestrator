@@ -571,6 +571,8 @@ def test_codex_runner_auto_retries_wsl_for_windows_sandbox_error(
             return FakeProcess(1, b"", b"CreateProcessWithLogonW failed: 1326")
         if "wslpath" in cmd:
             return FakeProcess(0, b"/mnt/c/repo\n", b"")
+        if cmd[0] == wsl_path and "sh" in cmd:
+            return FakeProcess(0, b"/usr/local/bin/codex\ncodex-cli 0.133.0\n", b"")
         if cmd[0] == wsl_path:
             return FakeProcess(0, b"wsl stdout", b"")
         raise AssertionError(f"unexpected command: {cmd}")
@@ -621,8 +623,11 @@ def test_codex_runner_auto_retries_wsl_for_windows_sandbox_error(
         "-c",
         'approval_policy="never"',
     ]
-    assert calls[1] == [wsl_path, "--exec", "wslpath", "-a", str(tmp_path)]
-    assert calls[2] == [
+    assert calls[1] == ["git", "diff", "HEAD"]
+    assert calls[2] == [wsl_path, "--exec", "wslpath", "-a", str(tmp_path)]
+    assert calls[3][:5] == [wsl_path, "--exec", "sh", "-lc", calls[3][4]]
+    assert "codex --version" in calls[3][4]
+    assert calls[4] == [
         wsl_path,
         "--cd",
         "/mnt/c/repo",
@@ -697,6 +702,347 @@ def test_codex_runner_auto_does_not_bypass_when_wsl_unavailable(
     assert result.exit_code == 1
 
 
+def test_codex_runner_auto_retries_wsl_when_successful_run_only_reports_sandbox_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    codex_path = "C:\\bin\\codex.CMD"
+    wsl_path = "C:\\Windows\\System32\\wsl.exe"
+    calls: list[list[str]] = []
+
+    class FakeProcess:
+        def __init__(self, returncode: int, stdout: bytes, stderr: bytes) -> None:
+            self.returncode = returncode
+            self._stdout = stdout
+            self._stderr = stderr
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return self._stdout, self._stderr
+
+    async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
+        calls.append(list(cmd))
+        if cmd[:3] == ("git", "diff", "HEAD"):
+            return FakeProcess(0, b"", b"")
+        if cmd[0] == codex_path:
+            return FakeProcess(
+                0,
+                b"execution error: windows sandbox: spawn setup refresh\n",
+                b"",
+            )
+        if "wslpath" in cmd:
+            return FakeProcess(0, b"/mnt/c/repo\n", b"")
+        if cmd[0] == wsl_path and "sh" in cmd:
+            return FakeProcess(0, b"/usr/local/bin/codex\ncodex-cli 0.133.0\n", b"")
+        if cmd[0] == wsl_path:
+            return FakeProcess(0, b"wsl stdout", b"")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(
+        "pawchestrator.runners.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr("pawchestrator.runners.sys.platform", "win32")
+    monkeypatch.setattr(
+        "pawchestrator.runners.shutil.which",
+        lambda name: codex_path
+        if name == "codex"
+        else wsl_path
+        if name in {"wsl.exe", "wsl"}
+        else None,
+    )
+
+    task = RunnerTask(
+        prompt="implement issue",
+        cwd=tmp_path,
+        run_id="run-456",
+        stage_name="implement",
+    )
+
+    result = asyncio.run(CodexRunner().run_task(task))
+
+    assert calls[0][0] == codex_path
+    assert calls[1] == ["git", "diff", "HEAD"]
+    assert calls[2] == [wsl_path, "--exec", "wslpath", "-a", str(tmp_path)]
+    assert calls[3][:5] == [wsl_path, "--exec", "sh", "-lc", calls[3][4]]
+    assert "codex --version" in calls[3][4]
+    assert calls[4][0] == wsl_path
+    assert all("--dangerously-bypass-approvals-and-sandbox" not in call for call in calls)
+    assert result.exit_code == 0
+    assert result.stdout == "wsl stdout"
+
+
+def test_codex_runner_auto_keeps_successful_sandbox_output_when_diff_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    codex_path = "C:\\bin\\codex.CMD"
+    wsl_path = "C:\\Windows\\System32\\wsl.exe"
+    calls: list[list[str]] = []
+
+    class FakeProcess:
+        def __init__(self, returncode: int, stdout: bytes, stderr: bytes) -> None:
+            self.returncode = returncode
+            self._stdout = stdout
+            self._stderr = stderr
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return self._stdout, self._stderr
+
+    async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
+        calls.append(list(cmd))
+        if cmd[:3] == ("git", "diff", "HEAD"):
+            return FakeProcess(0, b"diff --git a/file.py b/file.py\n", b"")
+        if cmd[0] == codex_path:
+            return FakeProcess(
+                0,
+                b"execution error: windows sandbox: spawn setup refresh\n",
+                b"",
+            )
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(
+        "pawchestrator.runners.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr("pawchestrator.runners.sys.platform", "win32")
+    monkeypatch.setattr(
+        "pawchestrator.runners.shutil.which",
+        lambda name: codex_path
+        if name == "codex"
+        else wsl_path
+        if name in {"wsl.exe", "wsl"}
+        else None,
+    )
+
+    task = RunnerTask(
+        prompt="implement issue",
+        cwd=tmp_path,
+        run_id="run-456",
+        stage_name="implement",
+    )
+
+    result = asyncio.run(CodexRunner().run_task(task))
+
+    assert len(calls) == 2
+    assert calls[0][0] == codex_path
+    assert calls[1] == ["git", "diff", "HEAD"]
+    assert result.exit_code == 0
+    assert "windows sandbox: spawn setup refresh" in result.stdout
+    assert result.diff == "diff --git a/file.py b/file.py\n"
+
+
+def test_codex_runner_auto_keeps_successful_sandbox_output_when_wsl_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    codex_path = "C:\\bin\\codex.CMD"
+    calls: list[list[str]] = []
+
+    class FakeProcess:
+        def __init__(self, returncode: int, stdout: bytes, stderr: bytes) -> None:
+            self.returncode = returncode
+            self._stdout = stdout
+            self._stderr = stderr
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return self._stdout, self._stderr
+
+    async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
+        calls.append(list(cmd))
+        if cmd[:3] == ("git", "diff", "HEAD"):
+            return FakeProcess(0, b"", b"")
+        return FakeProcess(0, b"windows sandbox: spawn setup refresh\n", b"")
+
+    monkeypatch.setattr(
+        "pawchestrator.runners.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr("pawchestrator.runners.sys.platform", "win32")
+    monkeypatch.setattr(
+        "pawchestrator.runners.shutil.which",
+        lambda name: codex_path if name == "codex" else None,
+    )
+
+    task = RunnerTask(
+        prompt="implement issue",
+        cwd=tmp_path,
+        run_id="run-456",
+        stage_name="implement",
+    )
+
+    result = asyncio.run(CodexRunner().run_task(task))
+
+    assert calls[0][0] == codex_path
+    assert calls[1] == ["git", "diff", "HEAD"]
+    assert len(calls) == 2
+    assert result.exit_code == 0
+    assert result.stdout == "windows sandbox: spawn setup refresh\n"
+    assert result.diff == ""
+
+
+def test_codex_runner_auto_keeps_native_result_when_wsl_codex_preflight_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    codex_path = "C:\\bin\\codex.CMD"
+    wsl_path = "C:\\Windows\\System32\\wsl.exe"
+    calls: list[list[str]] = []
+
+    class FakeProcess:
+        def __init__(self, returncode: int, stdout: bytes, stderr: bytes) -> None:
+            self.returncode = returncode
+            self._stdout = stdout
+            self._stderr = stderr
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return self._stdout, self._stderr
+
+    async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
+        calls.append(list(cmd))
+        if cmd[:3] == ("git", "diff", "HEAD"):
+            return FakeProcess(0, b"", b"")
+        if cmd[0] == codex_path:
+            return FakeProcess(0, b"windows sandbox: spawn setup refresh\n", b"")
+        if "wslpath" in cmd:
+            return FakeProcess(0, b"/mnt/c/repo\n", b"")
+        if cmd[0] == wsl_path and "sh" in cmd:
+            return FakeProcess(
+                1,
+                b"/mnt/c/Users/lucam/AppData/Roaming/npm/codex\n",
+                b"Error: Missing optional dependency @openai/codex-linux-x64\n",
+            )
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(
+        "pawchestrator.runners.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr("pawchestrator.runners.sys.platform", "win32")
+    monkeypatch.setattr(
+        "pawchestrator.runners.shutil.which",
+        lambda name: codex_path
+        if name == "codex"
+        else wsl_path
+        if name in {"wsl.exe", "wsl"}
+        else None,
+    )
+
+    task = RunnerTask(
+        prompt="implement issue",
+        cwd=tmp_path,
+        run_id="run-456",
+        stage_name="implement",
+    )
+
+    result = asyncio.run(CodexRunner().run_task(task))
+
+    assert calls[0][0] == codex_path
+    assert calls[1] == ["git", "diff", "HEAD"]
+    assert calls[2] == [wsl_path, "--exec", "wslpath", "-a", str(tmp_path)]
+    assert calls[3][:4] == [wsl_path, "--exec", "sh", "-lc"]
+    assert len(calls) == 4
+    assert result.exit_code == 0
+    assert result.stdout == "windows sandbox: spawn setup refresh\n"
+    assert "WSL Codex fallback unavailable" in result.stderr
+    assert "npm install -g @openai/codex@latest" in result.stderr
+    assert result.diff == ""
+
+
+def test_codex_runner_explicit_wsl_reports_unavailable_codex(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wsl_path = "C:\\Windows\\System32\\wsl.exe"
+    calls: list[list[str]] = []
+
+    class FakeProcess:
+        def __init__(self, returncode: int, stdout: bytes, stderr: bytes) -> None:
+            self.returncode = returncode
+            self._stdout = stdout
+            self._stderr = stderr
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return self._stdout, self._stderr
+
+    async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
+        calls.append(list(cmd))
+        if "wslpath" in cmd:
+            return FakeProcess(0, b"/mnt/c/repo\n", b"")
+        if cmd[0] == wsl_path and "sh" in cmd:
+            return FakeProcess(
+                1,
+                b"/mnt/c/Users/lucam/AppData/Roaming/npm/codex\n",
+                b"Error: Missing optional dependency @openai/codex-linux-x64\n",
+            )
+        if cmd[:3] == ("git", "diff", "HEAD"):
+            return FakeProcess(0, b"", b"")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(
+        "pawchestrator.runners.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr("pawchestrator.runners.sys.platform", "win32")
+    monkeypatch.setattr(
+        "pawchestrator.runners.shutil.which",
+        lambda name: wsl_path if name in {"wsl.exe", "wsl"} else None,
+    )
+
+    task = RunnerTask(
+        prompt="implement issue",
+        cwd=tmp_path,
+        run_id="run-456",
+        stage_name="implement",
+    )
+
+    result = asyncio.run(
+        CodexRunner(CodexRunnerSettings(execution="wsl")).run_task(task)
+    )
+
+    assert calls[0] == [wsl_path, "--exec", "wslpath", "-a", str(tmp_path)]
+    assert calls[1][:4] == [wsl_path, "--exec", "sh", "-lc"]
+    assert calls[2] == ["git", "diff", "HEAD"]
+    assert len(calls) == 3
+    assert result.exit_code == 127
+    assert result.stdout == ""
+    assert "WSL Codex fallback unavailable" in result.stderr
+    assert "npm install -g @openai/codex@latest" in result.stderr
+
+
+def test_codex_runner_wsl_health_checks_version_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wsl_path = "C:\\Windows\\System32\\wsl.exe"
+    calls: list[list[str]] = []
+
+    class FakeProcess:
+        returncode = 1
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return (
+                b"/mnt/c/Users/lucam/AppData/Roaming/npm/codex\n",
+                b"Error: Missing optional dependency @openai/codex-linux-x64\n",
+            )
+
+    async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
+        calls.append(list(cmd))
+        return FakeProcess()
+
+    monkeypatch.setattr(
+        "pawchestrator.runners.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr("pawchestrator.runners.sys.platform", "win32")
+    monkeypatch.setattr(
+        "pawchestrator.runners.shutil.which",
+        lambda name: wsl_path if name in {"wsl.exe", "wsl"} else None,
+    )
+
+    healthy, message = asyncio.run(
+        CodexRunner(CodexRunnerSettings(execution="wsl")).check_health()
+    )
+
+    assert healthy is False
+    assert calls[0][:4] == [wsl_path, "--exec", "sh", "-lc"]
+    assert "codex --version" in calls[0][4]
+    assert "not runnable in WSL" in message
+
+
 def test_codex_runner_uses_explicit_bypass(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -729,10 +1075,14 @@ def test_codex_runner_uses_explicit_bypass(
         stage_name="implement",
     )
 
-    asyncio.run(CodexRunner(CodexRunnerSettings(bypass_sandbox=True)).run_task(task))
+    result = asyncio.run(
+        CodexRunner(CodexRunnerSettings(bypass_sandbox=True)).run_task(task)
+    )
 
+    assert len(calls) == 2
     assert "--dangerously-bypass-approvals-and-sandbox" in calls[0]
     assert "-s" not in calls[0]
+    assert result.exit_code == 0
 
 
 def test_codex_runner_reports_missing_binary_at_run_time(

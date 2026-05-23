@@ -203,7 +203,19 @@ class CodexRunner(Runner):
         config = _effective_codex_config(self.config, self.stage_overrides, task.stage_name)
         codex_path = _resolve_binary(self.config.binary)
         if config.execution == "wsl":
-            return await self._run_task_wsl(task, config)
+            unavailable_reasons: list[str] = []
+            wsl_result = await self._run_task_wsl(
+                task,
+                config,
+                unavailable_reasons=unavailable_reasons,
+            )
+            if wsl_result is not None:
+                return wsl_result
+            return await _codex_wsl_unavailable_result(
+                task,
+                config,
+                unavailable_reasons[0] if unavailable_reasons else None,
+            )
 
         if codex_path is None and config.execution == "auto":
             wsl_result = await self._run_task_wsl(task, config)
@@ -238,18 +250,28 @@ class CodexRunner(Runner):
             task=task,
             prompt_index=2,
         )
+        diff = await _capture_git_diff(task.cwd)
         if (
-            exit_code != 0
-            and not config.bypass_sandbox
+            not config.bypass_sandbox
             and config.execution == "auto"
             and _looks_like_windows_sandbox_error(stdout, stderr)
+            and (exit_code != 0 or not diff.strip())
         ):
-            wsl_result = await self._run_task_wsl(task, config)
+            unavailable_reasons: list[str] = []
+            wsl_result = await self._run_task_wsl(
+                task,
+                config,
+                unavailable_reasons=unavailable_reasons,
+            )
             if wsl_result is not None:
                 return wsl_result
+            stderr = _append_wsl_fallback_unavailable(
+                stderr,
+                config,
+                unavailable_reasons[0] if unavailable_reasons else None,
+            )
 
         await _write_runner_log(task, stdout=stdout, stderr=stderr)
-        diff = await _capture_git_diff(task.cwd)
         return RunnerResult(
             exit_code=exit_code,
             stdout=stdout,
@@ -262,16 +284,37 @@ class CodexRunner(Runner):
         self,
         task: RunnerTask,
         config: CodexRunnerSettings,
+        *,
+        unavailable_reasons: list[str] | None = None,
     ) -> RunnerResult | None:
-        if (
-            not config.wsl_enabled
-            or not sys.platform.startswith("win")
-            or (_resolve_binary("wsl.exe") or _resolve_binary("wsl")) is None
-        ):
+        if not config.wsl_enabled:
+            _record_wsl_unavailable(unavailable_reasons, "WSL execution disabled")
+            return None
+        if not sys.platform.startswith("win"):
+            _record_wsl_unavailable(
+                unavailable_reasons,
+                "WSL execution is only supported on Windows",
+            )
+            return None
+        if (_resolve_binary("wsl.exe") or _resolve_binary("wsl")) is None:
+            _record_wsl_unavailable(unavailable_reasons, "wsl.exe not found")
             return None
         binary = config.wsl_binary or config.binary
         linux_cwd = await _wslpath(task.cwd, distro=config.wsl_distro)
         if linux_cwd is None:
+            _record_wsl_unavailable(
+                unavailable_reasons,
+                f"could not convert worktree path for WSL: {task.cwd}",
+            )
+            return None
+        healthy, message = await _check_wsl_binary(
+            binary,
+            distro=config.wsl_distro,
+            enabled=config.wsl_enabled,
+            label=config.binary,
+        )
+        if not healthy:
+            _record_wsl_unavailable(unavailable_reasons, message)
             return None
         cmd = _codex_command(
             binary,
@@ -493,14 +536,78 @@ async def _check_wsl_binary(
     cmd = [wsl_path]
     if distro:
         cmd.extend(["-d", distro])
-    cmd.extend(["--exec", "sh", "-lc", f"command -v {shlex.quote(binary)}"])
+    quoted_binary = shlex.quote(binary)
+    probe = (
+        f"resolved=$(command -v {quoted_binary}) || exit 127; "
+        'printf "%s\\n" "$resolved"; '
+        f"{quoted_binary} --version"
+    )
+    cmd.extend(["--exec", "sh", "-lc", probe])
     stdout, stderr, exit_code = await _run_process(cmd, cwd=Path.cwd())
     if exit_code != 0:
-        detail = stderr.strip() or stdout.strip() or f"{binary} not found in WSL"
+        detail = _wsl_binary_unavailable_message(binary, stdout, stderr)
         return False, detail
-    resolved = stdout.strip().splitlines()[0]
+    lines = [line.strip() for line in stdout.splitlines() if line.strip()]
+    resolved = lines[0] if lines else binary
+    version = f" ({lines[1]})" if len(lines) > 1 else ""
     prefix = f"found in WSL distro {distro}" if distro else "found in WSL"
-    return True, f"{prefix}: {label} at {resolved}"
+    return True, f"{prefix}: {label} at {resolved}{version}"
+
+
+async def _codex_wsl_unavailable_result(
+    task: RunnerTask,
+    config: CodexRunnerSettings,
+    reason: str | None = None,
+) -> RunnerResult:
+    stderr = _wsl_fallback_unavailable_message(config, reason)
+    await _write_runner_log(task, stdout="", stderr=stderr)
+    diff = await _capture_git_diff(task.cwd)
+    return RunnerResult(
+        exit_code=127,
+        stdout="",
+        stderr=stderr,
+        artifact=None,
+        diff=diff,
+    )
+
+
+def _append_wsl_fallback_unavailable(
+    stderr: str,
+    config: CodexRunnerSettings,
+    reason: str | None = None,
+) -> str:
+    message = _wsl_fallback_unavailable_message(config, reason)
+    if stderr.strip():
+        return f"{stderr.rstrip()}\n{message}\n"
+    return f"{message}\n"
+
+
+def _wsl_fallback_unavailable_message(
+    config: CodexRunnerSettings,
+    reason: str | None = None,
+) -> str:
+    binary = config.wsl_binary or config.binary
+    reason_text = f": {reason}" if reason else ""
+    return (
+        "WSL Codex fallback unavailable: "
+        f"{binary} is not installed or runnable inside WSL{reason_text}. "
+        'Install it with `wsl --exec sh -lc "npm install -g '
+        '@openai/codex@latest && codex --version"` or set '
+        "`[runners.codex] wsl_enabled = false`."
+    )
+
+
+def _wsl_binary_unavailable_message(binary: str, stdout: str, stderr: str) -> str:
+    detail = (stderr.strip() or stdout.strip()).replace("\x00", "")
+    if detail:
+        first_line = detail.splitlines()[0]
+        return f"{binary} is not runnable in WSL: {first_line}"
+    return f"{binary} not found in WSL"
+
+
+def _record_wsl_unavailable(reasons: list[str] | None, reason: str) -> None:
+    if reasons is not None:
+        reasons.append(reason)
 
 
 def _looks_like_windows_sandbox_error(stdout: str, stderr: str) -> bool:

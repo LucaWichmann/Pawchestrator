@@ -40,14 +40,40 @@ bypass_sandbox = false
 Set Claude `effort = "medium"` when scout or plan stages need deeper thinking.
 Scout and plan default to read-only Claude tools. Codex implementation defaults to
 workspace-write sandboxing. On Windows, Codex `execution = "auto"` tries native
-first and may retry through Ubuntu WSL for known Windows sandbox failures. It never
-turns on dangerous bypass automatically. To bypass permissions completely, set
+first and may retry through Ubuntu WSL for known Windows sandbox failures, including
+cases where native Codex reports sandbox setup failures without producing a diff. It
+never turns on dangerous bypass automatically. To bypass permissions completely, set
 `bypass_permissions = true` for Claude or `bypass_sandbox = true` for Codex explicitly.
 Per-stage permission overrides can be set under `[stages.<stage>.claude]` and
 `[stages.<stage>.codex]`.
 When `[app] debug = true`, Pawchestrator prints runner argv plus captured stdout/stderr
 to the console. Prompts are redacted to their character count so issue content does not
 flood the terminal.
+
+### Windows Codex sandbox notes
+
+Native Codex on Windows can fail in background or noninteractive Pawchestrator runs
+when Codex is configured for the elevated Windows sandbox and setup needs administrator
+approval. Symptoms include `windows sandbox: spawn setup refresh` or `os error 740` in
+the run log, followed by no changed files.
+
+Prefer one of these manual fixes:
+
+1. Run Codex once interactively in the repo so its Windows sandbox setup can complete.
+2. In `~/.codex/config.toml`, set `[windows] sandbox = "unelevated"` if elevated
+   sandbox setup is blocked on your machine.
+3. Install Codex inside the Linux WSL distro and set Pawchestrator
+   `[runners.codex] execution = "wsl"`.
+
+   ```powershell
+   wsl --exec sh -lc "npm install -g @openai/codex@latest && codex --version"
+   ```
+
+WSL fallback requires a Linux Codex install. A Windows Codex npm shim visible under
+`/mnt/c/...` is not enough and can fail with missing Linux package errors.
+
+Use `[runners.codex] bypass_sandbox = true` only as an intentional last resort for
+trusted repos. Pawchestrator will not enable it for you.
 
 ## Tampermonkey userscript
 
