@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable
@@ -10,11 +11,20 @@ from uuid import uuid4
 from pawchestrator.config import Settings
 from pawchestrator.db import (
     create_pipeline_run,
+    get_github_comment_id,
+    get_run_state,
+    get_worktree_record,
     lookup_repo_path,
     mark_run_completed,
     mark_run_failed,
+    store_github_comment_id,
 )
-from pawchestrator.github import parse_issue_url
+from pawchestrator.github import (
+    GitHubIssueClient,
+    format_run_comment,
+    get_gh_token,
+    parse_issue_url,
+)
 from pawchestrator.implement import run_implement
 from pawchestrator.issues import SnapshotResult, snapshot_issue
 from pawchestrator.plan import ImplementationPlanResult, run_plan
@@ -23,6 +33,7 @@ from pawchestrator.scout import ScoutResult, run_scout
 from pawchestrator.verify import VerificationResult, run_verify
 
 ProgressFn = Callable[[str], None]
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -62,6 +73,8 @@ async def run_pipeline(
             issue_number=reference.number,
         )
 
+    comment_client = await _post_initial_run_comment(settings, active_run_id)
+
     async def snapshot_stage() -> SnapshotResult:
         return await snapshot_issue(issue_url, settings, run_id=active_run_id)
 
@@ -87,20 +100,28 @@ async def run_pipeline(
     pr_url = ""
     try:
         await _run_stage("snapshot", snapshot_stage, progress)
+        await _edit_run_comment(settings, active_run_id, comment_client)
         scout = await _run_stage("scout", scout_stage, progress)
         _print_done(progress, "scout", f"readiness: {scout.report.get('readiness', 'unknown')}")
+        await _edit_run_comment(settings, active_run_id, comment_client)
         await _run_stage("plan", plan_stage, progress)
+        await _edit_run_comment(settings, active_run_id, comment_client)
         await _run_stage("implement", implement_stage, progress)
+        await _edit_run_comment(settings, active_run_id, comment_client)
         verification = await _run_stage("verify", verify_stage, progress)
         _print_done(progress, "verify", f"status: {verification.report.get('status', 'unknown')}")
+        await _edit_run_comment(settings, active_run_id, comment_client)
         pr = await _run_stage("pr", pr_stage, progress)
         pr_url = pr.pr_url
         _print_done(progress, "pr", pr_url)
+        await _edit_run_comment(settings, active_run_id, comment_client)
     except Exception:
         await mark_run_failed(settings, run_id=active_run_id)
+        await _edit_run_comment(settings, active_run_id, comment_client)
         raise
 
     await mark_run_completed(settings, run_id=active_run_id)
+    await _edit_run_comment(settings, active_run_id, comment_client)
     progress(pr_url)
     return PipelineResult(run_id=active_run_id, pr_url=pr_url)
 
@@ -126,3 +147,62 @@ def _print_done(progress: ProgressFn, stage_name: str, suffix: str | None = None
     if suffix:
         message = f"{message} - {suffix}"
     progress(message)
+
+
+async def _post_initial_run_comment(
+    settings: Settings,
+    run_id: str,
+) -> GitHubIssueClient | None:
+    try:
+        existing_comment_id = await get_github_comment_id(settings, run_id)
+        if existing_comment_id is not None:
+            return GitHubIssueClient(get_gh_token())
+
+        run_state = await _comment_run_state(settings, run_id)
+        if run_state is None:
+            return None
+        client = GitHubIssueClient(get_gh_token())
+        comment_id = await client.post_comment(
+            str(run_state["owner"]),
+            str(run_state["repo"]),
+            int(run_state["issue_number"]),
+            format_run_comment(run_state),
+        )
+        await store_github_comment_id(settings, run_id, comment_id)
+        return client
+    except Exception as error:
+        LOGGER.warning("GitHub run comment post failed for %s: %s", run_id, error)
+        return None
+
+
+async def _edit_run_comment(
+    settings: Settings,
+    run_id: str,
+    client: GitHubIssueClient | None,
+) -> None:
+    try:
+        comment_id = await get_github_comment_id(settings, run_id)
+        if comment_id is None:
+            return
+        run_state = await _comment_run_state(settings, run_id)
+        if run_state is None:
+            return
+        active_client = client or GitHubIssueClient(get_gh_token())
+        await active_client.edit_comment(
+            str(run_state["owner"]),
+            str(run_state["repo"]),
+            comment_id,
+            format_run_comment(run_state),
+        )
+    except Exception as error:
+        LOGGER.warning("GitHub run comment edit failed for %s: %s", run_id, error)
+
+
+async def _comment_run_state(settings: Settings, run_id: str) -> dict[str, object] | None:
+    run_state = await get_run_state(settings, run_id)
+    if run_state is None:
+        return None
+    worktree = await get_worktree_record(settings, run_id=run_id)
+    if worktree is not None:
+        run_state["branch"] = worktree["branch"]
+    return run_state

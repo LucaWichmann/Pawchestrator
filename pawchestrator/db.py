@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -72,6 +73,11 @@ async def init_db(settings: Settings) -> Path:
     ensure_app_dir(settings)
     async with aiosqlite.connect(settings.database_path) as db:
         await db.executescript(SCHEMA_SQL)
+        try:
+            await db.execute("ALTER TABLE workflow_runs ADD COLUMN github_comment_id TEXT")
+        except sqlite3.OperationalError as error:
+            if "duplicate column name" not in str(error).lower():
+                raise
         await db.commit()
     return settings.database_path
 
@@ -450,6 +456,41 @@ async def lookup_repo_path(settings: Settings, *, owner: str, repo: str) -> Path
         )
         row = await cursor.fetchone()
     return Path(row[0]) if row is not None else None
+
+
+async def store_github_comment_id(
+    settings: Settings,
+    run_id: str,
+    comment_id: int,
+) -> None:
+    await init_db(settings)
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET github_comment_id = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (str(comment_id), utc_now_iso(), run_id),
+        )
+        await db.commit()
+
+
+async def get_github_comment_id(settings: Settings, run_id: str) -> int | None:
+    await init_db(settings)
+    async with aiosqlite.connect(settings.database_path) as db:
+        cursor = await db.execute(
+            """
+            SELECT github_comment_id
+            FROM workflow_runs
+            WHERE id = ?
+            """,
+            (run_id,),
+        )
+        row = await cursor.fetchone()
+    if row is None or row[0] is None:
+        return None
+    return int(row[0])
 
 
 async def list_repo_registrations(settings: Settings) -> list[dict[str, str]]:
