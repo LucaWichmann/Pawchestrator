@@ -203,6 +203,22 @@ def test_pair_returns_token_after_terminal_approval(tmp_path: Path, monkeypatch)
     assert token in save_and_load_tokens(settings)
 
 
+def test_pair_allows_missing_origin_after_terminal_approval(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    monkeypatch.setattr("builtins.input", lambda prompt: "")
+
+    with TestClient(create_app(settings)) as client:
+        response = client.post("/pair")
+
+    assert response.status_code == 200
+    token = response.json()["token"]
+    assert len(token) == 64
+    assert token in save_and_load_tokens(settings)
+
+
 def test_pair_returns_403_after_terminal_denial(tmp_path: Path, monkeypatch) -> None:
     settings = Settings(app_dir=tmp_path)
 

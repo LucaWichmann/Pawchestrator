@@ -81,7 +81,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/pair")
     async def pair(request: Request) -> PairResponse:
-        if request.headers.get("origin") != "https://github.com":
+        if not _is_pair_origin_allowed(request.headers.get("origin")):
             raise HTTPException(status_code=403, detail="origin not allowed")
 
         approved = await asyncio.get_running_loop().run_in_executor(
@@ -120,6 +120,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"run_id": run_id}
 
     return app
+
+
+def _is_pair_origin_allowed(origin: str | None) -> bool:
+    return origin in {None, "https://github.com"}
 
 
 def _prompt_pairing() -> bool:
