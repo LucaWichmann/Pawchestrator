@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
 import aiosqlite
 
@@ -49,6 +51,151 @@ async def init_db(settings: Settings) -> Path:
         await db.executescript(SCHEMA_SQL)
         await db.commit()
     return settings.database_path
+
+
+def utc_now_iso() -> str:
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+async def create_snapshot_run(
+    settings: Settings,
+    *,
+    run_id: str,
+    owner: str,
+    repo: str,
+    issue_number: int,
+) -> str:
+    await init_db(settings)
+    stage_id = str(uuid4())
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            INSERT INTO workflow_runs (
+              id, owner, repo, issue_number, status, current_stage, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, 'snapshot_running', 'snapshot', ?, ?)
+            """,
+            (run_id, owner, repo, issue_number, now, now),
+        )
+        await db.execute(
+            """
+            INSERT INTO workflow_stages (
+              id, run_id, stage_name, status, started_at
+            )
+            VALUES (?, ?, 'snapshot', 'running', ?)
+            """,
+            (stage_id, run_id, now),
+        )
+        await db.commit()
+    return stage_id
+
+
+async def complete_snapshot_run(
+    settings: Settings,
+    *,
+    run_id: str,
+    stage_id: str,
+    artifact_path: Path,
+) -> None:
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET status = 'snapshot_complete', current_stage = 'snapshot', updated_at = ?
+            WHERE id = ?
+            """,
+            (now, run_id),
+        )
+        await db.execute(
+            """
+            UPDATE workflow_stages
+            SET status = 'complete', completed_at = ?
+            WHERE id = ?
+            """,
+            (now, stage_id),
+        )
+        await db.execute(
+            """
+            INSERT INTO artifacts (id, run_id, artifact_type, file_path, created_at)
+            VALUES (?, ?, 'issue_snapshot', ?, ?)
+            """,
+            (str(uuid4()), run_id, str(artifact_path), now),
+        )
+        await db.commit()
+
+
+async def fail_snapshot_run(
+    settings: Settings,
+    *,
+    run_id: str,
+    stage_id: str,
+    error: str,
+) -> None:
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET status = 'snapshot_failed', current_stage = 'snapshot', updated_at = ?
+            WHERE id = ?
+            """,
+            (now, run_id),
+        )
+        await db.execute(
+            """
+            UPDATE workflow_stages
+            SET status = 'failed', error = ?, completed_at = ?
+            WHERE id = ?
+            """,
+            (error, now, stage_id),
+        )
+        await db.commit()
+
+
+async def get_run_state(settings: Settings, run_id: str) -> dict[str, object] | None:
+    await init_db(settings)
+    async with aiosqlite.connect(settings.database_path) as db:
+        db.row_factory = aiosqlite.Row
+        run_cursor = await db.execute(
+            """
+            SELECT id, owner, repo, issue_number, status, current_stage, pr_url,
+                   created_at, updated_at
+            FROM workflow_runs
+            WHERE id = ?
+            """,
+            (run_id,),
+        )
+        run = await run_cursor.fetchone()
+        if run is None:
+            return None
+
+        stages_cursor = await db.execute(
+            """
+            SELECT id, run_id, stage_name, status, error, started_at, completed_at
+            FROM workflow_stages
+            WHERE run_id = ?
+            ORDER BY started_at, id
+            """,
+            (run_id,),
+        )
+        artifacts_cursor = await db.execute(
+            """
+            SELECT id, run_id, artifact_type, file_path, created_at
+            FROM artifacts
+            WHERE run_id = ?
+            ORDER BY created_at, id
+            """,
+            (run_id,),
+        )
+        stages = await stages_cursor.fetchall()
+        artifacts = await artifacts_cursor.fetchall()
+
+    payload = dict(run)
+    payload["stages"] = [dict(stage) for stage in stages]
+    payload["artifacts"] = [dict(artifact) for artifact in artifacts]
+    return payload
 
 
 async def list_tables(database_path: Path) -> set[str]:
