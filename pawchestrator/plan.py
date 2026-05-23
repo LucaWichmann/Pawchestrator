@@ -18,6 +18,8 @@ from pawchestrator.runners import ClaudeRunner, Runner, RunnerTask
 
 IMPLEMENTATION_PLAN_SCHEMA = "pawchestrator.implementation_plan.v1"
 VALID_RISKS = {"low", "medium", "high"}
+MAX_PROMPT_FINDINGS = 5
+MAX_PROMPT_RISKS = 5
 
 
 @dataclass(frozen=True)
@@ -110,6 +112,8 @@ async def run_plan(
 
 
 def build_plan_prompt(snapshot: dict[str, Any], scout_report: dict[str, Any]) -> str:
+    prompt_scout_report = _prompt_scout_report(scout_report)
+
     return f"""You are creating an implementation plan for a GitHub issue.
 
 Issue: #{snapshot.get("number")} - {snapshot.get("title", "")}
@@ -119,7 +123,7 @@ IssueSnapshot JSON:
 {json.dumps(snapshot, indent=2, sort_keys=True)}
 
 ScoutReport JSON:
-{json.dumps(scout_report, indent=2, sort_keys=True)}
+{json.dumps(prompt_scout_report, indent=2, sort_keys=True)}
 
 Return a JSON object matching this schema exactly:
 {{
@@ -138,6 +142,7 @@ Return a JSON object matching this schema exactly:
 }}
 
 Use your Read, Glob, Grep tools to explore the codebase before planning.
+Be terse. Return minimal valid JSON. Keep descriptions under 20 words per step.
 """
 
 
@@ -199,6 +204,13 @@ def _normalize_step(step: object, fallback_order: int) -> dict[str, object]:
 
 def _list_value(value: object) -> list[object]:
     return value if isinstance(value, list) else []
+
+
+def _prompt_scout_report(scout_report: dict[str, Any]) -> dict[str, Any]:
+    compressed = dict(scout_report)
+    compressed["findings"] = _list_value(compressed.get("findings"))[:MAX_PROMPT_FINDINGS]
+    compressed["risks"] = _list_value(compressed.get("risks"))[:MAX_PROMPT_RISKS]
+    return compressed
 
 
 def _dedupe_strings(value: object) -> list[str]:
