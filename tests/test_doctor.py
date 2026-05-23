@@ -9,6 +9,7 @@ from pawchestrator.doctor import (
     STATUS_WARN,
     CheckResult,
     check_claude_runner,
+    check_codex_runner,
     check_port_available,
     check_sqlite_writable,
     has_required_failures,
@@ -61,4 +62,36 @@ def test_claude_runner_check_is_optional_warning(
 
     assert result.label == "claude"
     assert result.status == STATUS_WARN
+    assert result.required is False
+
+
+def test_codex_runner_check_is_optional_warning(monkeypatch) -> None:
+    async def fake_check_health(self) -> tuple[bool, str]:
+        return False, "codex not found"
+
+    monkeypatch.setattr(
+        "pawchestrator.doctor.CodexRunner.check_health",
+        fake_check_health,
+    )
+
+    result = check_codex_runner()
+
+    assert result.label == "codex"
+    assert result.status == STATUS_WARN
+    assert result.required is False
+
+
+def test_codex_runner_check_passes_when_healthy(monkeypatch) -> None:
+    async def fake_check_health(self) -> tuple[bool, str]:
+        return True, "found at C:\\bin\\codex.exe (codex 1.0.0)"
+
+    monkeypatch.setattr(
+        "pawchestrator.doctor.CodexRunner.check_health",
+        fake_check_health,
+    )
+
+    result = check_codex_runner()
+
+    assert result.label == "codex"
+    assert result.status == STATUS_PASS
     assert result.required is False
