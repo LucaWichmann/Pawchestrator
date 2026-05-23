@@ -87,6 +87,29 @@ def test_issue_start_returns_run_id_and_schedules_pipeline(
     assert {stage["status"] for stage in payload["stages"]} == {"pending"}
 
 
+def test_issue_start_background_failure_does_not_raise(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+
+    async def fake_run_pipeline(issue_url: str, runtime_settings: Settings, *, run_id: str):
+        raise RuntimeError("pipeline exploded")
+
+    monkeypatch.setattr("pawchestrator.server.run_pipeline", fake_run_pipeline)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.post(
+            "/issue/start",
+            json={"owner": "owner", "repo": "repo", "number": 42},
+        )
+        run_id = response.json()["run_id"]
+        state_response = client.get(f"/runs/{run_id}")
+
+    assert response.status_code == 200
+    assert state_response.json()["status"] == "failed"
+
+
 def test_cors_allows_github_for_issue_start_and_runs(tmp_path: Path) -> None:
     settings = Settings(app_dir=tmp_path)
 

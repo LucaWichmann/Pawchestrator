@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from pawchestrator import __version__
 from pawchestrator.config import LOCAL_HOST, Settings, load_settings
-from pawchestrator.db import get_run_state, init_db
+from pawchestrator.db import get_run_state, init_db, mark_run_failed
 from pawchestrator.pipeline import run_pipeline
 
 
@@ -70,7 +70,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         url = f"https://github.com/{body.owner}/{body.repo}/issues/{body.number}"
         run_id = await _prepare_pipeline_run(url, runtime_settings)
         background_tasks.add_task(
-            run_pipeline,
+            _run_pipeline_background,
             url,
             runtime_settings,
             run_id=run_id,
@@ -78,6 +78,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"run_id": run_id}
 
     return app
+
+
+async def _run_pipeline_background(
+    issue_url_value: str,
+    settings: Settings,
+    *,
+    run_id: str,
+) -> None:
+    try:
+        await run_pipeline(issue_url_value, settings, run_id=run_id)
+    except Exception as error:
+        await mark_run_failed(settings, run_id=run_id)
+        print(f"[run {run_id}] failed: {error}")
 
 
 async def _prepare_pipeline_run(issue_url_value: str, settings: Settings) -> str:
