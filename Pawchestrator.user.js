@@ -6,6 +6,8 @@
 // @match        https://github.com/*/*/issues/*
 // @run-at       document-idle
 // @grant        GM_addStyle
+// @grant        GM_xmlhttpRequest
+// @connect      127.0.0.1
 // ==/UserScript==
 
 (function () {
@@ -16,7 +18,7 @@
   const START_ID = "pawchestrator-start";
   const POLL_INTERVAL_MS = 3000;
   const PAW = "\uD83D\uDC3E";
-  const OFFLINE_MESSAGE = "Pawchestrator not running \u2014 start with `pawchestrator serve`";
+  const OFFLINE_MESSAGE = "Pawchestrator not running - start with `pawchestrator serve`";
 
   let activePoll = null;
 
@@ -145,12 +147,39 @@
     }
   }
 
+  function requestJson(path, options = {}) {
+    return new Promise((resolve, reject) => {
+      GM_xmlhttpRequest({
+        method: options.method || "GET",
+        url: `${API_BASE}${path}`,
+        headers: options.headers || {},
+        data: options.body,
+        timeout: 5000,
+        onload: (response) => {
+          if (response.status < 200 || response.status >= 300) {
+            reject(new Error(`${options.label || "Request"} failed (${response.status})`));
+            return;
+          }
+
+          if (!response.responseText) {
+            resolve(null);
+            return;
+          }
+
+          try {
+            resolve(JSON.parse(response.responseText));
+          } catch (error) {
+            reject(new Error(`${options.label || "Request"} returned invalid JSON: ${error.message}`));
+          }
+        },
+        onerror: () => reject(new Error(OFFLINE_MESSAGE)),
+        ontimeout: () => reject(new Error(OFFLINE_MESSAGE)),
+      });
+    });
+  }
+
   async function fetchRun(runId) {
-    const response = await fetch(`${API_BASE}/runs/${runId}`);
-    if (!response.ok) {
-      throw new Error(`Status request failed (${response.status})`);
-    }
-    return response.json();
+    return requestJson(`/runs/${runId}`, { label: "Status request" });
   }
 
   async function pollOnce(runId) {
@@ -182,10 +211,7 @@
 
   async function checkBackend() {
     try {
-      const response = await fetch(`${API_BASE}/health`);
-      if (!response.ok) {
-        throw new Error(`Health check failed (${response.status})`);
-      }
+      await requestJson("/health", { label: "Health check" });
       setStatus("Ready");
     } catch (_error) {
       setStatus(OFFLINE_MESSAGE);
@@ -201,17 +227,12 @@
     try {
       const issue = parseIssueReference();
       setStatus("[snapshot] starting...");
-      const response = await fetch(`${API_BASE}/issue/start`, {
+      const payload = await requestJson("/issue/start", {
         method: "POST",
+        label: "Start request",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(issue),
       });
-
-      if (!response.ok) {
-        throw new Error(`Start request failed (${response.status})`);
-      }
-
-      const payload = await response.json();
       pollStatus(payload.run_id);
     } catch (error) {
       setStatus(error.message);

@@ -15,15 +15,18 @@ def test_userscript_header_is_tampermonkey_installable() -> None:
     assert "// @match        https://github.com/*/*/issues/*" in source
     assert "// @run-at       document-idle" in source
     assert "// @grant        GM_addStyle" in source
+    assert "// @grant        GM_xmlhttpRequest" in source
+    assert "// @connect      127.0.0.1" in source
 
 
 def test_userscript_uses_local_backend_contract() -> None:
     source = _read_userscript()
 
     assert 'const API_BASE = "http://127.0.0.1:38472"' in source
-    assert 'fetch(`${API_BASE}/health`)' in source
-    assert 'fetch(`${API_BASE}/issue/start`' in source
-    assert 'fetch(`${API_BASE}/runs/${runId}`)' in source
+    assert "GM_xmlhttpRequest" in source
+    assert 'await requestJson("/health", { label: "Health check" })' in source
+    assert 'requestJson("/issue/start"' in source
+    assert "return requestJson(`/runs/${runId}`, { label: \"Status request\" })" in source
     assert "body: JSON.stringify(issue)" in source
 
 
@@ -34,7 +37,8 @@ def test_userscript_renders_issue_action_and_states() -> None:
     assert "Work on this issue" in source
     assert 'data-testid="pawchestrator-work-button"' not in source
     assert 'button.dataset.testid = "pawchestrator-work-button"' in source
-    assert 'const OFFLINE_MESSAGE = "Pawchestrator not running \\u2014 start with `pawchestrator serve`"' in source
+    assert 'const OFFLINE_MESSAGE = "Pawchestrator not running - start with `pawchestrator serve`"' in source
+    assert "\\u2014" not in source
     assert "Draft PR ready:" in source
     assert "failed" in source
 
