@@ -137,6 +137,48 @@ def test_codex_runner_reports_found_binary(monkeypatch: pytest.MonkeyPatch) -> N
     assert message == "found at C:\\bin\\codex.exe (codex 1.2.3)"
 
 
+def test_codex_runner_reports_spawn_failure_as_unhealthy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_create_subprocess_exec(*cmd, **kwargs):
+        raise FileNotFoundError("[WinError 2] The system cannot find the file specified")
+
+    monkeypatch.setattr(
+        "pawchestrator.runners.shutil.which",
+        lambda name: "C:\\bin\\codex.exe" if name == "codex" else None,
+    )
+    monkeypatch.setattr(
+        "pawchestrator.runners.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+
+    healthy, message = asyncio.run(CodexRunner().check_health())
+
+    assert healthy is False
+    assert message == "codex binary not found on PATH"
+
+
+def test_run_process_reports_missing_executable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_create_subprocess_exec(*cmd, **kwargs):
+        raise FileNotFoundError("[WinError 2] The system cannot find the file specified")
+
+    monkeypatch.setattr(
+        "pawchestrator.runners.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+
+    from pawchestrator.runners import _run_process
+
+    stdout, stderr, exit_code = asyncio.run(_run_process(["missing"], tmp_path))
+
+    assert stdout == ""
+    assert "[WinError 2]" in stderr
+    assert exit_code == 127
+
+
 def test_codex_runner_invokes_expected_command_logs_and_captures_diff(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
