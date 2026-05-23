@@ -27,9 +27,11 @@ app = typer.Typer(add_completion=False, help="Local Pawchestrator backend tools.
 issue_app = typer.Typer(add_completion=False, help="GitHub issue tools.")
 run_app = typer.Typer(add_completion=False, help="Workflow run tools.")
 repo_app = typer.Typer(add_completion=False, help="Registered source repository tools.")
+sessions_app = typer.Typer(add_completion=False, help="Pairing session tools.")
 app.add_typer(issue_app, name="issue")
 app.add_typer(run_app, name="run")
 app.add_typer(repo_app, name="repo")
+app.add_typer(sessions_app, name="sessions")
 
 GITHUB_REMOTE_RE = re.compile(
     r"(?:https://github\.com/|git@github\.com:)(?P<owner>[^/\s:]+)/(?P<repo>[^/\s]+?)(?:\.git)?$"
@@ -161,6 +163,19 @@ def repo_list() -> None:
         typer.echo(
             f"{registration['owner']}/{registration['repo']} → {registration['local_path']}"
         )
+
+
+@sessions_app.command("clear")
+def sessions_clear() -> None:
+    """Revoke all browser pairing sessions."""
+
+    settings = load_settings()
+    if settings.sessions_path.exists():
+        settings.sessions_path.unlink()
+        typer.echo(f"Cleared pairing sessions: {settings.sessions_path}")
+        return
+
+    typer.echo("No pairing sessions to clear.")
 
 
 @run_app.command("scout")

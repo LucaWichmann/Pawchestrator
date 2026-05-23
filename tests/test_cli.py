@@ -4,6 +4,7 @@ from pawchestrator import cli
 from pawchestrator.config import DEFAULT_PORT, LOCAL_HOST
 from pawchestrator.config import Settings
 from pawchestrator.doctor import STATUS_PASS, CheckResult
+from pawchestrator.sessions import save_sessions
 
 
 def test_serve_uses_localhost_only(monkeypatch) -> None:
@@ -78,3 +79,15 @@ def test_issue_start_command_runs_pipeline(tmp_path, monkeypatch) -> None:
     assert calls["repo_path"] == tmp_path
     assert "Run ID: run-123" in result.output
     assert "Draft PR: https://github.com/owner/repo/pull/99" in result.output
+
+
+def test_sessions_clear_deletes_sessions_file(tmp_path, monkeypatch) -> None:
+    settings = Settings(app_dir=tmp_path)
+    save_sessions(settings, {"tokens": ["known-token"]})
+    monkeypatch.setattr(cli, "load_settings", lambda: settings)
+
+    result = CliRunner().invoke(cli.app, ["sessions", "clear"])
+
+    assert result.exit_code == 0
+    assert not settings.sessions_path.exists()
+    assert "Cleared pairing sessions" in result.output
