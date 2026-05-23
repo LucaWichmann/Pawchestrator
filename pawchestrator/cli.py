@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -11,6 +12,7 @@ import uvicorn
 
 from pawchestrator.config import DEFAULT_PORT, LOCAL_HOST, load_settings
 from pawchestrator.doctor import STATUS_FAIL, STATUS_PASS, STATUS_WARN, has_required_failures, run_checks
+from pawchestrator.implement import run_implement
 from pawchestrator.issues import snapshot_issue
 from pawchestrator.plan import run_plan
 from pawchestrator.scout import run_scout
@@ -104,6 +106,39 @@ def run_plan_command(run_id: str) -> None:
     typer.echo(result.plan["approach_summary"])
     for step in result.plan["steps"]:
         typer.echo(f"{step['order']}. {step['description']}")
+
+
+@run_app.command("implement")
+def run_implement_command(
+    run_id: str,
+    repo_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--repo-path",
+            exists=True,
+            file_okay=False,
+            dir_okay=True,
+            resolve_path=True,
+            help="Source repository path for git worktree creation.",
+        ),
+    ] = None,
+) -> None:
+    """Run the Implement stage for an existing implementation plan run."""
+
+    settings = load_settings()
+    try:
+        result = asyncio.run(run_implement(run_id, settings, repo_path=repo_path))
+    except Exception as error:
+        typer.secho(f"Implement failed: {error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from error
+
+    files_changed = result.report["files_changed"]
+    typer.echo(f"Worktree: {result.worktree_path}")
+    typer.echo(f"Branch: {result.branch}")
+    typer.echo(f"Changed files: {len(files_changed)}")
+    for file_path in files_changed:
+        typer.echo(f"- {file_path}")
+    typer.echo(f"Report: {result.artifact_path}")
 
 
 def _print_result(label: str, status: str, message: str) -> None:
