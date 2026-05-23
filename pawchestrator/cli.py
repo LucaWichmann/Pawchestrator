@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Annotated
 
 import typer
@@ -9,8 +10,11 @@ import uvicorn
 
 from pawchestrator.config import DEFAULT_PORT, LOCAL_HOST, load_settings
 from pawchestrator.doctor import STATUS_FAIL, STATUS_PASS, STATUS_WARN, has_required_failures, run_checks
+from pawchestrator.issues import snapshot_issue
 
 app = typer.Typer(add_completion=False, help="Local Pawchestrator backend tools.")
+issue_app = typer.Typer(add_completion=False, help="GitHub issue tools.")
+app.add_typer(issue_app, name="issue")
 
 
 @app.command()
@@ -49,6 +53,22 @@ def doctor(
 
     if has_required_failures(results):
         raise typer.Exit(code=1)
+
+
+@issue_app.command("snapshot")
+def issue_snapshot(github_issue_url: str) -> None:
+    """Fetch a GitHub issue and write an IssueSnapshot artifact."""
+
+    settings = load_settings()
+    try:
+        result = asyncio.run(snapshot_issue(github_issue_url, settings))
+    except Exception as error:
+        typer.secho(f"Snapshot failed: {error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from error
+
+    typer.echo(f"Run ID: {result.run_id}")
+    typer.echo(f"Snapshot: {result.artifact_path}")
+    typer.echo(f"Issue: #{result.issue_number} - {result.title}")
 
 
 def _print_result(label: str, status: str, message: str) -> None:
