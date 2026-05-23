@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
+import subprocess
 from pathlib import Path
 from typing import Annotated
 
@@ -11,6 +13,7 @@ import typer
 import uvicorn
 
 from pawchestrator.config import DEFAULT_PORT, LOCAL_HOST, load_settings
+from pawchestrator.db import insert_repo_registration, list_repo_registrations
 from pawchestrator.doctor import STATUS_FAIL, STATUS_PASS, STATUS_WARN, has_required_failures, run_checks
 from pawchestrator.implement import run_implement
 from pawchestrator.issues import snapshot_issue
@@ -23,8 +26,14 @@ from pawchestrator.verify import run_verify
 app = typer.Typer(add_completion=False, help="Local Pawchestrator backend tools.")
 issue_app = typer.Typer(add_completion=False, help="GitHub issue tools.")
 run_app = typer.Typer(add_completion=False, help="Workflow run tools.")
+repo_app = typer.Typer(add_completion=False, help="Registered source repository tools.")
 app.add_typer(issue_app, name="issue")
 app.add_typer(run_app, name="run")
+app.add_typer(repo_app, name="repo")
+
+GITHUB_REMOTE_RE = re.compile(
+    r"(?:https://github\.com/|git@github\.com:)(?P<owner>[^/\s:]+)/(?P<repo>[^/\s]+?)(?:\.git)?$"
+)
 
 
 @app.command()
@@ -107,6 +116,51 @@ def issue_start(
 
     typer.echo(f"Run ID: {result.run_id}")
     typer.echo(f"Draft PR: {result.pr_url}")
+
+
+@repo_app.command("add")
+def repo_add(
+    path: Annotated[
+        Path,
+        typer.Argument(
+            exists=True,
+            file_okay=False,
+            dir_okay=True,
+            resolve_path=True,
+            help="Local git repository path to register.",
+        ),
+    ],
+) -> None:
+    """Register a local GitHub repository clone."""
+
+    try:
+        owner, repo = _github_remote_owner_repo(path)
+    except ValueError as error:
+        typer.secho(str(error), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from error
+
+    settings = load_settings()
+    asyncio.run(
+        insert_repo_registration(
+            settings,
+            owner=owner,
+            repo=repo,
+            local_path=path,
+        )
+    )
+    typer.echo(f"Registered {owner}/{repo} -> {path}")
+
+
+@repo_app.command("list")
+def repo_list() -> None:
+    """List registered local GitHub repository clones."""
+
+    settings = load_settings()
+    registrations = asyncio.run(list_repo_registrations(settings))
+    for registration in registrations:
+        typer.echo(
+            f"{registration['owner']}/{registration['repo']} → {registration['local_path']}"
+        )
 
 
 @run_app.command("scout")
@@ -219,3 +273,31 @@ def _print_result(label: str, status: str, message: str) -> None:
     marker = markers.get(status, status.upper())
     color = colors.get(status)
     typer.secho(f"{marker:<4} {label:<14} {message}", fg=color)
+
+
+def _github_remote_owner_repo(path: Path) -> tuple[str, str]:
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(path), "remote", "-v"],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise ValueError(f"Timed out while reading git remotes for {path}") from error
+
+    if completed.returncode != 0:
+        message = (completed.stderr or completed.stdout).strip()
+        detail = f": {message.splitlines()[0]}" if message else ""
+        raise ValueError(f"{path} is not a git repository{detail}")
+
+    for line in completed.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        match = GITHUB_REMOTE_RE.match(parts[1])
+        if match:
+            return match.group("owner"), match.group("repo")
+
+    raise ValueError(f"{path} has no github.com remote")
