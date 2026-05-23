@@ -12,10 +12,8 @@
   "use strict";
 
   const API_BASE = "http://127.0.0.1:38472";
-  const PANEL_ID = "pawchestrator-panel";
   const STATUS_ID = "pawchestrator-status";
   const START_ID = "pawchestrator-start";
-  const FLOATING_CLASS = "pawchestrator-floating";
   const POLL_INTERVAL_MS = 3000;
   const PAW = "\uD83D\uDC3E";
   const OFFLINE_MESSAGE = "Pawchestrator not running \u2014 start with `pawchestrator serve`";
@@ -23,55 +21,20 @@
   let activePoll = null;
 
   GM_addStyle(`
-    #${PANEL_ID} {
-      border-top: 1px solid var(--borderColor-default, #d0d7de);
-      margin-top: 16px;
-      padding-top: 16px;
-      color: var(--fgColor-default, #24292f);
-      font-size: 12px;
-    }
-
-    #${PANEL_ID}.${FLOATING_CLASS} {
-      background: var(--bgColor-default, #ffffff);
-      border: 1px solid var(--borderColor-default, #d0d7de);
-      border-radius: 6px;
-      bottom: 16px;
-      box-shadow: var(--shadow-floating-small, 0 8px 24px rgba(140, 149, 159, 0.2));
-      margin: 0;
-      padding: 12px;
-      position: fixed;
-      right: 16px;
-      width: min(280px, calc(100vw - 32px));
-      z-index: 99999;
-    }
-
-    #${PANEL_ID} strong {
-      display: block;
-      font-size: 14px;
-      margin-bottom: 8px;
-    }
-
     #${STATUS_ID} {
-      margin-bottom: 8px;
+      align-items: center;
+      color: var(--fgColor-default, #24292f);
+      display: inline-flex;
+      font-size: 12px;
+      line-height: 20px;
+      margin: 0 8px;
       min-height: 18px;
+      max-width: 280px;
       overflow-wrap: anywhere;
     }
 
     #${START_ID} {
-      align-items: center;
-      background-color: var(--button-primary-bgColor-rest, #1f883d);
-      border: 1px solid var(--button-primary-borderColor-rest, rgba(31, 35, 40, 0.15));
-      border-radius: 6px;
-      color: var(--button-primary-fgColor-rest, #ffffff);
-      cursor: pointer;
-      display: inline-flex;
-      font: inherit;
-      font-weight: 600;
-      justify-content: center;
-      line-height: 20px;
-      padding: 5px 12px;
-      text-align: center;
-      width: 100%;
+      white-space: nowrap;
     }
 
     #${START_ID}:disabled {
@@ -79,7 +42,7 @@
       opacity: 0.65;
     }
 
-    #${PANEL_ID} a {
+    #${STATUS_ID} a {
       color: var(--fgColor-accent, #0969da);
     }
   `);
@@ -98,13 +61,29 @@
     return { owner, repo, number: issueNumber };
   }
 
-  function findSidebar() {
-    return document.querySelector('[data-testid="sidebar"]')
-      || document.querySelector('[data-testid="issue-viewer-sidebar"]')
-      || document.querySelector(".Layout-sidebar")
-      || document.querySelector(".discussion-sidebar")
-      || document.querySelector('aside[aria-label*="Issue"]')
-      || document.querySelector('aside[aria-label*="issue"]');
+  function isVisible(element) {
+    const rect = element.getBoundingClientRect();
+    return rect.width > 0
+      && rect.height > 0
+      && window.getComputedStyle(element).visibility !== "hidden";
+  }
+
+  function uniqueElements(elements) {
+    return [...new Set(elements.filter(Boolean))];
+  }
+
+  function findHeaderActions() {
+    const selectors = [
+      '[data-testid="issue-header"] [data-component="PH_Actions"] .HeaderMenu-module__menuActionsContainer__K0Mga',
+      '[data-testid="issue-header"] [data-component="PH_Actions"] [class*="HeaderMenu-module__menuActionsContainer"]',
+      '[data-testid="issue-header"] .HeaderMenu-module__menuActionsContainer__K0Mga',
+      '[data-testid="issue-header"] [class*="HeaderMenu-module__menuActionsContainer"]',
+    ];
+    const candidates = uniqueElements(selectors.flatMap((selector) => {
+      return Array.from(document.querySelectorAll(selector));
+    }));
+
+    return candidates.find(isVisible) || candidates[0] || null;
   }
 
   function setStatus(message) {
@@ -242,48 +221,88 @@
     }
   }
 
-  function createPanel() {
-    const panel = document.createElement("div");
-    panel.id = PANEL_ID;
-
-    const title = document.createElement("strong");
-    title.textContent = `${PAW} Pawchestrator`;
-
-    const status = document.createElement("div");
-    status.id = STATUS_ID;
-    status.textContent = "Checking backend...";
-
+  function createStartButton() {
     const button = document.createElement("button");
     button.id = START_ID;
     button.type = "button";
-    button.textContent = `${PAW} Work on this issue`;
+    button.dataset.component = "Button";
+    button.dataset.testid = "pawchestrator-work-button";
+    button.dataset.loading = "false";
+    button.dataset.noVisuals = "true";
+    button.dataset.size = "medium";
+    button.dataset.variant = "default";
+    button.className = "prc-Button-ButtonBase-9n-Xk";
     button.addEventListener("click", startRun);
 
-    panel.append(title, status, button);
-    return panel;
+    const content = document.createElement("span");
+    content.dataset.component = "buttonContent";
+    content.dataset.align = "center";
+    content.className = "prc-Button-ButtonContent-Iohp5";
+
+    const label = document.createElement("span");
+    label.dataset.component = "text";
+    label.className = "prc-Button-Label-FWkx3";
+    label.textContent = `${PAW} Work on this issue`;
+
+    content.append(label);
+    button.append(content);
+    return button;
   }
 
-  function injectPanel() {
-    const sidebar = findSidebar();
-    const target = sidebar || document.body;
-    if (!target) {
+  function createStatus() {
+    const status = document.createElement("div");
+    status.id = STATUS_ID;
+    status.textContent = "Checking backend...";
+    return status;
+  }
+
+  function findNewIssueHost(actions) {
+    const newIssue = actions.querySelector('a[href$="/issues/new/choose"], a[href*="/issues/new"]');
+    if (!newIssue) {
+      return null;
+    }
+
+    const parent = newIssue.parentElement;
+    if (parent && parent.parentElement === actions) {
+      return parent;
+    }
+    return newIssue;
+  }
+
+  function injectHeaderAction() {
+    const actions = findHeaderActions();
+    if (!actions) {
       return;
     }
 
-    const panel = document.getElementById(PANEL_ID) || createPanel();
-    panel.classList.toggle(FLOATING_CLASS, !sidebar);
+    const existingButton = document.getElementById(START_ID);
+    const existingStatus = document.getElementById(STATUS_ID);
+    const button = existingButton || createStartButton();
+    const status = existingStatus || createStatus();
+    const newIssueHost = findNewIssueHost(actions);
+    let changed = !existingButton || !existingStatus;
 
-    if (panel.parentElement !== target) {
-      target.append(panel);
+    if (button.parentElement !== actions) {
+      actions.insertBefore(button, newIssueHost);
+      changed = true;
+    }
+    if (status.parentElement !== actions || status.previousElementSibling !== button) {
+      actions.insertBefore(status, newIssueHost);
+      changed = true;
     }
 
-    checkBackend();
+    button.hidden = false;
+    status.hidden = false;
+
+    if (changed) {
+      checkBackend();
+    }
   }
 
-  injectPanel();
+  injectHeaderAction();
 
   const observer = new MutationObserver(() => {
-    injectPanel();
+    injectHeaderAction();
   });
   observer.observe(document.documentElement, { childList: true, subtree: true });
 })();
