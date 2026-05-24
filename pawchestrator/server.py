@@ -13,9 +13,16 @@ from pydantic import BaseModel, Field
 
 from pawchestrator import __version__
 from pawchestrator.config import LOCAL_HOST, Settings, load_settings
-from pawchestrator.db import get_run_state, init_db, mark_run_failed
+from pawchestrator.db import (
+    get_latest_run_by_issue,
+    get_run_state,
+    init_db,
+    is_repo_registered,
+    mark_run_failed,
+)
 from pawchestrator.grill import run_grill
 from pawchestrator.pipeline import run_pipeline
+from pawchestrator.runners import get_runner_health
 from pawchestrator.sessions import (
     _pair_lock,
     generate_token,
@@ -110,6 +117,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if state is None:
             raise HTTPException(status_code=404, detail="run not found")
         return state
+
+    @app.get("/issue/{owner}/{repo}/{number}/status")
+    async def issue_status(owner: str, repo: str, number: int) -> dict[str, object]:
+        repo_registered, runners, pipeline, grill = await asyncio.gather(
+            is_repo_registered(runtime_settings, owner=owner, repo=repo),
+            get_runner_health(runtime_settings),
+            get_latest_run_by_issue(
+                runtime_settings,
+                owner,
+                repo,
+                number,
+                "pipeline",
+            ),
+            get_latest_run_by_issue(
+                runtime_settings,
+                owner,
+                repo,
+                number,
+                "grill",
+            ),
+        )
+        return {
+            "repo_registered": repo_registered,
+            "runners": runners,
+            "pipeline": pipeline,
+            "grill": grill,
+        }
 
     @app.post("/issue/start")
     async def issue_start(
