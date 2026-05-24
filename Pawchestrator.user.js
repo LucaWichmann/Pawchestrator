@@ -23,14 +23,34 @@
   const POLL_INTERVAL_MS = 3000;
   const REINJECT_DEBOUNCE_MS = 100;
   const TOKEN_KEY = "pawchestrator_token";
+  const PIPELINE_STAGES = ["snapshot", "scout", "plan", "implement", "verify", "pr"];
   const PAW = "\uD83D\uDC3E";
   const FIRE = "\uD83D\uDD25";
+  const WARNING = "\u26A0";
   const OFFLINE_MESSAGE = "Pawchestrator not running \u2014 start with `pawchestrator serve`";
   const RUN_DONE = new Set(["completed", "failed", "grill_complete", "grill_failed"]);
+  const PIPELINE_ACTIVE = new Set([
+    "snapshot_running",
+    "snapshot_complete",
+    "scout_running",
+    "scout_complete",
+    "plan_running",
+    "plan_complete",
+    "implement_running",
+    "implement_complete",
+    "verify_running",
+    "verify_complete",
+    "verify_skipped",
+    "pr_running",
+    "pr_complete",
+    "completed",
+  ]);
+  const STAGE_DONE = new Set(["complete", "completed", "skipped"]);
 
   let activePoll = null;
   let activePathname = window.location.pathname;
   let panelExpandedByUser = null;
+  let lastPipelineExpansionKey = null;
   let reinjectTimer = null;
 
   GM_addStyle(`
@@ -116,6 +136,115 @@
     #${PANEL_ID} .pawchestrator-run-line {
       color: var(--fgColor-muted, #59636e);
       margin-top: 8px;
+    }
+
+    #${PANEL_ID} .pawchestrator-pipeline {
+      border-top: 1px solid var(--borderColor-muted, #d8dee4);
+      margin-top: 10px;
+      padding-top: 10px;
+    }
+
+    #${PANEL_ID} .pawchestrator-pipeline-title {
+      color: var(--fgColor-muted, #59636e);
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+
+    #${PANEL_ID} .pawchestrator-timeline {
+      align-items: flex-start;
+      display: grid;
+      gap: 8px;
+      grid-template-columns: repeat(6, minmax(72px, 1fr));
+      overflow-x: auto;
+      padding-bottom: 2px;
+    }
+
+    #${PANEL_ID} .pawchestrator-step {
+      color: var(--fgColor-muted, #59636e);
+      min-width: 72px;
+      position: relative;
+    }
+
+    #${PANEL_ID} .pawchestrator-step:not(:last-child)::after {
+      background: var(--borderColor-muted, #d8dee4);
+      content: "";
+      height: 1px;
+      left: 23px;
+      position: absolute;
+      right: -9px;
+      top: 8px;
+    }
+
+    #${PANEL_ID} .pawchestrator-step[data-active="true"] {
+      color: var(--fgColor-default, #24292f);
+      font-weight: 600;
+    }
+
+    #${PANEL_ID} .pawchestrator-step-label {
+      display: block;
+      font-size: 12px;
+      line-height: 16px;
+      margin-top: 4px;
+      overflow-wrap: anywhere;
+    }
+
+    #${PANEL_ID} .pawchestrator-step-indicator {
+      align-items: center;
+      background: var(--bgColor-default, #ffffff);
+      border: 1px solid var(--borderColor-muted, #d8dee4);
+      border-radius: 50%;
+      display: inline-flex;
+      font-size: 11px;
+      height: 18px;
+      justify-content: center;
+      position: relative;
+      width: 18px;
+      z-index: 1;
+    }
+
+    #${PANEL_ID} .pawchestrator-step[data-status="pending"] .pawchestrator-step-indicator {
+      color: var(--fgColor-muted, #59636e);
+    }
+
+    #${PANEL_ID} .pawchestrator-step[data-status="running"] .pawchestrator-step-indicator {
+      animation: pawchestrator-spin 0.8s linear infinite;
+      border-color: var(--fgColor-accent, #0969da);
+      border-right-color: transparent;
+      color: transparent;
+    }
+
+    #${PANEL_ID} .pawchestrator-step[data-status="done"] .pawchestrator-step-indicator {
+      background: var(--bgColor-success-emphasis, #1a7f37);
+      border-color: var(--bgColor-success-emphasis, #1a7f37);
+      color: var(--fgColor-onEmphasis, #ffffff);
+    }
+
+    #${PANEL_ID} .pawchestrator-step[data-status="failed"] .pawchestrator-step-indicator {
+      background: var(--bgColor-danger-emphasis, #cf222e);
+      border-color: var(--bgColor-danger-emphasis, #cf222e);
+      color: var(--fgColor-onEmphasis, #ffffff);
+    }
+
+    #${PANEL_ID} .pawchestrator-warnings {
+      margin-top: 10px;
+    }
+
+    #${PANEL_ID} .pawchestrator-warnings summary {
+      color: var(--fgColor-attention, #9a6700);
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    #${PANEL_ID} .pawchestrator-warnings-list {
+      color: var(--fgColor-muted, #59636e);
+      margin: 6px 0 0;
+      padding-left: 18px;
+    }
+
+    @keyframes pawchestrator-spin {
+      to {
+        transform: rotate(360deg);
+      }
     }
 
     #${PANEL_ID} a {
@@ -221,6 +350,25 @@
     return Boolean(status && (status.pipeline || status.grill));
   }
 
+  function isPipelineVisible(pipeline) {
+    return Boolean(pipeline && (PIPELINE_ACTIVE.has(pipeline.status) || pipeline.status === "completed" || pipeline.status === "failed"));
+  }
+
+  function maybeAutoExpandForPipeline(status) {
+    const pipeline = status && status.pipeline;
+    if (!pipeline) {
+      lastPipelineExpansionKey = null;
+      return;
+    }
+
+    const key = `${pipeline.run_id || ""}:${pipeline.status || ""}:${pipeline.current_stage || ""}`;
+    const shouldExpand = isPipelineVisible(pipeline) && key !== lastPipelineExpansionKey;
+    lastPipelineExpansionKey = key;
+    if (shouldExpand) {
+      setPanelExpanded(true);
+    }
+  }
+
   function currentRun(status) {
     if (!status) {
       return null;
@@ -304,6 +452,151 @@
     parent.append(item);
   }
 
+  function stageName(stage) {
+    return String(stage?.stage_name || stage?.name || "");
+  }
+
+  function stageStatus(stage) {
+    return String(stage?.status || "pending").replace(/^[^_]+_/, "");
+  }
+
+  function normalizeStepStatus(stage, isAfterActive) {
+    if (isAfterActive || !stage) {
+      return "pending";
+    }
+
+    const status = stageStatus(stage);
+    if (status === "running") {
+      return "running";
+    }
+    if (status === "failed") {
+      return "failed";
+    }
+    if (STAGE_DONE.has(status)) {
+      return "done";
+    }
+    return "pending";
+  }
+
+  function collapseStages(stages) {
+    const rows = Array.isArray(stages) ? stages : [];
+    const byName = new Map();
+    PIPELINE_STAGES.forEach((name) => byName.set(name, []));
+    rows.forEach((stage) => {
+      const name = stageName(stage);
+      if (byName.has(name)) {
+        byName.get(name).push(stage);
+      }
+    });
+
+    const repairCount = Math.max(0, (byName.get("implement") || []).length - 1);
+    const failedVerifyCount = (byName.get("verify") || [])
+      .filter((stage) => stageStatus(stage) === "failed")
+      .length;
+    const repairTotal = Math.max(repairCount, failedVerifyCount);
+
+    return PIPELINE_STAGES.map((name) => {
+      const matching = byName.get(name) || [];
+      const stage = matching[matching.length - 1] || { stage_name: name, status: "pending" };
+      const label = name === "implement" && repairCount > 0
+        ? `${name} (repair ${repairCount}/${repairTotal || repairCount})`
+        : name;
+      return { name, label, stage };
+    });
+  }
+
+  function activeStageIndex(pipeline, steps) {
+    const failedIndex = steps.findIndex((step) => stageStatus(step.stage) === "failed");
+    if (failedIndex >= 0) {
+      return failedIndex;
+    }
+
+    const current = String(pipeline.current_stage || "");
+    const currentIndex = steps.findIndex((step) => step.name === current);
+    if (currentIndex >= 0) {
+      return currentIndex;
+    }
+
+    const runningIndex = steps.findIndex((step) => stageStatus(step.stage) === "running");
+    if (runningIndex >= 0) {
+      return runningIndex;
+    }
+
+    if (pipeline.status === "completed") {
+      return PIPELINE_STAGES.length - 1;
+    }
+
+    return -1;
+  }
+
+  function renderPipeline(parent, pipeline) {
+    if (!pipeline) {
+      return;
+    }
+
+    const section = document.createElement("section");
+    section.className = "pawchestrator-pipeline";
+
+    const title = document.createElement("div");
+    title.className = "pawchestrator-pipeline-title";
+    title.textContent = "Pipeline";
+    if (pipeline.status === "completed" && pipeline.pr_url) {
+      title.append(document.createTextNode(" \u00B7 "));
+      const link = document.createElement("a");
+      link.href = pipeline.pr_url;
+      link.textContent = "PR";
+      title.append(link);
+    }
+    section.append(title);
+
+    const steps = collapseStages(pipeline.stages);
+    const activeIndex = activeStageIndex(pipeline, steps);
+    const timeline = document.createElement("div");
+    timeline.className = "pawchestrator-timeline";
+    steps.forEach((step, index) => {
+      const status = normalizeStepStatus(step.stage, activeIndex >= 0 && index > activeIndex);
+      const item = document.createElement("div");
+      item.className = "pawchestrator-step";
+      item.dataset.status = status;
+      item.dataset.active = String(index === activeIndex && pipeline.status !== "completed");
+
+      const indicator = document.createElement("span");
+      indicator.className = "pawchestrator-step-indicator";
+      indicator.textContent = status === "done" ? "\u2713" : status === "failed" ? "\u00D7" : "\u2022";
+
+      const label = document.createElement("span");
+      label.className = "pawchestrator-step-label";
+      label.textContent = step.label;
+
+      item.append(indicator, label);
+      timeline.append(item);
+    });
+    section.append(timeline);
+
+    const warnings = Array.isArray(pipeline.warnings) ? pipeline.warnings : [];
+    if (warnings.length > 0) {
+      const details = document.createElement("details");
+      details.className = "pawchestrator-warnings";
+      const summary = document.createElement("summary");
+      summary.textContent = `${WARNING} Warnings`;
+      details.append(summary);
+
+      const list = document.createElement("ul");
+      list.className = "pawchestrator-warnings-list";
+      warnings.forEach((warning) => {
+        const item = document.createElement("li");
+        const stage = warning.stage_name ? `[${warning.stage_name}] ` : "";
+        const code = warning.code ? `${warning.code}: ` : "";
+        item.textContent = `${stage}${code}${warning.message || "Warning"}`;
+        list.append(item);
+      });
+      details.append(list);
+      section.append(details);
+    }
+
+    parent.append(section);
+  }
+
   function renderStatus(status) {
     const panel = document.getElementById(PANEL_ID);
     if (!panel) {
@@ -316,6 +609,7 @@
     if (panelExpandedByUser === null) {
       setPanelExpanded(shouldAutoExpand(status));
     }
+    maybeAutoExpandForPipeline(status);
 
     const body = panel.querySelector(".pawchestrator-panel-body");
     if (!body) {
@@ -335,7 +629,7 @@
       const line = document.createElement("div");
       line.className = "pawchestrator-run-line";
       line.textContent = `${run.workflow_type || "pipeline"}: ${summarizeRun(run)}`;
-      if (run.pr_url) {
+      if (run.status === "completed" && run.pr_url) {
         line.append(document.createTextNode(" "));
         const link = document.createElement("a");
         link.href = run.pr_url;
@@ -344,6 +638,8 @@
       }
       body.append(line);
     }
+
+    renderPipeline(body, status.pipeline);
   }
 
   function renderOffline() {
@@ -442,15 +738,15 @@
     }
   }
 
-  async function fetchIssueStatus() {
-    const issue = parseIssueReference();
+  async function fetchIssueStatus(issue = parseIssueReference()) {
     return requestJson(`/issue/${issue.owner}/${issue.repo}/${issue.number}/status`, {
       label: "Issue status request",
     });
   }
 
   async function pollIssueStatusOnce() {
-    const status = await fetchIssueStatus();
+    const issue = parseIssueReference();
+    const status = await fetchIssueStatus(issue);
     renderStatus(status);
     const run = currentRun(status);
     const running = run && !RUN_DONE.has(run.status);
@@ -608,6 +904,7 @@
         element.remove();
       }
     });
+    lastPipelineExpansionKey = null;
     stopIssueStatusPolling();
   }
 
@@ -667,6 +964,7 @@
     if (pathnameChanged) {
       activePathname = window.location.pathname;
       panelExpandedByUser = null;
+      lastPipelineExpansionKey = null;
       stopIssueStatusPolling();
     }
 
