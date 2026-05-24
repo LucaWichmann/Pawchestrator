@@ -7,7 +7,8 @@ import aiosqlite
 from typer.testing import CliRunner
 
 from pawchestrator import cli
-from pawchestrator.config import Settings
+from pawchestrator import grill as grill_module
+from pawchestrator.config import ClaudeRunnerSettings, Settings, StageSettings
 from pawchestrator.db import init_db
 from pawchestrator.grill import (
     GrillReport,
@@ -15,7 +16,15 @@ from pawchestrator.grill import (
     build_grill_prompt,
     run_grill,
 )
-from pawchestrator.runners import Runner, RunnerResult, RunnerTask
+from pawchestrator.runners import (
+    ClaudeRunner,
+    CodexRunner,
+    Runner,
+    RunnerResult,
+    RunnerTask,
+    _effective_claude_config,
+    resolve_runner,
+)
 
 
 class FakeRunner(Runner):
@@ -186,6 +195,88 @@ def test_run_grill_degrades_without_registered_repo(tmp_path: Path) -> None:
     assert result.report.unanswerable_questions
     assert fake_client.comments
     assert fake_client.added_labels == ["pawchestrator:needs-info"]
+
+
+def test_build_report_payload_resolves_grill_runner(
+    tmp_path: Path, monkeypatch
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    fake_runner = FakeRunner()
+    calls: dict[str, object] = {}
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+
+    def fake_resolve_runner(
+        resolved_settings: Settings, stage_name: str, default: str
+    ) -> Runner:
+        calls["settings"] = resolved_settings
+        calls["stage_name"] = stage_name
+        calls["default"] = default
+        return fake_runner
+
+    monkeypatch.setattr(grill_module, "resolve_runner", fake_resolve_runner)
+
+    payload = asyncio.run(
+        grill_module._build_report_payload(
+            "run-123",
+            settings,
+            {
+                "owner": "owner",
+                "repo": "repo",
+                "number": 42,
+                "title": "Add grill",
+                "body": "Issue body",
+            },
+            local_repo_path=repo_path,
+            runner=None,
+            log_path=tmp_path / "grill.log",
+        )
+    )
+
+    assert calls == {
+        "settings": settings,
+        "stage_name": "grill",
+        "default": "claude",
+    }
+    assert fake_runner.task is not None
+    assert fake_runner.task.stage_name == "grill"
+    assert payload["schema"] == "pawchestrator.grill_report.v1"
+
+
+def test_grill_claude_config_forces_read_only_tools() -> None:
+    config = ClaudeRunnerSettings(
+        allowed_tools=["Read", "Write", "Bash"],
+        bypass_permissions=True,
+    )
+    effective = _effective_claude_config(
+        config,
+        {
+            "grill": StageSettings(
+                claude={
+                    "allowed_tools": ["Read", "Write"],
+                    "bypass_permissions": True,
+                }
+            )
+        },
+        "grill",
+    )
+
+    assert effective.allowed_tools == ["Read", "Glob", "Grep"]
+    assert effective.bypass_permissions is False
+
+
+def test_grill_defaults_to_claude_runner() -> None:
+    runner = resolve_runner(Settings(), "grill", "claude")
+
+    assert isinstance(runner, ClaudeRunner)
+
+
+def test_grill_stage_can_route_to_codex_runner() -> None:
+    settings = Settings(stages={"grill": StageSettings(runner="codex")})
+
+    runner = resolve_runner(settings, "grill", "claude")
+
+    assert isinstance(runner, CodexRunner)
 
 
 def test_issue_grill_command_prints_outcome(tmp_path: Path, monkeypatch) -> None:
