@@ -14,6 +14,7 @@ from pawchestrator.doctor import (
     STATUS_PASS,
     STATUS_WARN,
     CheckResult,
+    check_backend_routes,
     check_claude_runner,
     check_codex_runner,
     check_port_available,
@@ -21,6 +22,7 @@ from pawchestrator.doctor import (
     check_wsl,
     has_required_failures,
 )
+from pawchestrator.sessions import save_sessions
 
 
 def test_sqlite_check_initializes_database(tmp_path: Path) -> None:
@@ -48,6 +50,67 @@ def test_port_check_fails_for_occupied_port() -> None:
         result = check_port_available(port)
 
     assert result.status == STATUS_FAIL
+
+
+def test_backend_route_check_passes_when_live_app_exposes_grill(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    save_sessions(settings, {"tokens": ["known-token"]})
+
+    class Response:
+        status_code = 200
+
+        @staticmethod
+        def json() -> dict[str, object]:
+            return {"paths": {"/issue/start": {}, "/issue/grill": {}}}
+
+    def fake_get(url, *, headers, timeout):
+        assert url == f"http://{LOCAL_HOST}:12345/openapi.json"
+        assert headers == {"X-Pawchestrator-Token": "known-token"}
+        assert timeout == 2.0
+        return Response()
+
+    monkeypatch.setattr("pawchestrator.doctor.httpx.get", fake_get)
+
+    result = check_backend_routes(settings, 12345)
+
+    assert result.status == STATUS_PASS
+    assert result.required is True
+
+
+def test_backend_route_check_fails_when_live_app_is_stale(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    save_sessions(settings, {"tokens": ["known-token"]})
+
+    class Response:
+        status_code = 200
+
+        @staticmethod
+        def json() -> dict[str, object]:
+            return {"paths": {"/issue/start": {}}}
+
+    monkeypatch.setattr(
+        "pawchestrator.doctor.httpx.get",
+        lambda *args, **kwargs: Response(),
+    )
+
+    result = check_backend_routes(settings, 12345)
+
+    assert result.status == STATUS_FAIL
+    assert result.required is True
+    assert "missing /issue/grill" in result.message
+
+
+def test_backend_route_check_warns_without_pairing_token(tmp_path: Path) -> None:
+    result = check_backend_routes(Settings(app_dir=tmp_path), 12345)
+
+    assert result.status == STATUS_WARN
+    assert result.required is False
 
 
 def test_default_port_constant_matches_issue_contract() -> None:
