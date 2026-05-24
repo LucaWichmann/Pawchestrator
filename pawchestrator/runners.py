@@ -490,14 +490,16 @@ def _effective_claude_config(
     stage_name: str,
 ) -> ClaudeRunnerSettings:
     override = stage_overrides.get(stage_name)
-    if override is None:
-        return config
-
     updates: dict[str, object] = {}
-    if override.claude.allowed_tools is not None:
+    if override is not None and override.claude.allowed_tools is not None:
         updates["allowed_tools"] = override.claude.allowed_tools
-    if override.claude.bypass_permissions is not None:
+    if override is not None and override.claude.bypass_permissions is not None:
         updates["bypass_permissions"] = override.claude.bypass_permissions
+    if stage_name == "grill":
+        updates["allowed_tools"] = ["Read", "Glob", "Grep"]
+        updates["bypass_permissions"] = False
+    if not updates:
+        return config
     return config.model_copy(update=updates)
 
 
