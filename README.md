@@ -1,12 +1,40 @@
-# Pawchestrator
+<p align="center">
+  <img src="https://em-content.zobj.net/source/microsoft-teams/363/paw-prints_1f43e.png" alt="Paw prints" width="96" height="96">
+</p>
 
-Local-first GitHub-native agent orchestration platform for turning an issue into a draft PR.
+<h1 align="center">Pawchestrator</h1>
 
-GitHub is the control surface. Pawchestrator runs the workflow on your machine, keeps the artifacts local, and updates GitHub with structured status.
+<p align="center"><strong>GitHub issue in. Local agents run. Code comes out.</strong></p>
 
-`Python 3.12+` `FastAPI` `SQLite` `GitHub-native` `Local-first`
+<p align="center">
+  <a href="https://github.com/LucaWichmann/Pawchestrator/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/LucaWichmann/Pawchestrator?style=flat-square"></a>
+  <a href="https://github.com/LucaWichmann/Pawchestrator/commits/main"><img alt="Last commit" src="https://img.shields.io/github/last-commit/LucaWichmann/Pawchestrator?style=flat-square"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/LucaWichmann/Pawchestrator?style=flat-square"></a>
+</p>
 
-[Quick start](#quick-start) | [What it does](#what-it-does) | [How it works](#how-it-works) | [Userscript pairing](#userscript-pairing) | [Configuration](#configuration) | [Troubleshooting](#troubleshooting)
+<p align="center">
+  <a href="#install">Install</a> |
+  <a href="#quick-start">Quick start</a> |
+  <a href="#what-it-does">What it does</a> |
+  <a href="#how-it-works">How it works</a> |
+  <a href="#userscript-pairing">Userscript pairing</a> |
+  <a href="#configuration">Configuration</a> |
+  <a href="#troubleshooting">Troubleshooting</a>
+</p>
+
+---
+
+## Install
+
+Install Tampermonkey first:
+[Chrome](https://chrome.google.com/webstore/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo) |
+[Firefox](https://addons.mozilla.org/firefox/addon/tampermonkey/)
+
+Then install the Pawchestrator userscript:
+
+<p>
+  <a href="https://raw.githubusercontent.com/LucaWichmann/Pawchestrator/main/Pawchestrator.user.js"><img alt="Install userscript" src="https://img.shields.io/badge/install-userscript-2ea44f?style=for-the-badge"></a>
+</p>
 
 ## At a glance
 
