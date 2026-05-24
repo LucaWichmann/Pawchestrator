@@ -48,6 +48,33 @@ def test_userscript_renders_panel_and_readiness_states() -> None:
     assert "failed" in source
 
 
+def test_userscript_renders_pipeline_timeline_section() -> None:
+    source = _read_userscript()
+
+    assert 'const PIPELINE_STAGES = ["snapshot", "scout", "plan", "implement", "verify", "pr"]' in source
+    assert "function collapseStages(stages)" in source
+    assert "function renderPipeline(parent, pipeline)" in source
+    assert 'section.className = "pawchestrator-pipeline"' in source
+    assert 'timeline.className = "pawchestrator-timeline"' in source
+    assert 'item.dataset.status = status' in source
+    assert 'item.dataset.active = String(index === activeIndex && pipeline.status !== "completed")' in source
+    assert 'status === "done" ? "\\u2713" : status === "failed" ? "\\u00D7" : "\\u2022"' in source
+    assert '`${name} (repair ${repairCount}/${repairTotal || repairCount})`' in source
+    assert "renderPipeline(body, status.pipeline)" in source
+
+
+def test_userscript_renders_pipeline_warnings_and_completed_pr_link_only() -> None:
+    source = _read_userscript()
+
+    assert 'const WARNING = "\\u26A0"' in source
+    assert 'details.className = "pawchestrator-warnings"' in source
+    assert 'summary.textContent = `${WARNING} Warnings`' in source
+    assert "const warnings = Array.isArray(pipeline.warnings) ? pipeline.warnings : []" in source
+    assert "if (warnings.length > 0)" in source
+    assert 'if (pipeline.status === "completed" && pipeline.pr_url)' in source
+    assert 'if (run.status === "completed" && run.pr_url)' in source
+
+
 def test_userscript_injects_panel_after_github_issue_body() -> None:
     source = _read_userscript()
 
