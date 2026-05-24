@@ -109,6 +109,10 @@ def test_userscript_injects_panel_after_github_issue_body() -> None:
     assert ".IssueBody-module__outerContainer__ULNTb" in source
     assert '[class*="IssueBody-module__outerContainer"]' in source
     assert "function findIssueBodyContainer()" in source
+    assert 'issueBody.querySelector(\'[data-testid="issue-body"]\')' in source
+    assert "innerBox.getBoundingClientRect().left - issueBody.getBoundingClientRect().left" in source
+    assert "panel.style.marginLeft = `${panelOffset}px`" in source
+    assert ": 0" in source
     assert "issueBody.after(panel)" in source
     assert "panel.previousElementSibling !== issueBody" in source
 

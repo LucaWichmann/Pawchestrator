@@ -1061,6 +1061,11 @@
 
     const existingPanel = document.getElementById(PANEL_ID);
     const panel = existingPanel && document.contains(existingPanel) ? existingPanel : createPanel();
+    const innerBox = issueBody.querySelector('[data-testid="issue-body"]');
+    const panelOffset = innerBox
+      ? innerBox.getBoundingClientRect().left - issueBody.getBoundingClientRect().left
+      : 0;
+    panel.style.marginLeft = `${panelOffset}px`;
     if (panel.previousElementSibling !== issueBody) {
       issueBody.after(panel);
     }
