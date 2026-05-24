@@ -70,11 +70,29 @@
     #${PANEL_ID} {
       background: var(--bgColor-default, #ffffff);
       border: 1px solid var(--borderColor-default, #d0d7de);
+      border-left: 4px solid var(--borderColor-default, #d0d7de);
       border-radius: 6px;
       color: var(--fgColor-default, #24292f);
       font-size: 13px;
       line-height: 20px;
       margin: 8px 0 16px;
+    }
+
+    #${PANEL_ID}[data-status="idle"],
+    #${PANEL_ID}[data-status="offline"] {
+      border-left-color: var(--borderColor-default, #d0d7de);
+    }
+
+    #${PANEL_ID}[data-status="running"] {
+      border-left-color: var(--fgColor-accent, #0969da);
+    }
+
+    #${PANEL_ID}[data-status="done"] {
+      border-left-color: var(--fgColor-success, #1a7f37);
+    }
+
+    #${PANEL_ID}[data-status="failed"] {
+      border-left-color: var(--fgColor-danger, #cf222e);
     }
 
     #${PANEL_ID} .pawchestrator-panel-bar {
@@ -100,9 +118,21 @@
     }
 
     #${PANEL_ID} .pawchestrator-panel-summary {
+      align-items: center;
+      display: flex;
       flex: 1;
+      gap: 6px;
       min-width: 0;
       overflow-wrap: anywhere;
+    }
+
+    #${PANEL_ID} .pawchestrator-panel-brand-name {
+      flex: 0 0 auto;
+      font-weight: 600;
+    }
+
+    #${PANEL_ID} .pawchestrator-panel-status-text {
+      min-width: 0;
     }
 
     #${PANEL_ID} .pawchestrator-panel-body {
@@ -366,9 +396,16 @@
 
   function setPanelSummary(message) {
     const panel = document.getElementById(PANEL_ID);
-    const summary = panel && panel.querySelector(".pawchestrator-panel-summary");
-    if (summary) {
-      summary.textContent = `${PAW} Pawchestrator \u00B7 ${message}`;
+    const status = panel && panel.querySelector(".pawchestrator-panel-status-text");
+    if (status) {
+      status.textContent = message;
+    }
+  }
+
+  function setPanelStatus(state) {
+    const panel = document.getElementById(PANEL_ID);
+    if (panel) {
+      panel.dataset.status = state;
     }
   }
 
@@ -481,6 +518,19 @@
     const stage = run.current_stage || (run.workflow_type === "grill" ? "grill" : "queued");
     const stageStatus = (run.status || "pending").replace(/^grill_/, "");
     return `[${stage}] ${stageStatus}...`;
+  }
+
+  function panelStatusForRun(run) {
+    if (!run) {
+      return "idle";
+    }
+    if (run.status === "completed" || run.status === "grill_complete") {
+      return "done";
+    }
+    if (run.status === "failed" || run.status === "grill_failed") {
+      return "failed";
+    }
+    return "running";
   }
 
   function renderReadinessItem(parent, label, ready) {
@@ -727,6 +777,7 @@
 
     const run = currentRun(status);
     setPanelSummary(summarizeRun(run));
+    setPanelStatus(panelStatusForRun(run));
 
     if (panelExpandedByUser === null) {
       setPanelExpanded(shouldAutoExpand(status));
@@ -767,6 +818,7 @@
 
   function renderOffline() {
     setPanelSummary(OFFLINE_MESSAGE);
+    setPanelStatus("offline");
     const panel = document.getElementById(PANEL_ID);
     const body = panel && panel.querySelector(".pawchestrator-panel-body");
     if (!body) {
@@ -992,6 +1044,7 @@
     const panel = document.createElement("div");
     panel.id = PANEL_ID;
     panel.dataset.expanded = "false";
+    panel.dataset.status = "idle";
 
     const bar = document.createElement("div");
     bar.className = "pawchestrator-panel-bar";
@@ -1010,7 +1063,20 @@
 
     const summary = document.createElement("div");
     summary.className = "pawchestrator-panel-summary";
-    summary.textContent = `${PAW} Pawchestrator \u00B7 Checking backend...`;
+
+    const brand = document.createElement("span");
+    brand.className = "pawchestrator-panel-brand-name";
+    brand.textContent = `${PAW} Pawchestrator`;
+
+    const separator = document.createElement("span");
+    separator.setAttribute("aria-hidden", "true");
+    separator.textContent = "\u00B7";
+
+    const status = document.createElement("span");
+    status.className = "pawchestrator-panel-status-text";
+    status.textContent = "Checking backend...";
+
+    summary.append(brand, separator, status);
 
     const body = document.createElement("div");
     body.className = "pawchestrator-panel-body";
