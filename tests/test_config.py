@@ -31,6 +31,8 @@ def test_runner_settings_defaults_match_low_token_profile() -> None:
     assert settings.codegraph.enabled is True
     assert settings.codegraph.directory == ".codegraph"
     assert settings.codegraph.sync_policy == "safe-lazy"
+    assert settings.pr.draft is False
+    assert settings.pr.assign is True
     assert settings.debug is False
 
 
@@ -71,6 +73,10 @@ enabled = false
 directory = ".custom-codegraph"
 sync_policy = "safe-lazy"
 
+[pr]
+draft = true
+assign = false
+
 [stages.scout.claude]
 allowed_tools = ["Read"]
 bypass_permissions = false
@@ -109,11 +115,29 @@ approval_policy = "never"
     assert settings.codegraph.enabled is False
     assert settings.codegraph.directory == ".custom-codegraph"
     assert settings.codegraph.sync_policy == "safe-lazy"
+    assert settings.pr.draft is True
+    assert settings.pr.assign is False
     assert settings.stages["scout"].claude.allowed_tools == ["Read"]
     assert settings.stages["scout"].claude.bypass_permissions is False
     assert settings.stages["implement"].codex.execution == "native"
     assert settings.stages["implement"].codex.sandbox == "danger-full-access"
     assert settings.stages["implement"].codex.approval_policy == "never"
+
+
+def test_load_settings_defaults_pr_when_section_missing(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        """
+[app]
+debug = true
+""",
+        encoding="utf-8",
+    )
+
+    settings = load_settings(config_path)
+
+    assert settings.pr.draft is False
+    assert settings.pr.assign is True
 
 
 def test_load_settings_rejects_invalid_runner_effort(tmp_path: Path) -> None:
