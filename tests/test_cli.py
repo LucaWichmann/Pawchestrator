@@ -26,6 +26,24 @@ def test_serve_uses_localhost_only(monkeypatch) -> None:
     assert calls["port"] == 12345
 
 
+def test_serve_warns_when_port_is_already_bound(monkeypatch, capsys) -> None:
+    calls = {}
+
+    def fake_run(app_path: str, **kwargs) -> None:
+        calls["app_path"] = app_path
+        calls.update(kwargs)
+
+    monkeypatch.setattr(cli, "_port_available", lambda port: False)
+    monkeypatch.setattr(cli.uvicorn, "run", fake_run)
+
+    cli.serve(port=12345)
+
+    captured = capsys.readouterr()
+    assert "already in use" in captured.err
+    assert "current code" in captured.err
+    assert calls["app_path"] == "pawchestrator.server:create_app"
+
+
 def test_doctor_prints_pass_and_exits_zero(monkeypatch) -> None:
     monkeypatch.setattr(
         cli,

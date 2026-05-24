@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import socket
 import subprocess
 from pathlib import Path
 from typing import Annotated
@@ -57,6 +58,17 @@ def serve(
     ] = DEFAULT_PORT,
 ) -> None:
     """Start the local FastAPI backend."""
+
+    if not _port_available(port):
+        typer.secho(
+            (
+                f"{LOCAL_HOST}:{port} is already in use. "
+                "Stop the existing Pawchestrator serve process before restarting "
+                "to ensure the live backend uses the current code."
+            ),
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
 
     uvicorn.run(
         "pawchestrator.server:create_app",
@@ -376,6 +388,16 @@ def _print_result(label: str, status: str, message: str) -> None:
     marker = markers.get(status, status.upper())
     color = colors.get(status)
     typer.secho(f"{marker:<4} {label:<14} {message}", fg=color)
+
+
+def _port_available(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind((LOCAL_HOST, port))
+        except OSError:
+            return False
+    return True
 
 
 def _github_remote_owner_repo(path: Path) -> tuple[str, str]:
