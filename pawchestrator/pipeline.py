@@ -96,6 +96,7 @@ async def run_pipeline(
     async def implement_stage(
         repair_context: dict[str, Any] | None = None,
         repair_attempt: int | None = None,
+        allow_dirty_existing_worktree: bool = False,
     ):
         return await run_implement(
             active_run_id,
@@ -103,6 +104,7 @@ async def run_pipeline(
             repo_path=resolved_repo_path,
             repair_context=repair_context,
             repair_attempt=repair_attempt,
+            allow_dirty_existing_worktree=allow_dirty_existing_worktree,
         )
 
     async def verify_stage() -> VerificationResult:
@@ -146,6 +148,7 @@ async def run_pipeline(
                 lambda: implement_stage(
                     _verification_repair_context(verification),
                     repair_attempt,
+                    allow_dirty_existing_worktree=True,
                 ),
                 progress,
             )

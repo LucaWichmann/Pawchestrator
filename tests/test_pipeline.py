@@ -204,7 +204,13 @@ def test_run_pipeline_repairs_failed_verify_then_creates_pr(
     settings = Settings(app_dir=tmp_path)
     calls: list[str] = []
     repair_contexts: list[tuple[dict[str, object] | None, int | None]] = []
-    _patch_successful_stages(monkeypatch, calls, repair_contexts=repair_contexts)
+    allow_dirty_existing_worktree_values: list[bool] = []
+    _patch_successful_stages(
+        monkeypatch,
+        calls,
+        repair_contexts=repair_contexts,
+        allow_dirty_existing_worktree_values=allow_dirty_existing_worktree_values,
+    )
     _patch_verify_results(monkeypatch, calls, ["failed", "passed"])
 
     result = asyncio.run(
@@ -226,6 +232,7 @@ def test_run_pipeline_repairs_failed_verify_then_creates_pr(
         "pr",
     ]
     assert result.pr_url == "https://github.com/owner/repo/pull/99"
+    assert allow_dirty_existing_worktree_values == [False, True]
     assert repair_contexts == [
         (None, None),
         (
@@ -464,6 +471,7 @@ def _patch_successful_stages(
     *,
     allow_empty_commit_values: list[bool] | None = None,
     repair_contexts: list[tuple[dict[str, object] | None, int | None]] | None = None,
+    allow_dirty_existing_worktree_values: list[bool] | None = None,
 ) -> None:
     async def fake_snapshot(issue_url: str, settings: Settings, *, run_id: str):
         calls.append("snapshot")
@@ -520,10 +528,13 @@ def _patch_successful_stages(
         repo_path: Path | None = None,
         repair_context: dict[str, object] | None = None,
         repair_attempt: int | None = None,
+        allow_dirty_existing_worktree: bool = False,
     ):
         calls.append("implement")
         if repair_contexts is not None:
             repair_contexts.append((repair_context, repair_attempt))
+        if allow_dirty_existing_worktree_values is not None:
+            allow_dirty_existing_worktree_values.append(allow_dirty_existing_worktree)
         stage_id = await start_implement_run(settings, run_id=run_id)
         artifact_path = settings.app_dir / "runs" / run_id / "implementation_report.json"
         artifact_path.parent.mkdir(parents=True, exist_ok=True)

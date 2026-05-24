@@ -389,6 +389,39 @@ def test_ensure_issue_worktree_fails_when_existing_worktree_is_dirty(
         )
 
 
+def test_ensure_issue_worktree_allows_dirty_existing_worktree_for_repair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    worktree_path = tmp_path / "worktrees" / "owner" / "repo" / "issue-42"
+    worktree_path.mkdir(parents=True)
+    (worktree_path / ".git").write_text("gitdir: source", encoding="utf-8")
+    calls: list[tuple[list[str], Path]] = []
+
+    async def fake_run_git(args: list[str], cwd: Path) -> tuple[str, str, int]:
+        calls.append((args, cwd))
+        if args == ["status", "--porcelain"] and cwd == worktree_path:
+            return " M file.py\n", "", 0
+        return _successful_main_refresh(args)
+
+    monkeypatch.setattr("pawchestrator.implement._run_git", fake_run_git)
+
+    info = asyncio.run(
+        ensure_issue_worktree(
+            Settings(app_dir=tmp_path),
+            snapshot=_snapshot(),
+            source_repo_path=tmp_path / "source",
+            allow_dirty_existing_worktree=True,
+        )
+    )
+
+    assert info == WorktreeInfo(
+        path=worktree_path,
+        branch="paw/issue-42-add-implement",
+        reused=True,
+    )
+    assert calls == []
+
+
 def test_run_implement_writes_report_log_and_records_stage(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -406,8 +439,10 @@ def test_run_implement_writes_report_log_and_records_stage(
         *,
         snapshot: dict[str, Any],
         source_repo_path: Path,
+        allow_dirty_existing_worktree: bool = False,
     ) -> WorktreeInfo:
         assert source_repo_path == (tmp_path / "source").resolve()
+        assert allow_dirty_existing_worktree is False
         return WorktreeInfo(
             path=worktree_path,
             branch="paw/issue-42-add-implement",
@@ -571,7 +606,9 @@ def test_run_implement_continues_when_codegraph_seed_fails(
         *,
         snapshot: dict[str, Any],
         source_repo_path: Path,
+        allow_dirty_existing_worktree: bool = False,
     ) -> WorktreeInfo:
+        assert allow_dirty_existing_worktree is False
         return WorktreeInfo(
             path=worktree_path,
             branch="paw/issue-42-add-implement",
@@ -642,7 +679,9 @@ def test_run_implement_fails_when_codex_changes_no_files(
         *,
         snapshot: dict[str, Any],
         source_repo_path: Path,
+        allow_dirty_existing_worktree: bool = False,
     ) -> WorktreeInfo:
+        assert allow_dirty_existing_worktree is False
         return WorktreeInfo(
             path=worktree_path,
             branch="paw/issue-42-add-implement",
@@ -716,7 +755,9 @@ def test_run_implement_detects_committed_changes_since_base(
         *,
         snapshot: dict[str, Any],
         source_repo_path: Path,
+        allow_dirty_existing_worktree: bool = False,
     ) -> WorktreeInfo:
+        assert allow_dirty_existing_worktree is False
         return WorktreeInfo(
             path=worktree_path,
             branch="paw/issue-42-add-implement",

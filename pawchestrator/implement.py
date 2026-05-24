@@ -52,6 +52,7 @@ async def run_implement(
     runner: Runner | None = None,
     repair_context: dict[str, Any] | None = None,
     repair_attempt: int | None = None,
+    allow_dirty_existing_worktree: bool = False,
 ) -> ImplementationResult:
     state = await get_run_state(settings, run_id)
     if state is None:
@@ -80,6 +81,7 @@ async def run_implement(
             settings,
             snapshot=snapshot,
             source_repo_path=source_repo_path,
+            allow_dirty_existing_worktree=allow_dirty_existing_worktree,
         )
         await upsert_worktree_record(
             settings,
@@ -247,6 +249,7 @@ async def ensure_issue_worktree(
     *,
     snapshot: dict[str, Any],
     source_repo_path: Path,
+    allow_dirty_existing_worktree: bool = False,
 ) -> WorktreeInfo:
     owner = str(snapshot.get("owner") or "")
     repo = str(snapshot.get("repo") or "")
@@ -255,14 +258,17 @@ async def ensure_issue_worktree(
     branch = f"paw/issue-{number}-{slugify(title)}"
     path = settings.app_dir / "worktrees" / owner / repo / f"issue-{number}"
 
-    await _refresh_main_branch(source_repo_path)
-
     if path.exists():
         if (path / ".git").exists():
+            if allow_dirty_existing_worktree:
+                return WorktreeInfo(path=path, branch=branch, reused=True)
+            await _refresh_main_branch(source_repo_path)
             await _ensure_clean_worktree(path, "issue worktree")
             await _run_git_checked(["merge", "--ff-only", DEFAULT_BASE_BRANCH], path)
             return WorktreeInfo(path=path, branch=branch, reused=True)
         raise RuntimeError(f"worktree path exists but is not a git worktree: {path}")
+
+    await _refresh_main_branch(source_repo_path)
 
     path.parent.mkdir(parents=True, exist_ok=True)
     branch_exists = await _git_branch_exists(source_repo_path, branch)
