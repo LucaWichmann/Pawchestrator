@@ -248,22 +248,53 @@ Output tokens from LLMs (Claude, Codex) are significantly more expensive than in
 
 MVP0 pipeline is complete and end-to-end verified (snapshot → scout → plan → implement → verify → PR). Post-MVP0 sprint (comments, labels, repo registry, pairing token, terse prompts) also complete.
 
-**Next sprint target: Grill**
-- New standalone action triggered from "🔥 Grill Issue" button in userscript
-- ClaudeRunner, read-only tools only (`Read`, `Glob`, `Grep`), no worktree, no Codex
-- Appends `## Pawchestrator Suggested Criteria` to issue body (idempotent — skips if heading exists)
-- Posts comment only if unanswerable questions exist; zero questions = zero comments
-- Degrades gracefully if no local repo registered (questions-only mode, no codebase exploration)
-- Userscript: second button + separate status div (grill and pipeline statuses don't clobber each other)
-- New API endpoint: `POST /issue/grill {owner, repo, number}`
-- New DB column: `workflow_type` on `workflow_runs` (`"pipeline"` or `"grill"`)
-- New GitHub API method: `patch_issue_body()` on `GitHubIssueClient`
+**Grill sprint: complete.**
+
+**Next sprint target: Pawchestrator Panel (userscript UI overhaul + status endpoint)**
+
+Design decisions (locked via grilling session 2026-05-24):
+
+**Panel placement:** Injected below the issue body — after `IssueBody-module__outerContainer__ULNTb` — as a sibling element. Uses GitHub CSS variables and `prc-Button-*` class conventions for native look.
+
+**Always-visible readiness:** Panel renders on every issue page, not just after a run starts. Shows backend connection, repo registration, runner health even before any run exists for the issue.
+
+**Smart expand:** Collapsed (single status bar) when no run exists for this issue. Auto-expands when a run is active or completed. User can manually collapse; preference not persisted.
+
+**Stage timeline:** Horizontal steps (snapshot → scout → plan → implement → verify → pr) with status icons. Repair loop iterations shown as `implement (repair 1/2)`. Collapsible warnings section below timeline for `run_warnings`.
+
+**Two independent sections:** Pipeline section and Grill section rendered separately in the expanded panel. Each tracks its own latest run.
+
+**Buttons stay in header:** "🐾 Work on this issue" and "🔥 Grill Issue" stay in the GitHub issue header. Inline status text divs (`STATUS_ID`, `GRILL_STATUS_ID`) are retired — all status moves to panel.
+
+**New backend endpoint:** `GET /issue/{owner}/{repo}/{number}/status` — combined payload:
+```json
+{
+  "repo_registered": true,
+  "runners": {
+    "claude": {"available": true, "version": "1.x.x"},
+    "codex": {"available": false, "version": null}
+  },
+  "pipeline": {
+    "run_id": "...", "status": "...", "current_stage": "...",
+    "stages": [...], "warnings": [...], "pr_url": "...",
+    "created_at": "...", "updated_at": "..."
+  },
+  "grill": {
+    "run_id": "...", "status": "...", "grill_report": {...},
+    "created_at": "...", "updated_at": "..."
+  }
+}
+```
+`pipeline` and `grill` are null when no run exists for that type. Endpoint is token-authenticated.
+
+**Runner health cache:** 60-second in-memory TTL. Spawns `claude --version` / `codex --version` at most once per minute. Never blocks a panel load.
+
+**Warnings inline:** `run_warnings` rows included in the status endpoint response under each run object. Not a separate fetch.
 
 **Deferred:**
 - Tauri desktop viewer (MVP1 per PRD)
 - Workflow YAML engine
 - Human gates UI (push + PR approval)
-- Repair loop (max 2 verify retries)
 - Skill file loading
 
 **`Path.cwd()` bug:** When `POST /issue/start` is triggered from Tampermonkey, no `repo_path` is provided. `pipeline.py` falls back to `Path.cwd()`, which is the server's working directory — almost certainly wrong. Repo registry fixes this: the pipeline looks up `owner/repo` in the registry to get the correct local path.
