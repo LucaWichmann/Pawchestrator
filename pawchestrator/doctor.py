@@ -10,9 +10,12 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+import httpx
+
 from pawchestrator.config import DEFAULT_PORT, LOCAL_HOST, Settings
 from pawchestrator.db import count_registered_repos, init_db
 from pawchestrator.runners import ClaudeRunner, CodexRunner
+from pawchestrator.sessions import load_sessions
 
 STATUS_PASS = "pass"
 STATUS_WARN = "warn"
@@ -38,6 +41,7 @@ def run_checks(settings: Settings, port: int = DEFAULT_PORT) -> list[CheckResult
         check_claude_runner(settings),
         check_codex_runner(settings),
         check_port_available(port),
+        check_backend_routes(settings, port),
         check_sqlite_writable(settings),
         check_repo_registry(settings),
     ]
@@ -151,6 +155,70 @@ def check_port_available(port: int) -> CheckResult:
         "backend port",
         STATUS_PASS,
         f"{LOCAL_HOST}:{port} available",
+        required=True,
+    )
+
+
+def check_backend_routes(settings: Settings, port: int = DEFAULT_PORT) -> CheckResult:
+    sessions = load_sessions(settings)
+    tokens = sessions.get("tokens", [])
+    if not tokens:
+        return CheckResult(
+            "backend routes",
+            STATUS_WARN,
+            "no pairing token; live route check skipped",
+            required=False,
+        )
+
+    try:
+        response = httpx.get(
+            f"http://{LOCAL_HOST}:{port}/openapi.json",
+            headers={"X-Pawchestrator-Token": str(tokens[-1])},
+            timeout=2.0,
+        )
+    except httpx.ConnectError:
+        return CheckResult(
+            "backend routes",
+            STATUS_WARN,
+            f"backend not running on {LOCAL_HOST}:{port}; live route check skipped",
+            required=False,
+        )
+    except httpx.TimeoutException:
+        return CheckResult(
+            "backend routes",
+            STATUS_FAIL,
+            f"backend on {LOCAL_HOST}:{port} timed out during route check",
+            required=True,
+        )
+    except httpx.HTTPError as error:
+        return CheckResult(
+            "backend routes",
+            STATUS_FAIL,
+            f"backend route check failed: {error}",
+            required=True,
+        )
+
+    if response.status_code != 200:
+        return CheckResult(
+            "backend routes",
+            STATUS_FAIL,
+            f"openapi returned HTTP {response.status_code}",
+            required=True,
+        )
+
+    paths = response.json().get("paths", {})
+    if "/issue/grill" not in paths:
+        return CheckResult(
+            "backend routes",
+            STATUS_FAIL,
+            "live backend is missing /issue/grill; stop stale serve process and restart",
+            required=True,
+        )
+
+    return CheckResult(
+        "backend routes",
+        STATUS_PASS,
+        "live backend exposes /issue/grill",
         required=True,
     )
 

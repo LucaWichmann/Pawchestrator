@@ -167,6 +167,17 @@ def test_issue_grill_returns_run_id_and_schedules_grill(
     assert payload["workflow_type"] == "grill"
 
 
+def test_openapi_exposes_issue_grill_route(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _seed_token(settings)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.get("/openapi.json", headers=_token_headers())
+
+    assert response.status_code == 200
+    assert "/issue/grill" in response.json()["paths"]
+
+
 def test_cors_allows_github_for_issue_start_and_runs(tmp_path: Path) -> None:
     settings = Settings(app_dir=tmp_path)
 
