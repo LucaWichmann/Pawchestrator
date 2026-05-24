@@ -18,16 +18,21 @@
 
   const API_BASE = "http://127.0.0.1:38472";
   const STATUS_ID = "pawchestrator-status";
+  const GRILL_STATUS_ID = "pawchestrator-grill-status";
   const START_ID = "pawchestrator-start";
+  const GRILL_ID = "pawchestrator-grill";
   const POLL_INTERVAL_MS = 3000;
   const TOKEN_KEY = "pawchestrator_token";
   const PAW = "\uD83D\uDC3E";
+  const FIRE = "\uD83D\uDD25";
   const OFFLINE_MESSAGE = "Pawchestrator not running - start with `pawchestrator serve`";
 
-  let activePoll = null;
+  let activePollPipeline = null;
+  let activePollGrill = null;
 
   GM_addStyle(`
-    #${STATUS_ID} {
+    #${STATUS_ID},
+    #${GRILL_STATUS_ID} {
       align-items: center;
       color: var(--fgColor-default, #24292f);
       display: inline-flex;
@@ -39,11 +44,17 @@
       overflow-wrap: anywhere;
     }
 
-    #${START_ID} {
+    #${GRILL_STATUS_ID} {
+      color: var(--fgColor-muted, #59636e);
+    }
+
+    #${START_ID},
+    #${GRILL_ID} {
       white-space: nowrap;
     }
 
-    #${START_ID}:disabled {
+    #${START_ID}:disabled,
+    #${GRILL_ID}:disabled {
       cursor: not-allowed;
       opacity: 0.65;
     }
@@ -99,6 +110,13 @@
     }
   }
 
+  function setGrillStatus(message) {
+    const status = document.getElementById(GRILL_STATUS_ID);
+    if (status) {
+      status.textContent = message;
+    }
+  }
+
   function setStatusLink(message, href) {
     const status = document.getElementById(STATUS_ID);
     if (!status) {
@@ -124,6 +142,40 @@
     return `[${stageName}] failed${error}`;
   }
 
+  function summarizeGrillCompletion(run) {
+    const report = run.grill_report || run.report || run.artifact || {};
+    const criteria = Array.isArray(report.suggested_criteria)
+      ? report.suggested_criteria.length
+      : null;
+    const questions = Array.isArray(report.unanswerable_questions)
+      ? report.unanswerable_questions.length
+      : null;
+    const bodyUpdated = report.body_updated === true;
+
+    if (criteria !== null || questions !== null || bodyUpdated) {
+      const parts = [];
+      if (bodyUpdated) {
+        parts.push("Criteria appended");
+      } else if (criteria === 0) {
+        parts.push("No new criteria");
+      } else if (criteria !== null) {
+        parts.push(`${criteria} ${criteria === 1 ? "criterion" : "criteria"} suggested`);
+      }
+
+      if (questions !== null) {
+        parts.push(questions === 0
+          ? "No questions - issue ready"
+          : `${questions} ${questions === 1 ? "question" : "questions"} posted`);
+      }
+
+      if (parts.length > 0) {
+        return parts.join(" · ");
+      }
+    }
+
+    return "Grill completed";
+  }
+
   function renderStatus(run) {
     if (run.status === "completed") {
       if (run.pr_url) {
@@ -144,10 +196,33 @@
     setStatus(`[${stage}] ${stageStatus}...`);
   }
 
-  function stopPolling() {
-    if (activePoll) {
-      window.clearInterval(activePoll);
-      activePoll = null;
+  function renderGrillStatus(run) {
+    if (run.status === "grill_complete" || run.status === "completed") {
+      setGrillStatus(summarizeGrillCompletion(run));
+      return;
+    }
+
+    if (run.status === "grill_failed" || run.status === "failed") {
+      setGrillStatus(summarizeError(run));
+      return;
+    }
+
+    const stage = run.current_stage || "grill";
+    const stageStatus = (run.status || "pending").replace(/^grill_/, "");
+    setGrillStatus(`[${stage}] ${stageStatus}...`);
+  }
+
+  function stopPipelinePolling() {
+    if (activePollPipeline) {
+      window.clearInterval(activePollPipeline);
+      activePollPipeline = null;
+    }
+  }
+
+  function stopGrillPolling() {
+    if (activePollGrill) {
+      window.clearInterval(activePollGrill);
+      activePollGrill = null;
     }
   }
 
@@ -184,13 +259,13 @@
     });
   }
 
-  async function getOrAcquireToken() {
+  async function getOrAcquireToken(statusSetter = setStatus) {
     const storedToken = await GM_getValue(TOKEN_KEY);
     if (storedToken) {
       return storedToken;
     }
 
-    setStatus("Pairing - approve in terminal...");
+    statusSetter("Pairing - approve in terminal...");
     const response = await rawRequestJson("/pair", {
       method: "POST",
       label: "Pairing request",
@@ -204,7 +279,8 @@
       return rawRequestJson(path, options);
     }
 
-    const token = await getOrAcquireToken();
+    const statusSetter = options.statusSetter || setStatus;
+    const token = await getOrAcquireToken(statusSetter);
     const headers = {
       ...(options.headers || {}),
       "X-Pawchestrator-Token": token,
@@ -218,7 +294,7 @@
       }
 
       await GM_deleteValue(TOKEN_KEY);
-      const freshToken = await getOrAcquireToken();
+      const freshToken = await getOrAcquireToken(statusSetter);
       return rawRequestJson(path, {
         ...options,
         headers: {
@@ -237,7 +313,7 @@
     const run = await fetchRun(runId);
     renderStatus(run);
     if (run.status === "completed" || run.status === "failed") {
-      stopPolling();
+      stopPipelinePolling();
       const button = document.getElementById(START_ID);
       if (button) {
         button.disabled = false;
@@ -246,13 +322,45 @@
   }
 
   function pollStatus(runId) {
-    stopPolling();
+    stopPipelinePolling();
     pollOnce(runId).catch((error) => setStatus(error.message));
-    activePoll = window.setInterval(() => {
+    activePollPipeline = window.setInterval(() => {
       pollOnce(runId).catch((error) => {
-        stopPolling();
+        stopPipelinePolling();
         setStatus(error.message);
         const button = document.getElementById(START_ID);
+        if (button) {
+          button.disabled = false;
+        }
+      });
+    }, POLL_INTERVAL_MS);
+  }
+
+  async function pollGrillOnce(runId) {
+    const run = await fetchRun(runId);
+    renderGrillStatus(run);
+    if (
+      run.status === "grill_complete"
+      || run.status === "grill_failed"
+      || run.status === "completed"
+      || run.status === "failed"
+    ) {
+      stopGrillPolling();
+      const button = document.getElementById(GRILL_ID);
+      if (button) {
+        button.disabled = false;
+      }
+    }
+  }
+
+  function pollGrillStatus(runId) {
+    stopGrillPolling();
+    pollGrillOnce(runId).catch((error) => setGrillStatus(error.message));
+    activePollGrill = window.setInterval(() => {
+      pollGrillOnce(runId).catch((error) => {
+        stopGrillPolling();
+        setGrillStatus(error.message);
+        const button = document.getElementById(GRILL_ID);
         if (button) {
           button.disabled = false;
         }
@@ -294,6 +402,32 @@
     }
   }
 
+  async function startGrill() {
+    const button = document.getElementById(GRILL_ID);
+    if (button) {
+      button.disabled = true;
+    }
+
+    try {
+      const issue = parseIssueReference();
+      await getOrAcquireToken(setGrillStatus);
+      setGrillStatus("[grill] starting...");
+      const payload = await requestJson("/issue/grill", {
+        method: "POST",
+        label: "Grill request",
+        statusSetter: setGrillStatus,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(issue),
+      });
+      pollGrillStatus(payload.run_id);
+    } catch (error) {
+      setGrillStatus(error.message);
+      if (button) {
+        button.disabled = false;
+      }
+    }
+  }
+
   function createStartButton() {
     const button = document.createElement("button");
     button.id = START_ID;
@@ -322,10 +456,45 @@
     return button;
   }
 
+  function createGrillButton() {
+    const button = document.createElement("button");
+    button.id = GRILL_ID;
+    button.type = "button";
+    button.dataset.component = "Button";
+    button.dataset.testid = "pawchestrator-grill-button";
+    button.dataset.loading = "false";
+    button.dataset.noVisuals = "true";
+    button.dataset.size = "medium";
+    button.dataset.variant = "default";
+    button.className = "prc-Button-ButtonBase-9n-Xk";
+    button.addEventListener("click", startGrill);
+
+    const content = document.createElement("span");
+    content.dataset.component = "buttonContent";
+    content.dataset.align = "center";
+    content.className = "prc-Button-ButtonContent-Iohp5";
+
+    const label = document.createElement("span");
+    label.dataset.component = "text";
+    label.className = "prc-Button-Label-FWkx3";
+    label.textContent = `${FIRE} Grill Issue`;
+
+    content.append(label);
+    button.append(content);
+    return button;
+  }
+
   function createStatus() {
     const status = document.createElement("div");
     status.id = STATUS_ID;
     status.textContent = "Checking backend...";
+    return status;
+  }
+
+  function createGrillStatus() {
+    const status = document.createElement("div");
+    status.id = GRILL_STATUS_ID;
+    status.textContent = "";
     return status;
   }
 
@@ -350,10 +519,14 @@
 
     const existingButton = document.getElementById(START_ID);
     const existingStatus = document.getElementById(STATUS_ID);
+    const existingGrillButton = document.getElementById(GRILL_ID);
+    const existingGrillStatus = document.getElementById(GRILL_STATUS_ID);
     const button = existingButton || createStartButton();
     const status = existingStatus || createStatus();
+    const grillButton = existingGrillButton || createGrillButton();
+    const grillStatus = existingGrillStatus || createGrillStatus();
     const newIssueHost = findNewIssueHost(actions);
-    let changed = !existingButton || !existingStatus;
+    let changed = !existingButton || !existingStatus || !existingGrillButton || !existingGrillStatus;
 
     if (button.parentElement !== actions) {
       actions.insertBefore(button, newIssueHost);
@@ -363,9 +536,19 @@
       actions.insertBefore(status, newIssueHost);
       changed = true;
     }
+    if (grillButton.parentElement !== actions || grillButton.previousElementSibling !== status) {
+      actions.insertBefore(grillButton, newIssueHost);
+      changed = true;
+    }
+    if (grillStatus.parentElement !== actions || grillStatus.previousElementSibling !== grillButton) {
+      actions.insertBefore(grillStatus, newIssueHost);
+      changed = true;
+    }
 
     button.hidden = false;
     status.hidden = false;
+    grillButton.hidden = false;
+    grillStatus.hidden = false;
 
     if (changed) {
       checkBackend();
