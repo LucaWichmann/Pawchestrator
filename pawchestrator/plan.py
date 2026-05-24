@@ -14,7 +14,7 @@ from pawchestrator.db import (
     get_run_state,
     start_plan_run,
 )
-from pawchestrator.runners import ClaudeRunner, Runner, RunnerTask
+from pawchestrator.runners import Runner, RunnerTask, resolve_runner
 
 IMPLEMENTATION_PLAN_SCHEMA = "pawchestrator.implementation_plan.v1"
 VALID_RISKS = {"low", "medium", "high"}
@@ -53,11 +53,7 @@ async def run_plan(
     scout_report = json.loads(scout_path.read_text(encoding="utf-8"))
     local_repo_path = (repo_path or Path.cwd()).resolve()
     stage_id = await start_plan_run(settings, run_id=run_id)
-    active_runner = runner or ClaudeRunner(
-        settings.runners.claude,
-        debug=settings.debug,
-        stage_overrides=settings.stages,
-    )
+    active_runner = runner or resolve_runner(settings, "plan", "claude")
     log_path = _plan_log_path(settings, run_id)
     artifact_path = _plan_artifact_path(settings, run_id)
 

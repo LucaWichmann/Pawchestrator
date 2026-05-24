@@ -14,7 +14,7 @@ from pawchestrator.db import (
     get_run_state,
     start_scout_run,
 )
-from pawchestrator.runners import ClaudeRunner, Runner, RunnerTask
+from pawchestrator.runners import Runner, RunnerTask, resolve_runner
 
 SCOUT_REPORT_SCHEMA = "pawchestrator.scout_report.v1"
 MAX_PROMPT_COMMENTS = 10
@@ -47,11 +47,7 @@ async def run_scout(
     snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
     local_repo_path = (repo_path or Path.cwd()).resolve()
     stage_id = await start_scout_run(settings, run_id=run_id)
-    active_runner = runner or ClaudeRunner(
-        settings.runners.claude,
-        debug=settings.debug,
-        stage_overrides=settings.stages,
-    )
+    active_runner = runner or resolve_runner(settings, "scout", "claude")
     log_path = _scout_log_path(settings, run_id)
     artifact_path = _scout_artifact_path(settings, run_id)
 
