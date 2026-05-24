@@ -1,0 +1,261 @@
+import asyncio
+import json
+from pathlib import Path
+from typing import Any
+
+import aiosqlite
+from typer.testing import CliRunner
+
+from pawchestrator import cli
+from pawchestrator.config import Settings
+from pawchestrator.db import init_db
+from pawchestrator.grill import (
+    GrillReport,
+    append_suggested_criteria,
+    build_grill_prompt,
+    run_grill,
+)
+from pawchestrator.runners import Runner, RunnerResult, RunnerTask
+
+
+class FakeRunner(Runner):
+    id = "fake"
+    kind = "agent"
+
+    def __init__(self, artifact: dict[str, Any] | None = None) -> None:
+        self.artifact = artifact or {
+            "schema": "pawchestrator.grill_report.v1",
+            "status": "success",
+            "suggested_criteria": ["Adds POST /issue/grill."],
+            "unanswerable_questions": [],
+        }
+        self.task: RunnerTask | None = None
+
+    async def check_health(self) -> tuple[bool, str]:
+        return True, "ok"
+
+    async def run_task(self, task: RunnerTask) -> RunnerResult:
+        self.task = task
+        return RunnerResult(exit_code=0, stdout="{}", stderr="", artifact=self.artifact)
+
+
+class FakeGitHubClient:
+    def __init__(self) -> None:
+        self.patched_body: str | None = None
+        self.comments: list[str] = []
+        self.added_labels: list[str] = []
+        self.removed_labels: list[str] = []
+
+    async def patch_issue_body(self, owner: str, repo: str, number: int, body: str) -> None:
+        self.patched_body = body
+
+    async def post_comment(self, owner: str, repo: str, issue_number: int, body: str) -> int:
+        self.comments.append(body)
+        return 123
+
+    async def add_label(self, owner: str, repo: str, issue_number: int, name: str) -> None:
+        self.added_labels.append(name)
+
+    async def remove_label(self, owner: str, repo: str, issue_number: int, name: str) -> None:
+        self.removed_labels.append(name)
+
+
+def test_build_grill_prompt_includes_read_only_instructions() -> None:
+    prompt = build_grill_prompt(
+        {
+            "owner": "owner",
+            "repo": "repo",
+            "number": 42,
+            "title": "Add grill",
+            "body": "Body text",
+        }
+    )
+
+    assert "Issue: #42 - Add grill" in prompt
+    assert "Repository: owner/repo" in prompt
+    assert "Body text" in prompt
+    assert "Use your Read, Glob, Grep tools" in prompt
+    assert "unanswerable_questions" in prompt
+
+
+def test_append_suggested_criteria_is_idempotent() -> None:
+    body, updated = append_suggested_criteria("Original", ["First", "Second"])
+
+    assert updated is True
+    assert "## Pawchestrator Suggested Criteria" in body
+    assert "- [ ] First" in body
+
+    second_body, second_updated = append_suggested_criteria(body, ["Third"])
+
+    assert second_body == body
+    assert second_updated is False
+    assert "Third" not in second_body
+
+
+def test_run_grill_updates_body_without_comment_when_questions_empty(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    run_id = "run-123"
+    asyncio.run(_insert_run(settings, run_id))
+    _write_snapshot(settings, run_id)
+    fake_runner = FakeRunner()
+    fake_client = FakeGitHubClient()
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+
+    result = asyncio.run(
+        run_grill(
+            "https://github.com/owner/repo/issues/42",
+            settings,
+            run_id=run_id,
+            repo_path=repo_path,
+            runner=fake_runner,
+            github_client=fake_client,  # type: ignore[arg-type]
+        )
+    )
+
+    assert fake_runner.task is not None
+    assert fake_runner.task.cwd == repo_path.resolve()
+    assert fake_client.patched_body is not None
+    assert fake_client.comments == []
+    assert fake_client.added_labels == []
+    assert fake_client.removed_labels == ["pawchestrator:needs-info"]
+    assert result.report.body_updated is True
+    assert result.report.comment_posted is False
+    assert json.loads(result.artifact_path.read_text(encoding="utf-8"))["schema"] == (
+        "pawchestrator.grill_report.v1"
+    )
+
+
+def test_run_grill_posts_comment_and_applies_label_for_questions(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    run_id = "run-123"
+    asyncio.run(_insert_run(settings, run_id))
+    _write_snapshot(settings, run_id, body="Original\n\n## Pawchestrator Suggested Criteria\n\n- [ ] Existing")
+    fake_runner = FakeRunner(
+        {
+            "schema": "pawchestrator.grill_report.v1",
+            "status": "needs_info",
+            "suggested_criteria": ["New"],
+            "unanswerable_questions": ["Which command verifies this?"],
+        }
+    )
+    fake_client = FakeGitHubClient()
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+
+    result = asyncio.run(
+        run_grill(
+            "https://github.com/owner/repo/issues/42",
+            settings,
+            run_id=run_id,
+            repo_path=repo_path,
+            runner=fake_runner,
+            github_client=fake_client,  # type: ignore[arg-type]
+        )
+    )
+
+    assert fake_client.patched_body is None
+    assert len(fake_client.comments) == 1
+    assert "Which command verifies this?" in fake_client.comments[0]
+    assert fake_client.added_labels == ["pawchestrator:needs-info"]
+    assert fake_client.removed_labels == []
+    assert result.report.comment_posted is True
+    assert result.report.comment_id == 123
+
+
+def test_run_grill_degrades_without_registered_repo(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    run_id = "run-123"
+    asyncio.run(_insert_run(settings, run_id))
+    _write_snapshot(settings, run_id)
+    fake_runner = FakeRunner()
+    fake_client = FakeGitHubClient()
+
+    result = asyncio.run(
+        run_grill(
+            "https://github.com/owner/repo/issues/42",
+            settings,
+            run_id=run_id,
+            runner=fake_runner,
+            github_client=fake_client,  # type: ignore[arg-type]
+        )
+    )
+
+    assert fake_runner.task is None
+    assert result.report.status == "needs_info"
+    assert result.report.unanswerable_questions
+    assert fake_client.comments
+    assert fake_client.added_labels == ["pawchestrator:needs-info"]
+
+
+def test_issue_grill_command_prints_outcome(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(cli, "load_settings", lambda: Settings(app_dir=tmp_path))
+
+    async def fake_run_grill(issue_url: str, settings: Settings):
+        assert issue_url == "https://github.com/owner/repo/issues/42"
+        assert settings.app_dir == tmp_path
+
+        class Result:
+            run_id = "run-123"
+            artifact_path = tmp_path / "runs" / "run-123" / "grill_report.json"
+            report = GrillReport(
+                schema="pawchestrator.grill_report.v1",
+                status="success",
+                suggested_criteria=["criterion"],
+                unanswerable_questions=[],
+                body_updated=True,
+                comment_posted=False,
+                comment_id=None,
+            )
+
+        return Result()
+
+    monkeypatch.setattr(cli, "run_grill", fake_run_grill)
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["issue", "grill", "https://github.com/owner/repo/issues/42"],
+    )
+
+    assert result.exit_code == 0
+    assert "Run ID: run-123" in result.output
+    assert "Suggested criteria: 1" in result.output
+    assert "Comment posted: False" in result.output
+
+
+async def _insert_run(settings: Settings, run_id: str) -> None:
+    await init_db(settings)
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            INSERT INTO workflow_runs (
+              id, owner, repo, issue_number, workflow_type, status, current_stage,
+              created_at, updated_at
+            )
+            VALUES (
+              ?, 'owner', 'repo', 42, 'grill', 'pending', NULL,
+              '2026-05-23T00:00:00Z', '2026-05-23T00:00:01Z'
+            )
+            """,
+            (run_id,),
+        )
+        await db.commit()
+
+
+def _write_snapshot(settings: Settings, run_id: str, *, body: str = "Issue body") -> None:
+    path = settings.app_dir / "runs" / run_id / "issue.snapshot.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "schema": "pawchestrator.issue_snapshot.v1",
+                "owner": "owner",
+                "repo": "repo",
+                "number": 42,
+                "title": "Add grill",
+                "body": body,
+                "comments": [],
+            }
+        ),
+        encoding="utf-8",
+    )

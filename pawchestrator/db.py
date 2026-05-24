@@ -161,6 +161,30 @@ async def create_pipeline_run(
         await db.commit()
 
 
+async def create_grill_run(
+    settings: Settings,
+    *,
+    run_id: str,
+    owner: str,
+    repo: str,
+    issue_number: int,
+) -> None:
+    await init_db(settings)
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            INSERT INTO workflow_runs (
+              id, owner, repo, issue_number, workflow_type, status, current_stage,
+              created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, 'grill', 'pending', NULL, ?, ?)
+            """,
+            (run_id, owner, repo, issue_number, now, now),
+        )
+        await db.commit()
+
+
 async def complete_snapshot_run(
     settings: Settings,
     *,
