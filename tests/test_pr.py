@@ -10,8 +10,8 @@ from typer.testing import CliRunner
 
 from pawchestrator import cli
 from pawchestrator.config import PrSettings, Settings
-from pawchestrator.db import init_db
-from pawchestrator.pr import PrDraftResult, build_pr_body, run_pr
+from pawchestrator.db import get_run_warnings, init_db
+from pawchestrator.pr import PrDraftResult, build_pr_body, resolve_pr_assignees, run_pr
 
 
 def test_build_pr_body_includes_required_sections_for_passed_verification() -> None:
@@ -105,6 +105,8 @@ def test_run_pr_pushes_branch_creates_pr_writes_artifact_and_records_stage(
     assert "main" in calls[2][0]
     assert "--head" in calls[2][0]
     assert "paw/issue-42-test" in calls[2][0]
+    assert "--assignee" in calls[2][0]
+    assert "octo" in calls[2][0]
 
     draft = json.loads(result.artifact_path.read_text(encoding="utf-8"))
     assert result.artifact_path == tmp_path / "runs" / run_id / "pr_draft.json"
@@ -384,6 +386,119 @@ def test_run_pr_command_prints_url(
     assert "https://github.com/owner/repo/pull/99" in result.output
 
 
+def test_resolve_pr_assignees_returns_empty_when_assignment_disabled(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(app_dir=tmp_path, pr=PrSettings(assign=False))
+    client = FakeAssignmentClient(["admin"])
+
+    assignees = asyncio.run(
+        resolve_pr_assignees(
+            {"assignees": ["octo"]},
+            settings,
+            owner="owner",
+            repo="repo",
+            run_id="run-123",
+            client=client,
+        )
+    )
+
+    assert assignees == []
+    assert client.calls == []
+
+
+def test_resolve_pr_assignees_uses_snapshot_assignees_without_github_lookup(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    client = FakeAssignmentClient(["admin"])
+
+    assignees = asyncio.run(
+        resolve_pr_assignees(
+            {"assignees": ["octo", "hubot"]},
+            settings,
+            owner="owner",
+            repo="repo",
+            run_id="run-123",
+            client=client,
+        )
+    )
+
+    assert assignees == ["octo", "hubot"]
+    assert client.calls == []
+
+
+def test_resolve_pr_assignees_falls_back_to_admin_collaborators(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    client = FakeAssignmentClient(["alice", "bob"])
+
+    assignees = asyncio.run(
+        resolve_pr_assignees(
+            {"assignees": []},
+            settings,
+            owner="owner",
+            repo="repo",
+            run_id="run-123",
+            client=client,
+        )
+    )
+
+    assert assignees == ["alice", "bob"]
+    assert client.calls == [("owner", "repo")]
+
+
+def test_resolve_pr_assignees_warns_when_admin_lookup_fails(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    run_id = "run-123"
+    asyncio.run(_insert_verify_run(settings, run_id, worktree_path=None))
+    client = FakeAssignmentClient(RuntimeError("lookup failed"))
+
+    assignees = asyncio.run(
+        resolve_pr_assignees(
+            {"assignees": []},
+            settings,
+            owner="owner",
+            repo="repo",
+            run_id=run_id,
+            client=client,
+        )
+    )
+
+    warnings = asyncio.run(get_run_warnings(settings, run_id))
+    assert assignees == []
+    assert [warning["code"] for warning in warnings] == ["assignment_lookup_failed"]
+    assert warnings[0]["stage_name"] == "pr"
+    assert "lookup failed" in warnings[0]["message"]
+
+
+def test_resolve_pr_assignees_warns_when_admin_lookup_returns_empty(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    run_id = "run-123"
+    asyncio.run(_insert_verify_run(settings, run_id, worktree_path=None))
+    client = FakeAssignmentClient([])
+
+    assignees = asyncio.run(
+        resolve_pr_assignees(
+            {"assignees": []},
+            settings,
+            owner="owner",
+            repo="repo",
+            run_id=run_id,
+            client=client,
+        )
+    )
+
+    warnings = asyncio.run(get_run_warnings(settings, run_id))
+    assert assignees == []
+    assert [warning["code"] for warning in warnings] == ["assignment_lookup_failed"]
+
+
 def _run_state() -> dict[str, Any]:
     return {
         "id": "run-123",
@@ -456,7 +571,7 @@ def _write_artifacts(settings: Settings, run_id: str) -> None:
     run_dir = settings.app_dir / "runs" / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "issue.snapshot.json").write_text(
-        json.dumps({"title": "Add PR command"}),
+        json.dumps({"title": "Add PR command", "assignees": ["octo"]}),
         encoding="utf-8",
     )
     (run_dir / "implementation_plan.json").write_text(
@@ -486,3 +601,15 @@ def _assert_pr_failed(settings: Settings, run_id: str, error: str) -> None:
     assert run == ("pr_failed", "pr")
     assert stage[0] == "failed"
     assert error in stage[1]
+
+
+class FakeAssignmentClient:
+    def __init__(self, result: list[str] | Exception) -> None:
+        self.result = result
+        self.calls: list[tuple[str, str]] = []
+
+    async def fetch_admin_collaborators(self, owner: str, repo: str) -> list[str]:
+        self.calls.append((owner, repo))
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result

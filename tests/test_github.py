@@ -126,6 +126,52 @@ def test_github_issue_client_posts_comment_and_returns_id() -> None:
     assert len(requests) == 1
 
 
+def test_github_issue_client_fetches_paginated_admin_collaborators() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.query == b"permission=admin&page=2":
+            return httpx.Response(200, json=[{"login": "bob"}])
+        assert request.url.path == "/repos/owner/repo/collaborators"
+        assert request.url.query == b"permission=admin"
+        return httpx.Response(
+            200,
+            headers={
+                "Link": '<https://api.github.test/repos/owner/repo/collaborators?permission=admin&page=2>; rel="next"'
+            },
+            json=[{"login": "alice"}, {"name": "missing login"}],
+        )
+
+    client = GitHubIssueClient(
+        "token",
+        api_base="https://api.github.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    collaborators = asyncio.run(client.fetch_admin_collaborators("owner", "repo"))
+
+    assert collaborators == ["alice", "bob"]
+    assert [request.method for request in requests] == ["GET", "GET"]
+
+
+def test_github_issue_client_fetch_admin_collaborators_raises_on_http_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/repos/owner/repo/collaborators"
+        assert request.url.query == b"permission=admin"
+        return httpx.Response(403, json={"message": "forbidden"})
+
+    client = GitHubIssueClient(
+        "token",
+        api_base="https://api.github.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(RuntimeError, match="GitHub API error 403: forbidden"):
+        asyncio.run(client.fetch_admin_collaborators("owner", "repo"))
+
+
 def test_github_issue_client_edits_comment() -> None:
     requests: list[httpx.Request] = []
 

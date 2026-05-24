@@ -6,7 +6,7 @@ import asyncio
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from pawchestrator.config import Settings
 from pawchestrator.db import (
@@ -14,11 +14,18 @@ from pawchestrator.db import (
     fail_pr_run,
     get_run_state,
     get_worktree_record,
+    insert_run_warning,
     start_pr_run,
 )
+from pawchestrator.github import GitHubIssueClient, get_gh_token
 
 PR_DRAFT_SCHEMA = "pawchestrator.pr_draft.v1"
 DEFAULT_BASE_BRANCH = "main"
+
+
+class PrAssignmentClient(Protocol):
+    async def fetch_admin_collaborators(self, owner: str, repo: str) -> list[str]:
+        ...
 
 
 @dataclass(frozen=True)
@@ -62,6 +69,13 @@ async def run_pr(
         issue_title = str(snapshot.get("title") or f"Issue {issue_number}")
         title = f"fix: {issue_title} (#{issue_number})"
         body = build_pr_body(state, plan, verification)
+        assignees = await resolve_pr_assignees(
+            snapshot,
+            settings,
+            owner=str(state["owner"]),
+            repo=str(state["repo"]),
+            run_id=run_id,
+        )
 
         await _ensure_branch_has_pr_commits(
             worktree_path,
@@ -76,6 +90,7 @@ async def run_pr(
             branch=branch,
             cwd=worktree_path,
             draft=settings.pr.draft,
+            assignees=assignees,
         )
         draft = build_pr_draft(
             pr_url=pr_url,
@@ -108,6 +123,46 @@ async def run_pr(
         title=title,
         draft=draft,
     )
+
+
+async def resolve_pr_assignees(
+    snapshot: dict[str, Any],
+    settings: Settings,
+    *,
+    owner: str,
+    repo: str,
+    run_id: str,
+    client: PrAssignmentClient | None = None,
+) -> list[str]:
+    if not settings.pr.assign:
+        return []
+
+    raw_assignees = snapshot.get("assignees", [])
+    assignees = raw_assignees if isinstance(raw_assignees, list) else []
+    snapshot_assignees = [
+        assignee
+        for assignee in assignees
+        if isinstance(assignee, str) and assignee
+    ]
+    if snapshot_assignees:
+        return snapshot_assignees
+
+    try:
+        github_client = client or GitHubIssueClient(get_gh_token())
+        admin_collaborators = await github_client.fetch_admin_collaborators(owner, repo)
+    except Exception as error:
+        await _insert_assignment_lookup_warning(settings, run_id, str(error))
+        return []
+
+    if admin_collaborators:
+        return admin_collaborators
+
+    await _insert_assignment_lookup_warning(
+        settings,
+        run_id,
+        "No admin collaborators found for PR assignment.",
+    )
+    return []
 
 
 def build_pr_body(
@@ -159,6 +214,7 @@ async def _create_or_find_pr(
     branch: str,
     cwd: Path,
     draft: bool,
+    assignees: list[str],
 ) -> str:
     cmd = [
         "gh",
@@ -175,6 +231,8 @@ async def _create_or_find_pr(
     ]
     if draft:
         cmd.insert(3, "--draft")
+    for assignee in assignees:
+        cmd.extend(["--assignee", assignee])
 
     stdout, stderr, exit_code = await _run_process(cmd, cwd)
     if exit_code == 0:
@@ -278,6 +336,20 @@ def _extract_pr_url(output: str) -> str:
 def _looks_like_existing_pr(message: str) -> bool:
     normalized = message.lower()
     return "already exists" in normalized and "pull request" in normalized
+
+
+async def _insert_assignment_lookup_warning(
+    settings: Settings,
+    run_id: str,
+    message: str,
+) -> None:
+    await insert_run_warning(
+        settings,
+        run_id=run_id,
+        stage_name="pr",
+        code="assignment_lookup_failed",
+        message=message,
+    )
 
 
 def _read_json(path: Path) -> dict[str, Any]:
