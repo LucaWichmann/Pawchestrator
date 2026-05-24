@@ -18,7 +18,7 @@ from pawchestrator.db import (
     start_implement_run,
     upsert_worktree_record,
 )
-from pawchestrator.runners import CodexRunner, Runner, RunnerTask
+from pawchestrator.runners import Runner, RunnerTask, resolve_runner
 
 IMPLEMENTATION_REPORT_SCHEMA = "pawchestrator.implementation_report.v1"
 DEFAULT_BASE_BRANCH = "main"
@@ -57,11 +57,7 @@ async def run_implement(
 
     stage_id = await start_implement_run(settings, run_id=run_id)
     source_repo_path = (repo_path or Path.cwd()).resolve()
-    active_runner = runner or CodexRunner(
-        settings.runners.codex,
-        debug=settings.debug,
-        stage_overrides=settings.stages,
-    )
+    active_runner = runner or resolve_runner(settings, "implement", "codex")
     log_path = _implement_log_path(settings, run_id)
     artifact_path = _implementation_report_path(settings, run_id)
     worktree_info: WorktreeInfo | None = None

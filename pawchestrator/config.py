@@ -87,6 +87,7 @@ class StageSettings(BaseSettings):
 
     model_config = SettingsConfigDict(extra="ignore")
 
+    runner: Literal["claude", "codex"] | None = None
     claude: ClaudeStageSettings = Field(default_factory=ClaudeStageSettings)
     codex: CodexStageSettings = Field(default_factory=CodexStageSettings)
 
