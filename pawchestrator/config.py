@@ -110,6 +110,15 @@ class CodeGraphSettings(BaseSettings):
     sync_policy: Literal["safe-lazy"] = "safe-lazy"
 
 
+class PrSettings(BaseSettings):
+    """Pull request creation settings."""
+
+    model_config = SettingsConfigDict(extra="ignore")
+
+    draft: bool = False
+    assign: bool = True
+
+
 class Settings(BaseSettings):
     """Runtime settings loaded from defaults and optional config.toml."""
 
@@ -120,6 +129,7 @@ class Settings(BaseSettings):
     backend: BackendSettings = Field(default_factory=BackendSettings)
     runners: RunnerSettings = Field(default_factory=RunnerSettings)
     codegraph: CodeGraphSettings = Field(default_factory=CodeGraphSettings)
+    pr: PrSettings = Field(default_factory=PrSettings)
     stages: dict[str, StageSettings] = Field(default_factory=dict)
 
     @property
@@ -148,6 +158,7 @@ def load_settings(config_path: Path | None = None) -> Settings:
     backend_data = data.get("backend", {})
     runners_data = data.get("runners", {})
     codegraph_data = data.get("codegraph", {})
+    pr_data = data.get("pr", {})
     stages_data = data.get("stages", {})
     app_dir = Path(app_data.get("app_dir", default_app_dir)).expanduser()
     return Settings(
@@ -156,6 +167,7 @@ def load_settings(config_path: Path | None = None) -> Settings:
         backend=BackendSettings(**backend_data),
         runners=RunnerSettings(**runners_data),
         codegraph=CodeGraphSettings(**codegraph_data),
+        pr=PrSettings(**pr_data),
         stages={name: StageSettings(**stage) for name, stage in stages_data.items()},
     )
 
