@@ -9,6 +9,7 @@ import pytest
 from typer.testing import CliRunner
 
 from pawchestrator import cli
+from pawchestrator.codegraph import CodeGraphSyncResult
 from pawchestrator.config import Settings
 from pawchestrator.db import init_db
 from pawchestrator.implement import (
@@ -36,8 +37,10 @@ class FakeRunner(Runner):
         *,
         healthy: bool = True,
         result: RunnerResult | None = None,
+        events: list[str] | None = None,
     ) -> None:
         self.healthy = healthy
+        self.events = events
         self.result = result or RunnerResult(
             exit_code=0,
             stdout="codex stdout\n",
@@ -54,6 +57,8 @@ class FakeRunner(Runner):
         return self.healthy, "codex missing"
 
     async def run_task(self, task: RunnerTask) -> RunnerResult:
+        if self.events is not None:
+            self.events.append("runner")
         self.task = task
         return self.result
 
@@ -367,7 +372,8 @@ def test_run_implement_writes_report_log_and_records_stage(
     asyncio.run(_insert_plan_run(settings, run_id))
     _write_snapshot(settings, run_id)
     _write_plan(settings, run_id)
-    runner = FakeRunner()
+    events: list[str] = []
+    runner = FakeRunner(events=events)
     worktree_path = tmp_path / "worktree"
 
     async def fake_ensure_issue_worktree(
@@ -383,9 +389,46 @@ def test_run_implement_writes_report_log_and_records_stage(
             reused=False,
         )
 
+    async def fake_sync_back_if_merged(
+        settings: Settings,
+        *,
+        source_repo_path: Path,
+        worktree_path: Path,
+        branch: str,
+    ) -> CodeGraphSyncResult:
+        events.append("sync-back")
+        return CodeGraphSyncResult(
+            action="skipped",
+            source=worktree_path,
+            destination=source_repo_path,
+            message="branch not merged into main",
+        )
+
+    async def fake_seed_worktree_index(
+        settings: Settings,
+        *,
+        source_repo_path: Path,
+        worktree_path: Path,
+    ) -> CodeGraphSyncResult:
+        events.append("seed")
+        return CodeGraphSyncResult(
+            action="copied",
+            source=source_repo_path,
+            destination=worktree_path,
+            message="seeded worktree CodeGraph index",
+        )
+
     monkeypatch.setattr(
         "pawchestrator.implement.ensure_issue_worktree",
         fake_ensure_issue_worktree,
+    )
+    monkeypatch.setattr(
+        "pawchestrator.implement.sync_back_if_merged",
+        fake_sync_back_if_merged,
+    )
+    monkeypatch.setattr(
+        "pawchestrator.implement.seed_worktree_index",
+        fake_seed_worktree_index,
     )
     monkeypatch.setattr(
         "pawchestrator.implement._git_rev_parse_head",
@@ -406,6 +449,7 @@ def test_run_implement_writes_report_log_and_records_stage(
     )
 
     assert runner.task is not None
+    assert events == ["sync-back", "seed", "runner"]
     assert runner.task.cwd == worktree_path
     assert runner.task.stage_name == "implement"
     assert "IssueSnapshot JSON" in runner.task.prompt
@@ -421,6 +465,7 @@ def test_run_implement_writes_report_log_and_records_stage(
     assert report["codex_output"] == "codex stdout\ncodex stderr\n"
     assert "[stdout]" in log
     assert "codex stdout" in log
+    assert "[codegraph] seed copied: seeded worktree CodeGraph index" in log
 
     with sqlite3.connect(tmp_path / "database.sqlite") as db:
         run = db.execute(
@@ -482,6 +527,70 @@ def test_run_implement_records_failure_and_error_report(tmp_path: Path) -> None:
     assert run == ("implement_failed", "implement")
     assert stage[0] == "failed"
     assert "implementation plan not found" in stage[1]
+
+
+def test_run_implement_continues_when_codegraph_seed_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    run_id = "run-123"
+    asyncio.run(_insert_plan_run(settings, run_id))
+    _write_snapshot(settings, run_id)
+    _write_plan(settings, run_id)
+    worktree_path = tmp_path / "worktree"
+    runner = FakeRunner()
+
+    async def fake_ensure_issue_worktree(
+        settings: Settings,
+        *,
+        snapshot: dict[str, Any],
+        source_repo_path: Path,
+    ) -> WorktreeInfo:
+        return WorktreeInfo(
+            path=worktree_path,
+            branch="paw/issue-42-add-implement",
+            reused=False,
+        )
+
+    async def fake_seed_worktree_index(
+        settings: Settings,
+        *,
+        source_repo_path: Path,
+        worktree_path: Path,
+    ) -> CodeGraphSyncResult:
+        raise RuntimeError("copy exploded")
+
+    monkeypatch.setattr(
+        "pawchestrator.implement.ensure_issue_worktree",
+        fake_ensure_issue_worktree,
+    )
+    monkeypatch.setattr(
+        "pawchestrator.implement.seed_worktree_index",
+        fake_seed_worktree_index,
+    )
+    monkeypatch.setattr(
+        "pawchestrator.implement._git_rev_parse_head",
+        lambda cwd: _async_value("base-sha"),
+    )
+    monkeypatch.setattr(
+        "pawchestrator.implement._diff_since",
+        lambda cwd, base_commit: _async_value(runner.result.diff),
+    )
+
+    result = asyncio.run(
+        run_implement(
+            run_id,
+            settings,
+            repo_path=tmp_path / "source",
+            runner=runner,
+        )
+    )
+
+    assert result.report["status"] == "success"
+    assert runner.task is not None
+    log = result.log_path.read_text(encoding="utf-8")
+    assert "[codegraph] seed warning: copy exploded" in log
 
 
 def test_run_implement_fails_when_codex_changes_no_files(

@@ -24,6 +24,10 @@ Local-first GitHub-native agent orchestration platform. Augments GitHub issue pa
 
 **Doctor** — CLI command that checks all required and optional dependencies and reports their status.
 
+**Grill** — A standalone read-only analysis action triggered from the GitHub issue page. Explores the local codebase, infers acceptance criteria from issue context + code, appends a `## Pawchestrator Suggested Criteria` section to the issue body, and posts a comment only if there are questions it cannot answer from codebase context. Does not create a worktree, does not run Codex, does not modify local files. Produces a `GrillReport` artifact. Reuses the run infrastructure with `workflow_type = "grill"` to keep state tracking consistent without coupling to pipeline logic.
+
+**GrillReport** — Artifact produced by the Grill action. Contains `suggested_criteria` (inferred from codebase), `unanswerable_questions` (posted to GitHub if non-empty), `body_updated` (bool), `comment_posted` (bool), `comment_id` (int or null).
+
 ---
 
 ## MVP 0 pipeline (hardcoded, no YAML engine)
@@ -121,10 +125,12 @@ Pawchestrator does NOT inject MCP config per invocation. Doctor checks both conf
 **SQLite** from day 1 (not deferred). Minimum MVP 0 schema:
 
 ```sql
-workflow_runs   (id, owner, repo, issue_number, status, current_stage, created_at, updated_at)
+workflow_runs   (id, owner, repo, issue_number, status, current_stage, workflow_type, created_at, updated_at)
 workflow_stages (id, run_id, stage_name, status, started_at, completed_at, error)
 artifacts       (id, run_id, artifact_type, file_path, created_at)
 ```
+
+`workflow_type` distinguishes run kinds: `"pipeline"` (default, snapshot→PR) and `"grill"` (standalone analysis, no worktree). Pipeline code must assert `workflow_type != "grill"` before creating worktrees or invoking Codex.
 
 **Artifact files on disk:**
 ```
@@ -136,6 +142,7 @@ artifacts       (id, run_id, artifact_type, file_path, created_at)
   implementation_report.json
   verification_report.json
   pr_draft.json
+  grill_report.json        ← grill runs only
 ```
 
 ---
@@ -177,17 +184,25 @@ MVP 1: GitHub OAuth device flow, PAT support.
 **Comment shape (one editable comment per run):**
 - Pawchestrator posts one comment when the run starts and edits it in-place at each stage transition.
 - Comment body is a **static template** with factual data only: run ID, branch, current stage, timestamps, PR URL on completion.
-- **No LLM-generated text in GitHub comments.** Output tokens are significantly more expensive than input tokens; spending them on comment summaries is wasteful. All comment content is produced by Pawchestrator from structured state.
+- **No LLM-generated text in GitHub comments** — except Grill (see carve-out below). Output tokens are significantly more expensive than input tokens; spending them on comment summaries is wasteful. All non-grill comment content is produced by Pawchestrator from structured state.
 - One final edit posts the PR URL when the run completes.
 - The comment ID is stored in SQLite (`workflow_runs.github_comment_id`) so subsequent stage transitions can edit it.
 - Internal artifacts stay local. GitHub comments show only factual run state.
 
-**Label strategy:**
+**Grill comment carve-out:** Grill is the only action that writes LLM-generated text to GitHub. This is intentional — the questions are the product, not a summary. A grill comment is posted only when there are unanswerable questions (questions ClaudeRunner could not resolve from codebase context). Zero unanswerable questions = zero comments. The comment is posted once and never edited. See ADR 0002.
+
+**Label strategy — pipeline runs:**
 - Apply `pawchestrator:running` when a run starts, replace with stage label (`pawchestrator:scouting`, `pawchestrator:planning`, etc.) as stages progress.
 - On completion: replace with `pawchestrator:pr-ready`. On failure: `pawchestrator:failed`.
 - Only one stage label active at a time.
 - **Auto-create missing labels** on first use with a default color. Never fail a run because a label is missing.
 - Label names are defined in PRD section 9.4.
+
+**Label strategy — grill:**
+- `pawchestrator:needs-info` is a readiness state label, not a pipeline stage label. It may coexist with pipeline stage labels.
+- Grill applies `pawchestrator:needs-info` when it posts unanswerable questions (issue needs human input before implementation).
+- Grill removes `pawchestrator:needs-info` when it finds no unanswerable questions (issue is deemed ready from codebase context).
+- If no unanswerable questions and `pawchestrator:needs-info` is not present: no label operation performed.
 
 ---
 
@@ -213,15 +228,20 @@ Output tokens from LLMs (Claude, Codex) are significantly more expensive than in
 
 ## Current development phase (post-MVP0)
 
-MVP0 pipeline is complete and end-to-end verified (snapshot → scout → plan → implement → verify → PR).
+MVP0 pipeline is complete and end-to-end verified (snapshot → scout → plan → implement → verify → PR). Post-MVP0 sprint (comments, labels, repo registry, pairing token, terse prompts) also complete.
 
-**Next sprint targets (confirmed):**
-1. **GitHub comments + labels** — template-driven, no LLM tokens, one editable comment per run, auto-create missing labels
-2. **Repo registry** — `pawchestrator repo add <path>` registers a local clone; browser-triggered runs look up owner/repo in registry instead of falling back to `Path.cwd()`
-3. **Pairing token** — shared secret between backend and userscript; all `/issue/start` and `/runs/*` requests must include `X-Pawchestrator-Token` header
-4. **Prompt quality** — terse prompts that instruct agents to minimize output tokens; compressed inter-stage artifact context
+**Next sprint target: Grill**
+- New standalone action triggered from "🔥 Grill Issue" button in userscript
+- ClaudeRunner, read-only tools only (`Read`, `Glob`, `Grep`), no worktree, no Codex
+- Appends `## Pawchestrator Suggested Criteria` to issue body (idempotent — skips if heading exists)
+- Posts comment only if unanswerable questions exist; zero questions = zero comments
+- Degrades gracefully if no local repo registered (questions-only mode, no codebase exploration)
+- Userscript: second button + separate status div (grill and pipeline statuses don't clobber each other)
+- New API endpoint: `POST /issue/grill {owner, repo, number}`
+- New DB column: `workflow_type` on `workflow_runs` (`"pipeline"` or `"grill"`)
+- New GitHub API method: `patch_issue_body()` on `GitHubIssueClient`
 
-**Deferred until these are solid:**
+**Deferred:**
 - Tauri desktop viewer (MVP1 per PRD)
 - Workflow YAML engine
 - Human gates UI (push + PR approval)

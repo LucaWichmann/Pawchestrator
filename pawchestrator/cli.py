@@ -12,8 +12,15 @@ from typing import Annotated
 import typer
 import uvicorn
 
+from pawchestrator.codegraph import sync_back_if_merged
 from pawchestrator.config import DEFAULT_PORT, LOCAL_HOST, load_settings
-from pawchestrator.db import insert_repo_registration, list_repo_registrations
+from pawchestrator.db import (
+    get_run_state,
+    get_worktree_record,
+    insert_repo_registration,
+    list_repo_registrations,
+    lookup_repo_path,
+)
 from pawchestrator.doctor import STATUS_FAIL, STATUS_PASS, STATUS_WARN, has_required_failures, run_checks
 from pawchestrator.implement import run_implement
 from pawchestrator.issues import snapshot_issue
@@ -28,10 +35,12 @@ issue_app = typer.Typer(add_completion=False, help="GitHub issue tools.")
 run_app = typer.Typer(add_completion=False, help="Workflow run tools.")
 repo_app = typer.Typer(add_completion=False, help="Registered source repository tools.")
 sessions_app = typer.Typer(add_completion=False, help="Pairing session tools.")
+codegraph_app = typer.Typer(add_completion=False, help="CodeGraph index sync tools.")
 app.add_typer(issue_app, name="issue")
 app.add_typer(run_app, name="run")
 app.add_typer(repo_app, name="repo")
 app.add_typer(sessions_app, name="sessions")
+app.add_typer(codegraph_app, name="codegraph")
 
 GITHUB_REMOTE_RE = re.compile(
     r"(?:https://(?:[^@\s/]+@)?github\.com/|git@github\.com:)"
@@ -179,6 +188,35 @@ def sessions_clear() -> None:
     typer.echo("No pairing sessions to clear.")
 
 
+@codegraph_app.command("sync")
+def codegraph_sync_command(
+    run_id: str,
+    repo_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--repo-path",
+            exists=True,
+            file_okay=False,
+            dir_okay=True,
+            resolve_path=True,
+            help="Source repository path for merged CodeGraph sync-back.",
+        ),
+    ] = None,
+) -> None:
+    """Sync a merged run worktree CodeGraph index back to the source repo."""
+
+    settings = load_settings()
+    try:
+        result = asyncio.run(_sync_codegraph_run(run_id, settings, repo_path=repo_path))
+    except Exception as error:
+        typer.secho(f"CodeGraph sync failed: {error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from error
+
+    typer.echo(f"{result.action}: {result.message}")
+    typer.echo(f"Source: {result.source}")
+    typer.echo(f"Destination: {result.destination}")
+
+
 @run_app.command("scout")
 def run_scout_command(run_id: str) -> None:
     """Run the RepoScout stage for an existing issue snapshot run."""
@@ -273,6 +311,34 @@ def run_pr_command(run_id: str) -> None:
         raise typer.Exit(code=1) from error
 
     typer.echo(result.pr_url)
+
+
+async def _sync_codegraph_run(run_id: str, settings, *, repo_path: Path | None = None):
+    run_state = await get_run_state(settings, run_id)
+    if run_state is None:
+        raise ValueError(f"run not found: {run_id}")
+
+    worktree = await get_worktree_record(settings, run_id=run_id)
+    if worktree is None:
+        raise RuntimeError(f"worktree record not found for run: {run_id}")
+
+    source_repo_path = repo_path.resolve() if repo_path is not None else None
+    if source_repo_path is None:
+        source_repo_path = await lookup_repo_path(
+            settings,
+            owner=str(run_state["owner"]),
+            repo=str(run_state["repo"]),
+        )
+        if source_repo_path is None:
+            raise ValueError("Repo not registered - run `pawchestrator repo add <path>` first")
+        source_repo_path = source_repo_path.resolve()
+
+    return await sync_back_if_merged(
+        settings,
+        source_repo_path=source_repo_path,
+        worktree_path=Path(str(worktree["path"])),
+        branch=str(worktree["branch"]),
+    )
 
 
 def _print_result(label: str, status: str, message: str) -> None:

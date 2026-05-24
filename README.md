@@ -51,6 +51,7 @@ flowchart TD
 | `pawchestrator run pr <run-id>` | Create the draft PR for a verified run | Pushes the worktree branch and opens or reuses the draft PR. |
 | `pawchestrator repo add <path>` | Register a local clone | Required for browser-triggered runs that do not pass `--repo-path`. |
 | `pawchestrator repo list` | List registered repos | Shows the `owner/repo -> local path` mapping. |
+| `pawchestrator codegraph sync <run-id>` | Sync a merged CodeGraph index | Copies a run worktree index back only after its branch is already in `main`. |
 | `pawchestrator sessions clear` | Revoke pairing sessions | Deletes stored browser pairing tokens. |
 
 ## Why this design
@@ -134,6 +135,11 @@ reasoning_effort = "low"
 sandbox = "workspace-write"
 approval_policy = "never"
 bypass_sandbox = false
+
+[codegraph]
+enabled = true
+directory = ".codegraph"
+sync_policy = "safe-lazy"
 ```
 
 Notes:
@@ -142,6 +148,7 @@ Notes:
 - `debug = true` prints runner argv plus captured stdout/stderr.
 - Per-stage overrides live under `[stages.<stage>.claude]` and `[stages.<stage>.codex]`.
 - `execution = "auto"` on Codex tries native first and may fall back to WSL on known Windows sandbox failures.
+- Pawchestrator tries to preserve local CodeGraph databases even when `.codegraph/` is ignored by git. Before implementation it seeds the issue worktree from the source repo index with a SQLite-safe copy; it syncs back only when git proves the run branch has already merged into `main`.
 
 ### Local state
 
@@ -153,6 +160,15 @@ Notes:
 | `~/.pawchestrator/runs/{run_id}/` | Issue snapshot, scout report, plan, implementation report, verification report, PR draft, and logs. |
 | `~/.pawchestrator/worktrees/{owner}/{repo}/issue-{number}/` | Isolated git worktree for each issue run. |
 | `~/.pawchestrator/repos/{owner}/{repo}.toml` | Repo-local verify commands. |
+
+### CodeGraph indexes
+
+CodeGraph indexes are usually local machine artifacts and are often ignored by git because the SQLite database can be large. Pawchestrator still tries to support them for agent runs:
+
+- If the source repo has `.codegraph/codegraph.db`, Pawchestrator copies it into the issue worktree before invoking the implementation agent.
+- The copy uses SQLite backup semantics and does not copy `codegraph.db-wal` or `codegraph.db-shm`.
+- Worktree index changes stay isolated while the branch is unmerged.
+- Sync-back to the source repo only happens when the branch HEAD is already contained in `main`, either opportunistically on later runs or via `uv run pawchestrator codegraph sync <run-id>`.
 
 ### Repo verification config
 

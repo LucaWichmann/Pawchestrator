@@ -100,6 +100,16 @@ class RunnerSettings(BaseSettings):
     codex: CodexRunnerSettings = Field(default_factory=CodexRunnerSettings)
 
 
+class CodeGraphSettings(BaseSettings):
+    """CodeGraph worktree sync settings."""
+
+    model_config = SettingsConfigDict(extra="ignore")
+
+    enabled: bool = True
+    directory: str = ".codegraph"
+    sync_policy: Literal["safe-lazy"] = "safe-lazy"
+
+
 class Settings(BaseSettings):
     """Runtime settings loaded from defaults and optional config.toml."""
 
@@ -109,6 +119,7 @@ class Settings(BaseSettings):
     debug: bool = False
     backend: BackendSettings = Field(default_factory=BackendSettings)
     runners: RunnerSettings = Field(default_factory=RunnerSettings)
+    codegraph: CodeGraphSettings = Field(default_factory=CodeGraphSettings)
     stages: dict[str, StageSettings] = Field(default_factory=dict)
 
     @property
@@ -136,6 +147,7 @@ def load_settings(config_path: Path | None = None) -> Settings:
     app_data = data.get("app", {})
     backend_data = data.get("backend", {})
     runners_data = data.get("runners", {})
+    codegraph_data = data.get("codegraph", {})
     stages_data = data.get("stages", {})
     app_dir = Path(app_data.get("app_dir", default_app_dir)).expanduser()
     return Settings(
@@ -143,6 +155,7 @@ def load_settings(config_path: Path | None = None) -> Settings:
         debug=bool(app_data.get("debug", False)),
         backend=BackendSettings(**backend_data),
         runners=RunnerSettings(**runners_data),
+        codegraph=CodeGraphSettings(**codegraph_data),
         stages={name: StageSettings(**stage) for name, stage in stages_data.items()},
     )
 

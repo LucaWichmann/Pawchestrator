@@ -1,6 +1,7 @@
 from typer.testing import CliRunner
 
 from pawchestrator import cli
+from pawchestrator.codegraph import CodeGraphSyncResult
 from pawchestrator.config import DEFAULT_PORT, LOCAL_HOST
 from pawchestrator.config import Settings
 from pawchestrator.doctor import STATUS_PASS, CheckResult
@@ -145,3 +146,32 @@ def test_sessions_clear_deletes_sessions_file(tmp_path, monkeypatch) -> None:
     assert result.exit_code == 0
     assert not settings.sessions_path.exists()
     assert "Cleared pairing sessions" in result.output
+
+
+def test_codegraph_sync_command_prints_result(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cli, "load_settings", lambda: Settings(app_dir=tmp_path))
+    calls = {}
+
+    async def fake_sync_codegraph_run(run_id, settings, *, repo_path=None):
+        calls["run_id"] = run_id
+        calls["settings"] = settings
+        calls["repo_path"] = repo_path
+        return CodeGraphSyncResult(
+            action="copied",
+            source=tmp_path / "worktree" / ".codegraph",
+            destination=tmp_path / "source" / ".codegraph",
+            message="synced merged CodeGraph index back to source",
+        )
+
+    monkeypatch.setattr(cli, "_sync_codegraph_run", fake_sync_codegraph_run)
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["codegraph", "sync", "run-123", "--repo-path", str(tmp_path)],
+    )
+
+    assert result.exit_code == 0
+    assert calls["run_id"] == "run-123"
+    assert calls["settings"].app_dir == tmp_path
+    assert calls["repo_path"] == tmp_path
+    assert "copied: synced merged CodeGraph index back to source" in result.output

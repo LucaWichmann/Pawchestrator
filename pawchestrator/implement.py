@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from pawchestrator.codegraph import CodeGraphSyncResult, seed_worktree_index, sync_back_if_merged
 from pawchestrator.config import Settings
 from pawchestrator.db import (
     complete_implement_run,
@@ -64,6 +65,7 @@ async def run_implement(
     log_path = _implement_log_path(settings, run_id)
     artifact_path = _implementation_report_path(settings, run_id)
     worktree_info: WorktreeInfo | None = None
+    codegraph_messages: list[str] = []
 
     try:
         snapshot_path = _snapshot_artifact_path(settings, run_id)
@@ -90,6 +92,14 @@ async def run_implement(
             branch=worktree_info.branch,
             path=worktree_info.path,
         )
+        codegraph_messages.extend(
+            await _sync_codegraph_for_implement(
+                settings,
+                source_repo_path=source_repo_path,
+                worktree_path=worktree_info.path,
+                branch=worktree_info.branch,
+            )
+        )
 
         healthy, message = await active_runner.check_health()
         if not healthy:
@@ -108,7 +118,11 @@ async def run_implement(
                 stage_name="implement",
             )
         )
-        _write_implement_log(log_path, result.stdout, result.stderr)
+        _write_implement_log(
+            log_path,
+            result.stdout,
+            _codegraph_stderr(codegraph_messages, result.stderr),
+        )
 
         diff = await _diff_since(worktree_info.path, base_commit)
         if not diff.strip():
@@ -147,7 +161,11 @@ async def run_implement(
         )
     except Exception as error:
         if not log_path.exists():
-            _write_implement_log(log_path, "", str(error))
+            _write_implement_log(
+                log_path,
+                "",
+                _codegraph_stderr(codegraph_messages, str(error)),
+            )
         if not artifact_path.exists():
             _write_report(
                 artifact_path,
@@ -176,6 +194,52 @@ async def run_implement(
         branch=worktree_info.branch,
         report=report,
     )
+
+
+async def _sync_codegraph_for_implement(
+    settings: Settings,
+    *,
+    source_repo_path: Path,
+    worktree_path: Path,
+    branch: str,
+) -> list[str]:
+    messages: list[str] = []
+    try:
+        sync_back_result = await sync_back_if_merged(
+            settings,
+            source_repo_path=source_repo_path,
+            worktree_path=worktree_path,
+            branch=branch,
+        )
+    except Exception as error:
+        messages.append(f"[codegraph] sync-back warning: {error}")
+    else:
+        messages.append(_format_codegraph_result("sync-back", sync_back_result))
+
+    try:
+        seed_result = await seed_worktree_index(
+            settings,
+            source_repo_path=source_repo_path,
+            worktree_path=worktree_path,
+        )
+    except Exception as error:
+        messages.append(f"[codegraph] seed warning: {error}")
+    else:
+        messages.append(_format_codegraph_result("seed", seed_result))
+    return messages
+
+
+def _format_codegraph_result(label: str, result: CodeGraphSyncResult) -> str:
+    return f"[codegraph] {label} {result.action}: {result.message}"
+
+
+def _codegraph_stderr(messages: list[str], stderr: str) -> str:
+    if not messages:
+        return stderr
+    sync_log = "\n".join(messages)
+    if not stderr:
+        return f"{sync_log}\n"
+    return f"{sync_log}\n{stderr}"
 
 
 async def ensure_issue_worktree(
