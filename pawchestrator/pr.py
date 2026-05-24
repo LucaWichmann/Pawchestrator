@@ -75,6 +75,7 @@ async def run_pr(
             base=DEFAULT_BASE_BRANCH,
             branch=branch,
             cwd=worktree_path,
+            draft=settings.pr.draft,
         )
         draft = build_pr_draft(
             pr_url=pr_url,
@@ -157,24 +158,25 @@ async def _create_or_find_pr(
     base: str,
     branch: str,
     cwd: Path,
+    draft: bool,
 ) -> str:
-    stdout, stderr, exit_code = await _run_process(
-        [
-            "gh",
-            "pr",
-            "create",
-            "--draft",
-            "--title",
-            title,
-            "--body",
-            body,
-            "--base",
-            base,
-            "--head",
-            branch,
-        ],
-        cwd,
-    )
+    cmd = [
+        "gh",
+        "pr",
+        "create",
+        "--title",
+        title,
+        "--body",
+        body,
+        "--base",
+        base,
+        "--head",
+        branch,
+    ]
+    if draft:
+        cmd.insert(3, "--draft")
+
+    stdout, stderr, exit_code = await _run_process(cmd, cwd)
     if exit_code == 0:
         return _extract_pr_url(stdout)
 

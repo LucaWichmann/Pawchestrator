@@ -9,7 +9,7 @@ import pytest
 from typer.testing import CliRunner
 
 from pawchestrator import cli
-from pawchestrator.config import Settings
+from pawchestrator.config import PrSettings, Settings
 from pawchestrator.db import init_db
 from pawchestrator.pr import PrDraftResult, build_pr_body, run_pr
 
@@ -96,10 +96,11 @@ def test_run_pr_pushes_branch_creates_pr_writes_artifact_and_records_stage(
         "gh",
         "pr",
         "create",
-        "--draft",
         "--title",
         "fix: Add PR command (#42)",
+        "--body",
     ]
+    assert "--draft" not in calls[2][0]
     assert "--base" in calls[2][0]
     assert "main" in calls[2][0]
     assert "--head" in calls[2][0]
@@ -138,6 +139,35 @@ def test_run_pr_pushes_branch_creates_pr_writes_artifact_and_records_stage(
     assert run == ("pr_complete", "pr", "https://github.com/owner/repo/pull/99")
     assert stage == ("complete", None)
     assert artifact == ("pr_draft", str(result.artifact_path))
+
+
+def test_run_pr_includes_draft_flag_when_configured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = Settings(app_dir=tmp_path, pr=PrSettings(draft=True))
+    run_id = "run-123"
+    worktree_path = tmp_path / "worktree"
+    worktree_path.mkdir()
+    asyncio.run(_insert_verify_run(settings, run_id, worktree_path=worktree_path))
+    _write_artifacts(settings, run_id)
+    calls: list[list[str]] = []
+
+    async def fake_run_process(cmd: list[str], cwd: Path) -> tuple[str, str, int]:
+        calls.append(cmd)
+        if cmd[:3] == ["git", "rev-list", "--count"]:
+            return "1\n", "", 0
+        if cmd[:2] == ["git", "push"]:
+            return "pushed", "", 0
+        if cmd[:3] == ["gh", "pr", "create"]:
+            return "https://github.com/owner/repo/pull/99\n", "", 0
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr("pawchestrator.pr._run_process", fake_run_process)
+
+    result = asyncio.run(run_pr(run_id, settings))
+
+    assert result.pr_url == "https://github.com/owner/repo/pull/99"
+    assert calls[2][:4] == ["gh", "pr", "create", "--draft"]
 
 
 def test_run_pr_reuses_existing_pr_for_branch(
