@@ -9,9 +9,9 @@ import pytest
 from typer.testing import CliRunner
 
 from pawchestrator import cli
-from pawchestrator.config import Settings
+from pawchestrator.config import Settings, StageSettings
 from pawchestrator.db import init_db
-from pawchestrator.runners import Runner, RunnerResult, RunnerTask
+from pawchestrator.runners import CodexRunner, Runner, RunnerResult, RunnerTask
 from pawchestrator.scout import build_scout_prompt, run_scout
 
 
@@ -151,6 +151,52 @@ def test_run_scout_writes_artifact_log_and_records_stage(tmp_path: Path) -> None
     assert run == ("scout_complete", "scout")
     assert stage == ("complete", None)
     assert artifact == ("scout_report", str(result.artifact_path))
+
+
+def test_run_scout_uses_codex_runner_stage_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = Settings(
+        app_dir=tmp_path,
+        stages={"scout": StageSettings(runner="codex")},
+    )
+    run_id = "run-123"
+    asyncio.run(_insert_snapshot_run(settings, run_id))
+    _write_snapshot(settings, run_id)
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    captured: dict[str, RunnerTask] = {}
+
+    async def fake_check_health(self: CodexRunner) -> tuple[bool, str]:
+        return True, "ok"
+
+    async def fake_run_task(self: CodexRunner, task: RunnerTask) -> RunnerResult:
+        captured["task"] = task
+        return RunnerResult(
+            exit_code=0,
+            stdout='{"result": "ok"}',
+            stderr="",
+            artifact={
+                "schema": "pawchestrator.scout_report.v1",
+                "status": "success",
+                "readiness": "ready",
+                "risk": "low",
+                "findings": [{"kind": "scope", "text": "Small Codex change"}],
+                "risks": [],
+                "next_recommended_stage": "plan",
+            },
+        )
+
+    monkeypatch.setattr(CodexRunner, "check_health", fake_check_health)
+    monkeypatch.setattr(CodexRunner, "run_task", fake_run_task)
+
+    result = asyncio.run(run_scout(run_id, settings, repo_path=repo_path))
+
+    assert captured["task"].stage_name == "scout"
+    assert captured["task"].cwd == repo_path.resolve()
+    assert result.report["findings"] == [
+        {"kind": "scope", "text": "Small Codex change"}
+    ]
 
 
 def test_run_scout_records_failure_and_log(tmp_path: Path) -> None:
