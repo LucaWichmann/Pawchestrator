@@ -15,7 +15,7 @@ from pawchestrator.verify import (
     ShellRunner,
     VerificationResult,
     load_verify_commands,
-    repo_config_path_for,
+    repo_verify_config_path_for,
     run_verify,
 )
 
@@ -91,7 +91,7 @@ def test_run_verify_writes_passed_report_log_and_records_stage(tmp_path: Path) -
     worktree_path = tmp_path / "worktree"
     worktree_path.mkdir()
     asyncio.run(_insert_implement_run(settings, run_id, worktree_path=worktree_path))
-    _write_repo_config(settings)
+    _write_repo_config(worktree_path)
     runner = FakeShellRunner(
         [
             CommandResult("build", "python -m build", 0, "built\n", ""),
@@ -150,7 +150,7 @@ def test_run_verify_stops_after_first_failure(tmp_path: Path) -> None:
     worktree_path = tmp_path / "worktree"
     worktree_path.mkdir()
     asyncio.run(_insert_implement_run(settings, run_id, worktree_path=worktree_path))
-    _write_repo_config(settings, lint="ruff check .")
+    _write_repo_config(worktree_path, lint="ruff check .")
     runner = FakeShellRunner(
         [
             CommandResult("build", "python -m build", 0, "built\n", ""),
@@ -215,7 +215,7 @@ def test_run_verify_skips_when_build_and_test_empty(tmp_path: Path) -> None:
     worktree_path = tmp_path / "worktree"
     worktree_path.mkdir()
     asyncio.run(_insert_implement_run(settings, run_id, worktree_path=worktree_path))
-    _write_repo_config(settings, build="", test="", lint="ruff check .")
+    _write_repo_config(worktree_path, build="", test="", lint="ruff check .")
 
     result = asyncio.run(run_verify(run_id, settings, runner=FakeShellRunner([])))
 
@@ -223,13 +223,10 @@ def test_run_verify_skips_when_build_and_test_empty(tmp_path: Path) -> None:
     assert "no build or test commands configured" in result.report["skip_reason"]
 
 
-def test_run_verify_fails_when_worktree_record_missing_after_config_exists(
-    tmp_path: Path,
-) -> None:
+def test_run_verify_fails_when_worktree_record_missing(tmp_path: Path) -> None:
     settings = Settings(app_dir=tmp_path)
     run_id = "run-123"
     asyncio.run(_insert_implement_run(settings, run_id, worktree_path=None))
-    _write_repo_config(settings)
 
     with pytest.raises(RuntimeError, match="worktree record not found"):
         asyncio.run(run_verify(run_id, settings, runner=FakeShellRunner([])))
@@ -346,13 +343,13 @@ async def _insert_implement_run(
 
 
 def _write_repo_config(
-    settings: Settings,
+    worktree_path: Path,
     *,
     build: str = "python -m build",
     test: str = "pytest",
     lint: str = "",
 ) -> None:
-    path = repo_config_path_for(settings, owner="owner", repo="repo")
+    path = repo_verify_config_path_for(worktree_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         f'[commands]\nbuild = "{build}"\ntest = "{test}"\nlint = "{lint}"\n',

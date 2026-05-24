@@ -1,0 +1,2 @@
+[commands]
+test = "uv run pytest"

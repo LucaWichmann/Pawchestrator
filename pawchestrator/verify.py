@@ -21,6 +21,7 @@ from pawchestrator.db import (
 
 VERIFICATION_REPORT_SCHEMA = "pawchestrator.verification_report.v1"
 VERIFY_COMMAND_ORDER = ("build", "test", "lint")
+REPO_VERIFY_CONFIG_PATH = Path(".pawchestrator") / "verify.toml"
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 600
 SUMMARY_MAX_CHARS = 500
 
@@ -106,11 +107,15 @@ async def run_verify(
     active_runner = runner or ShellRunner()
 
     try:
-        repo_config_path = repo_config_path_for(
-            settings,
-            owner=str(state["owner"]),
-            repo=str(state["repo"]),
-        )
+        worktree = await get_worktree_record(settings, run_id=run_id)
+        if worktree is None:
+            raise RuntimeError(f"worktree record not found for run: {run_id}")
+
+        worktree_path = Path(str(worktree["path"]))
+        if not worktree_path.exists():
+            raise RuntimeError(f"worktree path not found: {worktree_path}")
+
+        repo_config_path = repo_verify_config_path_for(worktree_path)
         commands = load_verify_commands(repo_config_path)
         if commands is None:
             reason = "[verify] skipped - no repo config found"
@@ -147,14 +152,6 @@ async def run_verify(
                 reason=reason,
             )
             return VerificationResult(run_id, artifact_path, log_path, report)
-
-        worktree = await get_worktree_record(settings, run_id=run_id)
-        if worktree is None:
-            raise RuntimeError(f"worktree record not found for run: {run_id}")
-
-        worktree_path = Path(str(worktree["path"]))
-        if not worktree_path.exists():
-            raise RuntimeError(f"worktree path not found: {worktree_path}")
 
         results: list[CommandResult] = []
         for command in commands:
@@ -205,8 +202,8 @@ async def run_verify(
     return VerificationResult(run_id, artifact_path, log_path, report)
 
 
-def repo_config_path_for(settings: Settings, *, owner: str, repo: str) -> Path:
-    return settings.app_dir / "repos" / owner / f"{repo}.toml"
+def repo_verify_config_path_for(worktree_path: Path) -> Path:
+    return worktree_path / REPO_VERIFY_CONFIG_PATH
 
 
 def load_verify_commands(path: Path) -> list[CommandSpec] | None:

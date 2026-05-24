@@ -159,7 +159,7 @@ Notes:
 | `~/.pawchestrator/sessions.json` | Browser pairing tokens. |
 | `~/.pawchestrator/runs/{run_id}/` | Issue snapshot, scout report, plan, implementation report, verification report, PR draft, and logs. |
 | `~/.pawchestrator/worktrees/{owner}/{repo}/issue-{number}/` | Isolated git worktree for each issue run. |
-| `~/.pawchestrator/repos/{owner}/{repo}.toml` | Repo-local verify commands. |
+| `<repo>/.pawchestrator/verify.toml` | Tracked repo verification commands. |
 
 ### CodeGraph indexes
 
@@ -172,7 +172,7 @@ CodeGraph indexes are usually local machine artifacts and are often ignored by g
 
 ### Repo verification config
 
-Verification reads repo-local commands from `~/.pawchestrator/repos/{owner}/{repo}.toml`.
+Verification reads repo-local commands from `.pawchestrator/verify.toml` in the run worktree. Commit this file with the repository so every contributor and every Pawchestrator worktree uses the same verification steps.
 
 ```toml
 [commands]
