@@ -58,7 +58,7 @@ flowchart TD
 
 - Local-first keeps the orchestration inspectable, fast, and under your control.
 - Structured artifacts beat long chat transcripts, so each stage hands off JSON or files instead of prose.
-- GitHub comments are template-only and factual, not LLM-generated; see [ADR 0001](docs/adr/0001-template-only-github-comments.md).
+- GitHub comments are template-only and factual, not LLM-generated.
 - Token spend stays low because the pipeline uses terse prompts, compact stage outputs, and local comments/state instead of verbose summaries.
 
 ## Quick start
@@ -213,8 +213,3 @@ wsl --exec sh -lc "npm install -g @openai/codex@latest && codex --version"
 
 Use `bypass_sandbox = true` only as an intentional last resort for trusted repos.
 
-## More context
-
-- Domain context: [CONTEXT.md](CONTEXT.md)
-- Product requirements: [Pawchestrator_PRD.md](Pawchestrator_PRD.md)
-- GitHub comment policy: [docs/adr/0001-template-only-github-comments.md](docs/adr/0001-template-only-github-comments.md)
