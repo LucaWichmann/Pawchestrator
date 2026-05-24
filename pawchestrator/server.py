@@ -139,6 +139,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ),
         )
         return {
+            "backend_connected": True,
             "repo_registered": repo_registered,
             "runners": runners,
             "pipeline": pipeline,

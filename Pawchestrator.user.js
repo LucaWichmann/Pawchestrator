@@ -17,8 +17,7 @@
   "use strict";
 
   const API_BASE = "http://127.0.0.1:38472";
-  const STATUS_ID = "pawchestrator-status";
-  const GRILL_STATUS_ID = "pawchestrator-grill-status";
+  const PANEL_ID = "pawchestrator-panel";
   const START_ID = "pawchestrator-start";
   const GRILL_ID = "pawchestrator-grill";
   const POLL_INTERVAL_MS = 3000;
@@ -26,31 +25,15 @@
   const TOKEN_KEY = "pawchestrator_token";
   const PAW = "\uD83D\uDC3E";
   const FIRE = "\uD83D\uDD25";
-  const OFFLINE_MESSAGE = "Pawchestrator not running - start with `pawchestrator serve`";
+  const OFFLINE_MESSAGE = "Pawchestrator not running \u2014 start with `pawchestrator serve`";
+  const RUN_DONE = new Set(["completed", "failed", "grill_complete", "grill_failed"]);
 
-  let activePollPipeline = null;
-  let activePollGrill = null;
+  let activePoll = null;
   let activePathname = window.location.pathname;
+  let panelExpandedByUser = null;
   let reinjectTimer = null;
 
   GM_addStyle(`
-    #${STATUS_ID},
-    #${GRILL_STATUS_ID} {
-      align-items: center;
-      color: var(--fgColor-default, #24292f);
-      display: inline-flex;
-      font-size: 12px;
-      line-height: 20px;
-      margin: 0 8px;
-      min-height: 18px;
-      max-width: 280px;
-      overflow-wrap: anywhere;
-    }
-
-    #${GRILL_STATUS_ID} {
-      color: var(--fgColor-muted, #59636e);
-    }
-
     #${START_ID},
     #${GRILL_ID} {
       white-space: nowrap;
@@ -62,7 +45,80 @@
       opacity: 0.65;
     }
 
-    #${STATUS_ID} a {
+    #${PANEL_ID} {
+      background: var(--bgColor-default, #ffffff);
+      border: 1px solid var(--borderColor-default, #d0d7de);
+      border-radius: 6px;
+      color: var(--fgColor-default, #24292f);
+      font-size: 13px;
+      line-height: 20px;
+      margin: 8px 0 16px;
+    }
+
+    #${PANEL_ID} .pawchestrator-panel-bar {
+      align-items: center;
+      display: flex;
+      gap: 8px;
+      min-height: 38px;
+      padding: 8px 12px;
+    }
+
+    #${PANEL_ID} .pawchestrator-panel-toggle {
+      align-items: center;
+      background: transparent;
+      border: 0;
+      color: var(--fgColor-muted, #59636e);
+      cursor: pointer;
+      display: inline-flex;
+      font: inherit;
+      height: 24px;
+      justify-content: center;
+      padding: 0;
+      width: 24px;
+    }
+
+    #${PANEL_ID} .pawchestrator-panel-summary {
+      flex: 1;
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+
+    #${PANEL_ID} .pawchestrator-panel-body {
+      border-top: 1px solid var(--borderColor-default, #d0d7de);
+      display: none;
+      padding: 10px 12px 12px;
+    }
+
+    #${PANEL_ID}[data-expanded="true"] .pawchestrator-panel-body {
+      display: block;
+    }
+
+    #${PANEL_ID} .pawchestrator-readiness-row {
+      align-items: center;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 16px;
+    }
+
+    #${PANEL_ID} .pawchestrator-readiness-item {
+      color: var(--fgColor-muted, #59636e);
+      white-space: nowrap;
+    }
+
+    #${PANEL_ID} .pawchestrator-readiness-item[data-ready="true"] {
+      color: var(--fgColor-success, #1a7f37);
+    }
+
+    #${PANEL_ID} .pawchestrator-readiness-item[data-ready="false"] {
+      color: var(--fgColor-danger, #cf222e);
+    }
+
+    #${PANEL_ID} .pawchestrator-run-line {
+      color: var(--fgColor-muted, #59636e);
+      margin-top: 8px;
+    }
+
+    #${PANEL_ID} a {
       color: var(--fgColor-accent, #0969da);
     }
   `);
@@ -117,32 +173,60 @@
     return candidates.find(isVisible) || candidates[0] || null;
   }
 
-  function setStatus(message) {
-    const status = document.getElementById(STATUS_ID);
-    if (status) {
-      status.textContent = message;
+  function findIssueBodyContainer() {
+    const selectors = [
+      ".IssueBody-module__outerContainer__ULNTb",
+      '[class*="IssueBody-module__outerContainer"]',
+    ];
+    return selectors
+      .map((selector) => document.querySelector(selector))
+      .find(Boolean) || null;
+  }
+
+  function findNewIssueHost(actions) {
+    const newIssue = actions.querySelector('a[href$="/issues/new/choose"], a[href*="/issues/new"]');
+    if (!newIssue) {
+      return null;
+    }
+
+    const parent = newIssue.parentElement;
+    if (parent && parent.parentElement === actions) {
+      return parent;
+    }
+    return newIssue;
+  }
+
+  function setPanelSummary(message) {
+    const panel = document.getElementById(PANEL_ID);
+    const summary = panel && panel.querySelector(".pawchestrator-panel-summary");
+    if (summary) {
+      summary.textContent = `${PAW} Pawchestrator \u00B7 ${message}`;
     }
   }
 
-  function setGrillStatus(message) {
-    const status = document.getElementById(GRILL_STATUS_ID);
-    if (status) {
-      status.textContent = message;
-    }
-  }
-
-  function setStatusLink(message, href) {
-    const status = document.getElementById(STATUS_ID);
-    if (!status) {
+  function setPanelExpanded(expanded) {
+    const panel = document.getElementById(PANEL_ID);
+    if (!panel) {
       return;
     }
+    panel.dataset.expanded = String(expanded);
+    const toggle = panel.querySelector(".pawchestrator-panel-toggle");
+    if (toggle) {
+      toggle.textContent = expanded ? "\u25BE" : "\u25B8";
+      toggle.setAttribute("aria-expanded", String(expanded));
+    }
+  }
 
-    status.textContent = "";
-    status.append(document.createTextNode(`${message} `));
-    const link = document.createElement("a");
-    link.href = href;
-    link.textContent = href;
-    status.append(link);
+  function shouldAutoExpand(status) {
+    return Boolean(status && (status.pipeline || status.grill));
+  }
+
+  function currentRun(status) {
+    if (!status) {
+      return null;
+    }
+    const runs = [status.pipeline, status.grill].filter(Boolean);
+    return runs.find((run) => !RUN_DONE.has(run.status)) || runs[0] || null;
   }
 
   function summarizeError(run) {
@@ -183,61 +267,100 @@
       }
 
       if (parts.length > 0) {
-        return parts.join(" · ");
+        return parts.join(" \u00B7 ");
       }
     }
 
     return "Grill completed";
   }
 
-  function renderStatus(run) {
+  function summarizeRun(run) {
+    if (!run) {
+      return "Ready";
+    }
     if (run.status === "completed") {
-      if (run.pr_url) {
-        setStatusLink("Draft PR ready:", run.pr_url);
-      } else {
-        setStatus("Run completed");
-      }
-      return;
+      return run.pr_url ? "Draft PR ready" : "Run completed";
     }
-
     if (run.status === "failed") {
-      setStatus(summarizeError(run));
-      return;
+      return summarizeError(run);
+    }
+    if (run.status === "grill_complete") {
+      return summarizeGrillCompletion(run);
+    }
+    if (run.status === "grill_failed") {
+      return summarizeError(run);
     }
 
-    const stage = run.current_stage || "queued";
-    const stageStatus = run.status || "pending";
-    setStatus(`[${stage}] ${stageStatus}...`);
-  }
-
-  function renderGrillStatus(run) {
-    if (run.status === "grill_complete" || run.status === "completed") {
-      setGrillStatus(summarizeGrillCompletion(run));
-      return;
-    }
-
-    if (run.status === "grill_failed" || run.status === "failed") {
-      setGrillStatus(summarizeError(run));
-      return;
-    }
-
-    const stage = run.current_stage || "grill";
+    const stage = run.current_stage || (run.workflow_type === "grill" ? "grill" : "queued");
     const stageStatus = (run.status || "pending").replace(/^grill_/, "");
-    setGrillStatus(`[${stage}] ${stageStatus}...`);
+    return `[${stage}] ${stageStatus}...`;
   }
 
-  function stopPipelinePolling() {
-    if (activePollPipeline) {
-      window.clearInterval(activePollPipeline);
-      activePollPipeline = null;
+  function renderReadinessItem(parent, label, ready) {
+    const item = document.createElement("span");
+    item.className = "pawchestrator-readiness-item";
+    item.dataset.ready = String(Boolean(ready));
+    item.textContent = `${ready ? "\u2713" : "\u00D7"} ${label}`;
+    parent.append(item);
+  }
+
+  function renderStatus(status) {
+    const panel = document.getElementById(PANEL_ID);
+    if (!panel) {
+      return;
+    }
+
+    const run = currentRun(status);
+    setPanelSummary(summarizeRun(run));
+
+    if (panelExpandedByUser === null) {
+      setPanelExpanded(shouldAutoExpand(status));
+    }
+
+    const body = panel.querySelector(".pawchestrator-panel-body");
+    if (!body) {
+      return;
+    }
+    body.textContent = "";
+
+    const readiness = document.createElement("div");
+    readiness.className = "pawchestrator-readiness-row";
+    renderReadinessItem(readiness, "Backend connected", status.backend_connected);
+    renderReadinessItem(readiness, "Repo registered", status.repo_registered);
+    renderReadinessItem(readiness, "Claude available", status.runners?.claude?.available);
+    renderReadinessItem(readiness, "Codex available", status.runners?.codex?.available);
+    body.append(readiness);
+
+    if (run) {
+      const line = document.createElement("div");
+      line.className = "pawchestrator-run-line";
+      line.textContent = `${run.workflow_type || "pipeline"}: ${summarizeRun(run)}`;
+      if (run.pr_url) {
+        line.append(document.createTextNode(" "));
+        const link = document.createElement("a");
+        link.href = run.pr_url;
+        link.textContent = run.pr_url;
+        line.append(link);
+      }
+      body.append(line);
     }
   }
 
-  function stopGrillPolling() {
-    if (activePollGrill) {
-      window.clearInterval(activePollGrill);
-      activePollGrill = null;
+  function renderOffline() {
+    setPanelSummary(OFFLINE_MESSAGE);
+    const panel = document.getElementById(PANEL_ID);
+    const body = panel && panel.querySelector(".pawchestrator-panel-body");
+    if (!body) {
+      return;
     }
+    body.textContent = "";
+    const readiness = document.createElement("div");
+    readiness.className = "pawchestrator-readiness-row";
+    renderReadinessItem(readiness, "Backend connected", false);
+    renderReadinessItem(readiness, "Repo registered", false);
+    renderReadinessItem(readiness, "Claude available", false);
+    renderReadinessItem(readiness, "Codex available", false);
+    body.append(readiness);
   }
 
   function rawRequestJson(path, options = {}) {
@@ -273,7 +396,7 @@
     });
   }
 
-  async function getOrAcquireToken(statusSetter = setStatus) {
+  async function getOrAcquireToken(statusSetter = setPanelSummary) {
     const storedToken = await GM_getValue(TOKEN_KEY);
     if (storedToken) {
       return storedToken;
@@ -293,7 +416,7 @@
       return rawRequestJson(path, options);
     }
 
-    const statusSetter = options.statusSetter || setStatus;
+    const statusSetter = options.statusSetter || setPanelSummary;
     const token = await getOrAcquireToken(statusSetter);
     const headers = {
       ...(options.headers || {}),
@@ -319,75 +442,39 @@
     }
   }
 
-  async function fetchRun(runId) {
-    return requestJson(`/runs/${runId}`, { label: "Status request" });
+  async function fetchIssueStatus() {
+    const issue = parseIssueReference();
+    return requestJson(`/issue/${issue.owner}/${issue.repo}/${issue.number}/status`, {
+      label: "Issue status request",
+    });
   }
 
-  async function pollOnce(runId) {
-    const run = await fetchRun(runId);
-    renderStatus(run);
-    if (run.status === "completed" || run.status === "failed") {
-      stopPipelinePolling();
-      const button = document.getElementById(START_ID);
-      if (button) {
-        button.disabled = false;
-      }
-    }
+  async function pollIssueStatusOnce() {
+    const status = await fetchIssueStatus();
+    renderStatus(status);
+    const run = currentRun(status);
+    const running = run && !RUN_DONE.has(run.status);
+    document.getElementById(START_ID)?.toggleAttribute("disabled", Boolean(status.pipeline && !RUN_DONE.has(status.pipeline.status)));
+    document.getElementById(GRILL_ID)?.toggleAttribute("disabled", Boolean(status.grill && !RUN_DONE.has(status.grill.status)));
+    return running;
   }
 
-  function pollStatus(runId) {
-    stopPipelinePolling();
-    pollOnce(runId).catch((error) => setStatus(error.message));
-    activePollPipeline = window.setInterval(() => {
-      pollOnce(runId).catch((error) => {
-        stopPipelinePolling();
-        setStatus(error.message);
-        const button = document.getElementById(START_ID);
-        if (button) {
-          button.disabled = false;
-        }
+  function startIssueStatusPolling() {
+    stopIssueStatusPolling();
+    pollIssueStatusOnce().catch(() => renderOffline());
+    activePoll = window.setInterval(() => {
+      pollIssueStatusOnce().catch(() => {
+        renderOffline();
+        document.getElementById(START_ID)?.removeAttribute("disabled");
+        document.getElementById(GRILL_ID)?.removeAttribute("disabled");
       });
     }, POLL_INTERVAL_MS);
   }
 
-  async function pollGrillOnce(runId) {
-    const run = await fetchRun(runId);
-    renderGrillStatus(run);
-    if (
-      run.status === "grill_complete"
-      || run.status === "grill_failed"
-      || run.status === "completed"
-      || run.status === "failed"
-    ) {
-      stopGrillPolling();
-      const button = document.getElementById(GRILL_ID);
-      if (button) {
-        button.disabled = false;
-      }
-    }
-  }
-
-  function pollGrillStatus(runId) {
-    stopGrillPolling();
-    pollGrillOnce(runId).catch((error) => setGrillStatus(error.message));
-    activePollGrill = window.setInterval(() => {
-      pollGrillOnce(runId).catch((error) => {
-        stopGrillPolling();
-        setGrillStatus(error.message);
-        const button = document.getElementById(GRILL_ID);
-        if (button) {
-          button.disabled = false;
-        }
-      });
-    }, POLL_INTERVAL_MS);
-  }
-
-  async function checkBackend() {
-    try {
-      await requestJson("/health", { label: "Health check" });
-      setStatus("Ready");
-    } catch (_error) {
-      setStatus(OFFLINE_MESSAGE);
+  function stopIssueStatusPolling() {
+    if (activePoll) {
+      window.clearInterval(activePoll);
+      activePoll = null;
     }
   }
 
@@ -400,16 +487,18 @@
     try {
       const issue = parseIssueReference();
       await getOrAcquireToken();
-      setStatus("[snapshot] starting...");
-      const payload = await requestJson("/issue/start", {
+      setPanelSummary("[snapshot] starting...");
+      panelExpandedByUser = true;
+      setPanelExpanded(true);
+      await requestJson("/issue/start", {
         method: "POST",
         label: "Start request",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(issue),
       });
-      pollStatus(payload.run_id);
+      startIssueStatusPolling();
     } catch (error) {
-      setStatus(error.message);
+      setPanelSummary(error.message);
       if (button) {
         button.disabled = false;
       }
@@ -424,36 +513,38 @@
 
     try {
       const issue = parseIssueReference();
-      await getOrAcquireToken(setGrillStatus);
-      setGrillStatus("[grill] starting...");
-      const payload = await requestJson("/issue/grill", {
+      await getOrAcquireToken(setPanelSummary);
+      setPanelSummary("[grill] starting...");
+      panelExpandedByUser = true;
+      setPanelExpanded(true);
+      await requestJson("/issue/grill", {
         method: "POST",
         label: "Grill request",
-        statusSetter: setGrillStatus,
+        statusSetter: setPanelSummary,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(issue),
       });
-      pollGrillStatus(payload.run_id);
+      startIssueStatusPolling();
     } catch (error) {
-      setGrillStatus(error.message);
+      setPanelSummary(error.message);
       if (button) {
         button.disabled = false;
       }
     }
   }
 
-  function createStartButton() {
+  function createButton(id, testid, labelText, onClick) {
     const button = document.createElement("button");
-    button.id = START_ID;
+    button.id = id;
     button.type = "button";
     button.dataset.component = "Button";
-    button.dataset.testid = "pawchestrator-work-button";
+    button.dataset.testid = testid;
     button.dataset.loading = "false";
     button.dataset.noVisuals = "true";
     button.dataset.size = "medium";
     button.dataset.variant = "default";
     button.className = "prc-Button-ButtonBase-9n-Xk";
-    button.addEventListener("click", startRun);
+    button.addEventListener("click", onClick);
 
     const content = document.createElement("span");
     content.dataset.component = "buttonContent";
@@ -463,137 +554,120 @@
     const label = document.createElement("span");
     label.dataset.component = "text";
     label.className = "prc-Button-Label-FWkx3";
-    label.textContent = `${PAW} Work on this issue`;
+    label.textContent = labelText;
 
     content.append(label);
     button.append(content);
     return button;
+  }
+
+  function createStartButton() {
+    return createButton(START_ID, "pawchestrator-work-button", `${PAW} Work on this issue`, startRun);
   }
 
   function createGrillButton() {
-    const button = document.createElement("button");
-    button.id = GRILL_ID;
-    button.type = "button";
-    button.dataset.component = "Button";
-    button.dataset.testid = "pawchestrator-grill-button";
-    button.dataset.loading = "false";
-    button.dataset.noVisuals = "true";
-    button.dataset.size = "medium";
-    button.dataset.variant = "default";
-    button.className = "prc-Button-ButtonBase-9n-Xk";
-    button.addEventListener("click", startGrill);
-
-    const content = document.createElement("span");
-    content.dataset.component = "buttonContent";
-    content.dataset.align = "center";
-    content.className = "prc-Button-ButtonContent-Iohp5";
-
-    const label = document.createElement("span");
-    label.dataset.component = "text";
-    label.className = "prc-Button-Label-FWkx3";
-    label.textContent = `${FIRE} Grill Issue`;
-
-    content.append(label);
-    button.append(content);
-    return button;
+    return createButton(GRILL_ID, "pawchestrator-grill-button", `${FIRE} Grill Issue`, startGrill);
   }
 
-  function createStatus() {
-    const status = document.createElement("div");
-    status.id = STATUS_ID;
-    status.textContent = "Checking backend...";
-    return status;
+  function createPanel() {
+    const panel = document.createElement("div");
+    panel.id = PANEL_ID;
+    panel.dataset.expanded = "false";
+
+    const bar = document.createElement("div");
+    bar.className = "pawchestrator-panel-bar";
+
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "pawchestrator-panel-toggle prc-Button-ButtonBase-9n-Xk";
+    toggle.setAttribute("aria-label", "Toggle Pawchestrator panel");
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.textContent = "\u25B8";
+    toggle.addEventListener("click", () => {
+      const expanded = panel.dataset.expanded !== "true";
+      panelExpandedByUser = expanded;
+      setPanelExpanded(expanded);
+    });
+
+    const summary = document.createElement("div");
+    summary.className = "pawchestrator-panel-summary";
+    summary.textContent = `${PAW} Pawchestrator \u00B7 Checking backend...`;
+
+    const body = document.createElement("div");
+    body.className = "pawchestrator-panel-body";
+
+    bar.append(toggle, summary);
+    panel.append(bar, body);
+    return panel;
   }
 
-  function createGrillStatus() {
-    const status = document.createElement("div");
-    status.id = GRILL_STATUS_ID;
-    status.textContent = "";
-    return status;
-  }
-
-  function findNewIssueHost(actions) {
-    const newIssue = actions.querySelector('a[href$="/issues/new/choose"], a[href*="/issues/new"]');
-    if (!newIssue) {
-      return null;
-    }
-
-    const parent = newIssue.parentElement;
-    if (parent && parent.parentElement === actions) {
-      return parent;
-    }
-    return newIssue;
-  }
-
-  function removeHeaderAction() {
-    [START_ID, STATUS_ID, GRILL_ID, GRILL_STATUS_ID].forEach((id) => {
+  function removeInjectedControls() {
+    [START_ID, GRILL_ID, PANEL_ID].forEach((id) => {
       const element = document.getElementById(id);
       if (element) {
         element.remove();
       }
     });
+    stopIssueStatusPolling();
   }
 
-  function injectHeaderAction() {
-    if (!isIssuePage()) {
-      removeHeaderAction();
-      return;
-    }
-
+  function injectHeaderActions() {
     const actions = findHeaderActions();
     if (!actions) {
-      return;
+      return false;
     }
 
     const existingButton = document.getElementById(START_ID);
-    const existingStatus = document.getElementById(STATUS_ID);
     const existingGrillButton = document.getElementById(GRILL_ID);
-    const existingGrillStatus = document.getElementById(GRILL_STATUS_ID);
     const button = existingButton && document.contains(existingButton) ? existingButton : createStartButton();
-    const status = existingStatus && document.contains(existingStatus) ? existingStatus : createStatus();
     const grillButton = existingGrillButton && document.contains(existingGrillButton) ? existingGrillButton : createGrillButton();
-    const grillStatus = existingGrillStatus && document.contains(existingGrillStatus) ? existingGrillStatus : createGrillStatus();
     const newIssueHost = findNewIssueHost(actions);
-    let changed = !existingButton
-      || !existingStatus
-      || !existingGrillButton
-      || !existingGrillStatus
-      || button.parentElement !== actions
-      || status.parentElement !== actions
-      || grillButton.parentElement !== actions
-      || grillStatus.parentElement !== actions;
 
     if (button.parentElement !== actions) {
       actions.insertBefore(button, newIssueHost);
-      changed = true;
     }
-    if (status.parentElement !== actions || status.previousElementSibling !== button) {
-      actions.insertBefore(status, newIssueHost);
-      changed = true;
-    }
-    if (grillButton.parentElement !== actions || grillButton.previousElementSibling !== status) {
+    if (grillButton.parentElement !== actions || grillButton.previousElementSibling !== button) {
       actions.insertBefore(grillButton, newIssueHost);
-      changed = true;
-    }
-    if (grillStatus.parentElement !== actions || grillStatus.previousElementSibling !== grillButton) {
-      actions.insertBefore(grillStatus, newIssueHost);
-      changed = true;
     }
 
     button.hidden = false;
-    status.hidden = false;
     grillButton.hidden = false;
-    grillStatus.hidden = false;
+    return true;
+  }
 
-    if (changed) {
-      checkBackend();
+  function injectIssuePanel() {
+    const issueBody = findIssueBodyContainer();
+    if (!issueBody || !issueBody.parentElement) {
+      return false;
+    }
+
+    const existingPanel = document.getElementById(PANEL_ID);
+    const panel = existingPanel && document.contains(existingPanel) ? existingPanel : createPanel();
+    if (panel.previousElementSibling !== issueBody) {
+      issueBody.after(panel);
+    }
+    return true;
+  }
+
+  function injectIssueControls() {
+    if (!isIssuePage()) {
+      removeInjectedControls();
+      return;
+    }
+
+    const headerReady = injectHeaderActions();
+    const panelReady = injectIssuePanel();
+    if (headerReady && panelReady && !activePoll) {
+      startIssueStatusPolling();
     }
   }
 
-  function scheduleHeaderInjection() {
+  function scheduleInjection() {
     const pathnameChanged = activePathname !== window.location.pathname;
     if (pathnameChanged) {
       activePathname = window.location.pathname;
+      panelExpandedByUser = null;
+      stopIssueStatusPolling();
     }
 
     if (reinjectTimer) {
@@ -602,7 +676,7 @@
 
     reinjectTimer = window.setTimeout(() => {
       reinjectTimer = null;
-      injectHeaderAction();
+      injectIssueControls();
     }, pathnameChanged ? 0 : REINJECT_DEBOUNCE_MS);
   }
 
@@ -611,21 +685,21 @@
       const original = history[method];
       history[method] = function (...args) {
         const result = original.apply(this, args);
-        scheduleHeaderInjection();
+        scheduleInjection();
         return result;
       };
     });
 
     ["turbo:load", "turbo:render", "popstate"].forEach((eventName) => {
-      window.addEventListener(eventName, scheduleHeaderInjection);
+      window.addEventListener(eventName, scheduleInjection);
     });
   }
 
-  injectHeaderAction();
+  injectIssueControls();
   installNavigationHooks();
 
   const observer = new MutationObserver(() => {
-    scheduleHeaderInjection();
+    scheduleInjection();
   });
   observer.observe(document.documentElement, { childList: true, subtree: true });
 })();

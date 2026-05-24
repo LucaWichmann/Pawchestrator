@@ -196,11 +196,20 @@ def test_cors_allows_github_for_issue_start_and_runs(tmp_path: Path) -> None:
                 "Access-Control-Request-Method": "GET",
             },
         )
+        status_response = client.options(
+            "/issue/owner/repo/42/status",
+            headers={
+                "Origin": "https://github.com",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
 
     assert issue_response.status_code == 200
     assert runs_response.status_code == 200
+    assert status_response.status_code == 200
     assert issue_response.headers["access-control-allow-origin"] == "https://github.com"
     assert runs_response.headers["access-control-allow-origin"] == "https://github.com"
+    assert status_response.headers["access-control-allow-origin"] == "https://github.com"
 
 
 def test_protected_routes_require_pairing_token(tmp_path: Path) -> None:

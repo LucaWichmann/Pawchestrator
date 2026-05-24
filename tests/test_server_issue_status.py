@@ -26,6 +26,7 @@ def test_issue_status_returns_null_runs_when_no_run_exists(
 
     assert response.status_code == 200
     assert response.json() == {
+        "backend_connected": True,
         "repo_registered": False,
         "runners": _healthy_runners(),
         "pipeline": None,
