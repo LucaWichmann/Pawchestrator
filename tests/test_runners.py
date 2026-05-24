@@ -3,13 +3,22 @@ import json
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from pawchestrator.config import (
     ClaudeRunnerSettings,
     CodexRunnerSettings,
+    Settings,
     StageSettings,
 )
-from pawchestrator.runners import RUNNERS, ClaudeRunner, CodexRunner, Runner, RunnerTask
+from pawchestrator.runners import (
+    RUNNERS,
+    ClaudeRunner,
+    CodexRunner,
+    Runner,
+    RunnerTask,
+    resolve_runner,
+)
 
 
 def test_runner_registry_contains_both_agent_runners() -> None:
@@ -17,6 +26,63 @@ def test_runner_registry_contains_both_agent_runners() -> None:
     assert isinstance(RUNNERS["claude"], ClaudeRunner)
     assert isinstance(RUNNERS["codex"], CodexRunner)
     assert all(isinstance(runner, Runner) for runner in RUNNERS.values())
+
+
+def test_resolve_runner_uses_default_without_stage_override() -> None:
+    settings = Settings()
+
+    runner = resolve_runner(settings, "implement", "codex")
+
+    assert isinstance(runner, CodexRunner)
+    assert runner.config is settings.runners.codex
+    assert runner.stage_overrides is settings.stages
+
+
+def test_resolve_runner_uses_claude_stage_override() -> None:
+    settings = Settings(
+        stages={
+            "implement": StageSettings(
+                runner="claude",
+                claude={"allowed_tools": ["Read"], "bypass_permissions": True},
+            )
+        }
+    )
+
+    runner = resolve_runner(settings, "implement", "codex")
+
+    assert isinstance(runner, ClaudeRunner)
+    assert runner.config is settings.runners.claude
+    assert runner.stage_overrides is settings.stages
+    assert runner.stage_overrides["implement"].claude.allowed_tools == ["Read"]
+    assert runner.stage_overrides["implement"].claude.bypass_permissions is True
+
+
+def test_resolve_runner_uses_codex_stage_override() -> None:
+    settings = Settings(
+        stages={
+            "implement": StageSettings(
+                runner="codex",
+                codex={"sandbox": "danger-full-access", "approval_policy": "never"},
+            )
+        }
+    )
+
+    runner = resolve_runner(settings, "implement", "claude")
+
+    assert isinstance(runner, CodexRunner)
+    assert runner.config is settings.runners.codex
+    assert runner.stage_overrides is settings.stages
+    assert runner.stage_overrides["implement"].codex.sandbox == "danger-full-access"
+    assert runner.stage_overrides["implement"].codex.approval_policy == "never"
+
+
+def test_stage_settings_rejects_invalid_runner_value() -> None:
+    with pytest.raises(ValidationError) as error:
+        StageSettings(runner="unknown")
+
+    assert "runner" in str(error.value)
+    assert "claude" in str(error.value)
+    assert "codex" in str(error.value)
 
 
 def test_claude_runner_reports_missing_binary(monkeypatch: pytest.MonkeyPatch) -> None:

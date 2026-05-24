@@ -15,6 +15,7 @@ from typing import Any
 from pawchestrator.config import (
     ClaudeRunnerSettings,
     CodexRunnerSettings,
+    Settings,
     StageSettings,
 )
 
@@ -360,6 +361,28 @@ RUNNERS: dict[str, Runner] = {
     "claude": ClaudeRunner(),
     "codex": CodexRunner(),
 }
+
+
+def resolve_runner(settings: Settings, stage_name: str, default: str) -> Runner:
+    """Resolve the configured runner for a stage."""
+
+    stage_settings = settings.stages.get(stage_name)
+    runner_id = stage_settings.runner if stage_settings is not None else None
+    runner_id = runner_id or default
+
+    if runner_id == "claude":
+        return ClaudeRunner(
+            settings.runners.claude,
+            debug=settings.debug,
+            stage_overrides=settings.stages,
+        )
+    if runner_id == "codex":
+        return CodexRunner(
+            settings.runners.codex,
+            debug=settings.debug,
+            stage_overrides=settings.stages,
+        )
+    raise ValueError(f"unknown runner: {runner_id}")
 
 
 async def _run_process(
