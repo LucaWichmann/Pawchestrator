@@ -124,13 +124,19 @@ async def _communicate_process(
         if stream is None:
             return b""
         chunks: list[bytes] = []
+        printed_label = False
+        ended_with_newline = True
         while chunk := await stream.read(4096):
             chunks.append(chunk)
             if debug:
                 text = chunk.decode("utf-8", errors="replace")
-                print(f"[pawchestrator:debug] {label}:\n{text}", end="", flush=True)
-                if not text.endswith("\n"):
-                    print(flush=True)
+                if not printed_label:
+                    print(f"[pawchestrator:debug] {label}:", flush=True)
+                    printed_label = True
+                print(text, end="", flush=True)
+                ended_with_newline = text.endswith(("\n", "\r"))
+        if debug and printed_label and not ended_with_newline:
+            print(flush=True)
         return b"".join(chunks)
 
     stdout_task = asyncio.create_task(read_stream(proc.stdout, "stdout"))

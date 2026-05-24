@@ -137,6 +137,28 @@ def test_run_verify_does_not_print_debug_when_disabled(
     assert "quiet out" not in output
 
 
+def test_shell_runner_debug_prints_one_label_for_progress_output(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runner = ShellRunner(timeout_seconds=5, debug=True, run_id="run-progress")
+
+    result = asyncio.run(
+        runner.run_command(
+            "test",
+            (
+                "python -c \"import sys; "
+                "[sys.stdout.write('.') or sys.stdout.flush() for _ in range(20)]\""
+            ),
+            tmp_path,
+        )
+    )
+
+    output = capsys.readouterr().out
+    assert result.exit_code == 0
+    assert output.count("[pawchestrator:debug] stdout:") == 1
+    assert "...................." in output
+
+
 def test_run_verify_writes_passed_report_log_and_records_stage(tmp_path: Path) -> None:
     settings = Settings(app_dir=tmp_path)
     run_id = "run-123"
