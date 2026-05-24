@@ -53,10 +53,20 @@ class ShellRunner:
     id = "shell"
     kind = "shell"
 
-    def __init__(self, *, timeout_seconds: int = DEFAULT_COMMAND_TIMEOUT_SECONDS) -> None:
+    def __init__(
+        self,
+        *,
+        timeout_seconds: int = DEFAULT_COMMAND_TIMEOUT_SECONDS,
+        debug: bool = False,
+        run_id: str | None = None,
+    ) -> None:
         self.timeout_seconds = timeout_seconds
+        self.debug = debug
+        self.run_id = run_id
 
     async def run_command(self, name: str, command: str, cwd: Path) -> CommandResult:
+        if self.debug:
+            _debug_print_command(self.run_id, name, command)
         proc = await asyncio.create_subprocess_shell(
             command,
             cwd=str(cwd),
@@ -64,31 +74,100 @@ class ShellRunner:
             stderr=asyncio.subprocess.PIPE,
         )
         try:
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(),
+            stdout_bytes, stderr_bytes, timed_out = await _communicate_process(
+                proc,
                 timeout=self.timeout_seconds,
+                debug=self.debug,
             )
         except TimeoutError:
-            proc.kill()
+            # Defensive fallback; _communicate_process normally converts timeouts.
             stdout_bytes, stderr_bytes = await proc.communicate()
+            timed_out = True
+
+        if timed_out:
+            stderr = (
+                stderr_bytes.decode("utf-8", errors="replace")
+                + f"\nCommand timed out after {self.timeout_seconds} seconds."
+            )
+            if self.debug:
+                _debug_print_result(self.run_id, name, 124)
             return CommandResult(
                 name=name,
                 command=command,
                 exit_code=124,
                 stdout=stdout_bytes.decode("utf-8", errors="replace"),
-                stderr=(
-                    stderr_bytes.decode("utf-8", errors="replace")
-                    + f"\nCommand timed out after {self.timeout_seconds} seconds."
-                ),
+                stderr=stderr,
             )
 
+        exit_code = proc.returncode or 0
+        if self.debug:
+            _debug_print_result(self.run_id, name, exit_code)
         return CommandResult(
             name=name,
             command=command,
-            exit_code=proc.returncode or 0,
+            exit_code=exit_code,
             stdout=stdout_bytes.decode("utf-8", errors="replace"),
             stderr=stderr_bytes.decode("utf-8", errors="replace"),
         )
+
+
+async def _communicate_process(
+    proc: asyncio.subprocess.Process,
+    *,
+    timeout: int,
+    debug: bool,
+) -> tuple[bytes, bytes, bool]:
+    async def read_stream(
+        stream: asyncio.StreamReader | None,
+        label: str,
+    ) -> bytes:
+        if stream is None:
+            return b""
+        chunks: list[bytes] = []
+        while chunk := await stream.read(4096):
+            chunks.append(chunk)
+            if debug:
+                text = chunk.decode("utf-8", errors="replace")
+                print(f"[pawchestrator:debug] {label}:\n{text}", end="", flush=True)
+                if not text.endswith("\n"):
+                    print(flush=True)
+        return b"".join(chunks)
+
+    stdout_task = asyncio.create_task(read_stream(proc.stdout, "stdout"))
+    stderr_task = asyncio.create_task(read_stream(proc.stderr, "stderr"))
+    wait_task = asyncio.create_task(proc.wait())
+    done, _pending = await asyncio.wait(
+        {stdout_task, stderr_task, wait_task},
+        timeout=timeout,
+    )
+
+    timed_out = wait_task not in done
+    if timed_out:
+        proc.kill()
+        await wait_task
+
+    stdout_bytes, stderr_bytes = await asyncio.gather(stdout_task, stderr_task)
+    return stdout_bytes, stderr_bytes, timed_out
+
+
+def _debug_print_command(run_id: str | None, name: str, command: str) -> None:
+    run = run_id or "unknown"
+    print(
+        f"[pawchestrator:debug] run={run} stage=verify command={name}",
+        flush=True,
+    )
+    print(f"[pawchestrator:debug] shell={command}", flush=True)
+
+
+def _debug_print_result(run_id: str | None, name: str, exit_code: int) -> None:
+    run = run_id or "unknown"
+    print(
+        (
+            f"[pawchestrator:debug] run={run} stage=verify "
+            f"command={name} exit_code={exit_code}"
+        ),
+        flush=True,
+    )
 
 
 async def run_verify(
@@ -104,7 +183,7 @@ async def run_verify(
     stage_id = await start_verify_run(settings, run_id=run_id)
     log_path = _verify_log_path(settings, run_id)
     artifact_path = _verification_report_path(settings, run_id)
-    active_runner = runner or ShellRunner()
+    active_runner = runner or ShellRunner(debug=settings.debug, run_id=run_id)
 
     try:
         worktree = await get_worktree_record(settings, run_id=run_id)

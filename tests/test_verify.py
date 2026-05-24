@@ -85,6 +85,58 @@ def test_shell_runner_reports_timeout(tmp_path: Path) -> None:
     assert "Command timed out after 1 seconds." in result.stderr
 
 
+def test_run_verify_debug_streams_shell_output(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    settings = Settings(app_dir=tmp_path, debug=True)
+    run_id = "run-debug"
+    worktree_path = tmp_path / "worktree"
+    worktree_path.mkdir()
+    asyncio.run(_insert_implement_run(settings, run_id, worktree_path=worktree_path))
+    _write_repo_config(
+        worktree_path,
+        build=(
+            "python -c \"import sys; "
+            "print('debug out'); print('debug err', file=sys.stderr)\""
+        ),
+        test="",
+    )
+
+    result = asyncio.run(run_verify(run_id, settings))
+
+    output = capsys.readouterr().out
+    assert result.report["status"] == "passed"
+    assert "[pawchestrator:debug] run=run-debug stage=verify command=build" in output
+    assert "[pawchestrator:debug] shell=python -c" in output
+    assert "[pawchestrator:debug] stdout:" in output
+    assert "debug out" in output
+    assert "[pawchestrator:debug] stderr:" in output
+    assert "debug err" in output
+    assert "[pawchestrator:debug] run=run-debug stage=verify command=build exit_code=0" in output
+
+
+def test_run_verify_does_not_print_debug_when_disabled(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    settings = Settings(app_dir=tmp_path, debug=False)
+    run_id = "run-debug-off"
+    worktree_path = tmp_path / "worktree"
+    worktree_path.mkdir()
+    asyncio.run(_insert_implement_run(settings, run_id, worktree_path=worktree_path))
+    _write_repo_config(
+        worktree_path,
+        build="python -c \"print('quiet out')\"",
+        test="",
+    )
+
+    result = asyncio.run(run_verify(run_id, settings))
+
+    output = capsys.readouterr().out
+    assert result.report["status"] == "passed"
+    assert "[pawchestrator:debug]" not in output
+    assert "quiet out" not in output
+
+
 def test_run_verify_writes_passed_report_log_and_records_stage(tmp_path: Path) -> None:
     settings = Settings(app_dir=tmp_path)
     run_id = "run-123"
@@ -352,6 +404,11 @@ def _write_repo_config(
     path = repo_verify_config_path_for(worktree_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        f'[commands]\nbuild = "{build}"\ntest = "{test}"\nlint = "{lint}"\n',
+        (
+            "[commands]\n"
+            f"build = {json.dumps(build)}\n"
+            f"test = {json.dumps(test)}\n"
+            f"lint = {json.dumps(lint)}\n"
+        ),
         encoding="utf-8",
     )
