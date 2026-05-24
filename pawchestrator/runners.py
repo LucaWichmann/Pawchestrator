@@ -10,6 +10,7 @@ import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
+from time import monotonic
 from typing import Any
 
 from pawchestrator.config import (
@@ -35,6 +36,17 @@ class RunnerResult:
     stderr: str
     artifact: dict[str, Any] | None
     diff: str = ""
+
+
+@dataclass(frozen=True)
+class RunnerHealth:
+    available: bool
+    version: str | None
+
+
+_RUNNER_HEALTH_TTL_SECONDS = 60.0
+_runner_health_cache: dict[str, tuple[float, RunnerHealth]] = {}
+_runner_health_lock = asyncio.Lock()
 
 
 class Runner(ABC):
@@ -76,7 +88,19 @@ class ClaudeRunner(Runner):
         path = shutil.which(self.config.binary)
         if path is None:
             return False, f"{self.config.binary} binary not found on PATH"
-        return True, f"found at {path}"
+        stdout, stderr, exit_code = await _run_process(
+            [path, "--version"],
+            cwd=Path.cwd(),
+        )
+        if exit_code != 0:
+            message = (
+                stderr.splitlines()[0]
+                if stderr
+                else f"{self.config.binary} --version failed"
+            )
+            return False, message
+        version = stdout.strip().splitlines()[0] if stdout.strip() else "version unknown"
+        return True, f"found at {path} ({version})"
 
     async def run_task(self, task: RunnerTask) -> RunnerResult:
         config = _effective_claude_config(self.config, self.stage_overrides, task.stage_name)
@@ -361,6 +385,59 @@ RUNNERS: dict[str, Runner] = {
     "claude": ClaudeRunner(),
     "codex": CodexRunner(),
 }
+
+
+async def get_runner_health(settings: Settings) -> dict[str, dict[str, object]]:
+    """Return cached runner availability and versions for the status endpoint."""
+
+    async with _runner_health_lock:
+        now = monotonic()
+        cached = {
+            runner_id: health
+            for runner_id, (checked_at, health) in _runner_health_cache.items()
+            if now - checked_at < _RUNNER_HEALTH_TTL_SECONDS
+        }
+        if set(cached) == {"claude", "codex"}:
+            return {
+                runner_id: _runner_health_payload(cached[runner_id])
+                for runner_id in ("claude", "codex")
+            }
+
+        runners: dict[str, Runner] = {
+            "claude": ClaudeRunner(settings.runners.claude, debug=settings.debug),
+            "codex": CodexRunner(settings.runners.codex, debug=settings.debug),
+        }
+        for runner_id, runner in runners.items():
+            if runner_id in cached:
+                continue
+            available, message = await runner.check_health()
+            health = RunnerHealth(
+                available=available,
+                version=_extract_health_version(message) if available else None,
+            )
+            _runner_health_cache[runner_id] = (monotonic(), health)
+            cached[runner_id] = health
+
+        return {
+            runner_id: _runner_health_payload(cached[runner_id])
+            for runner_id in ("claude", "codex")
+        }
+
+
+def clear_runner_health_cache() -> None:
+    _runner_health_cache.clear()
+
+
+def _runner_health_payload(health: RunnerHealth) -> dict[str, object]:
+    return {"available": health.available, "version": health.version}
+
+
+def _extract_health_version(message: str) -> str | None:
+    open_paren = message.rfind("(")
+    close_paren = message.rfind(")")
+    if open_paren != -1 and close_paren > open_paren:
+        return message[open_paren + 1 : close_paren]
+    return None
 
 
 def runner_tool_mismatch_warning(
