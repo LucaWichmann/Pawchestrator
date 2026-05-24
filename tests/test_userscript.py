@@ -63,6 +63,34 @@ def test_userscript_renders_pipeline_timeline_section() -> None:
     assert "renderPipeline(body, status.pipeline)" in source
 
 
+def test_userscript_renders_independent_grill_section() -> None:
+    source = _read_userscript()
+
+    assert "function renderGrillSection(parent, grill)" in source
+    assert "if (!grill)" in source
+    assert 'section.className = "pawchestrator-grill-section"' in source
+    assert 'title.textContent = "Grill"' in source
+    assert "renderPipeline(body, status.pipeline)" in source
+    assert "renderGrillSection(body, status.grill)" in source
+    assert source.index("renderPipeline(body, status.pipeline)") < source.index("renderGrillSection(body, status.grill)")
+
+
+def test_userscript_renders_grill_status_outcome_and_failures() -> None:
+    source = _read_userscript()
+
+    assert "function grillReport(grill)" in source
+    assert "function countGrillValue(grill, report, countKey, listKey)" in source
+    assert "function grillBodyUpdated(grill, report)" in source
+    assert 'status.textContent = active ? "[grill] running..." : `Status: ${grill.status || "unknown"}`' in source
+    assert 'status.dataset.active = String(active)' in source
+    assert '"criteria_count", "suggested_criteria"' in source
+    assert '"questions_posted_count", "unanswerable_questions"' in source
+    assert '"Issue body updated", grillBodyUpdated(grill, report) ? "yes" : "no"' in source
+    assert "grill.updated_at || grill.completed_at || grill.started_at" in source
+    assert 'error.className = "pawchestrator-grill-error"' in source
+    assert "error.textContent = summarizeError(grill)" in source
+
+
 def test_userscript_renders_pipeline_warnings_and_completed_pr_link_only() -> None:
     source = _read_userscript()
 
