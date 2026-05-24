@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from pawchestrator.config import ClaudeRunnerSettings, Settings
+from pawchestrator.config import Settings
 from pawchestrator.db import (
     complete_grill_run,
     fail_grill_run,
@@ -20,7 +20,7 @@ from pawchestrator.github import (
     get_gh_token,
 )
 from pawchestrator.issues import snapshot_issue
-from pawchestrator.runners import ClaudeRunner, Runner, RunnerTask
+from pawchestrator.runners import Runner, RunnerTask, resolve_runner
 
 GRILL_REPORT_SCHEMA = "pawchestrator.grill_report.v1"
 SUGGESTED_CRITERIA_HEADING = "## Pawchestrator Suggested Criteria"
@@ -186,11 +186,10 @@ async def _build_report_payload(
             ],
         }
 
-    active_runner = runner or ClaudeRunner(
-        _read_only_claude_settings(settings),
-        debug=settings.debug,
-        stage_overrides={},
-    )
+    # ClaudeRunner enforces grill read-only tools in runner config resolution.
+    # CodexRunner has no tool allowlist equivalent, so assigning codex to grill
+    # intentionally removes that read-only guarantee.
+    active_runner = runner or resolve_runner(settings, "grill", "claude")
     healthy, message = await active_runner.check_health()
     if not healthy:
         raise RuntimeError(message)
@@ -265,15 +264,6 @@ async def _resolve_repo_path(
         repo=str(snapshot.get("repo") or ""),
     )
     return registered.resolve() if registered is not None else None
-
-
-def _read_only_claude_settings(settings: Settings) -> ClaudeRunnerSettings:
-    return settings.runners.claude.model_copy(
-        update={
-            "allowed_tools": ["Read", "Glob", "Grep"],
-            "bypass_permissions": False,
-        }
-    )
 
 
 def _format_questions_comment(questions: list[str]) -> str:
