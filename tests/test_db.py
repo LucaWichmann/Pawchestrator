@@ -1,12 +1,15 @@
 import asyncio
 import sqlite3
 from pathlib import Path
+from uuid import UUID
 
 from pawchestrator.config import Settings
 from pawchestrator.db import (
     create_pipeline_run,
     get_github_comment_id,
+    get_run_warnings,
     init_db,
+    insert_run_warning,
     list_tables,
     store_github_comment_id,
     upsert_worktree_record,
@@ -23,6 +26,7 @@ def test_init_db_creates_mvp0_tables(tmp_path: Path) -> None:
         "workflow_runs",
         "workflow_stages",
         "artifacts",
+        "run_warnings",
         "worktrees",
     }
 
@@ -174,3 +178,125 @@ def test_github_comment_id_helpers_store_and_fetch_id(tmp_path: Path) -> None:
     asyncio.run(store_github_comment_id(settings, "run-123", 99))
 
     assert asyncio.run(get_github_comment_id(settings, "run-123")) == 99
+
+
+def test_insert_run_warning_inserts_uuid_and_timestamp(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    asyncio.run(
+        create_pipeline_run(
+            settings,
+            run_id="run-123",
+            owner="owner",
+            repo="repo",
+            issue_number=42,
+        )
+    )
+
+    asyncio.run(
+        insert_run_warning(
+            settings,
+            run_id="run-123",
+            stage_name="scout",
+            code="assignment_lookup_failed",
+            message="Could not find an assignee",
+        )
+    )
+
+    with sqlite3.connect(tmp_path / "database.sqlite") as db:
+        row = db.execute(
+            """
+            SELECT id, run_id, stage_name, code, message, created_at
+            FROM run_warnings
+            """
+        ).fetchone()
+
+    assert row[1:5] == (
+        "run-123",
+        "scout",
+        "assignment_lookup_failed",
+        "Could not find an assignee",
+    )
+    assert str(UUID(row[0])) == row[0]
+    assert row[5].endswith("Z")
+
+
+def test_get_run_warnings_returns_warnings_ordered_by_created_at(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    asyncio.run(
+        create_pipeline_run(
+            settings,
+            run_id="run-123",
+            owner="owner",
+            repo="repo",
+            issue_number=42,
+        )
+    )
+    asyncio.run(
+        create_pipeline_run(
+            settings,
+            run_id="other-run",
+            owner="owner",
+            repo="repo",
+            issue_number=43,
+        )
+    )
+
+    with sqlite3.connect(tmp_path / "database.sqlite") as db:
+        db.executemany(
+            """
+            INSERT INTO run_warnings (
+              id, run_id, stage_name, code, message, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "warning-2",
+                    "run-123",
+                    "plan",
+                    "second",
+                    "Second warning",
+                    "2026-05-24T10:00:02Z",
+                ),
+                (
+                    "warning-other",
+                    "other-run",
+                    "plan",
+                    "other",
+                    "Other warning",
+                    "2026-05-24T10:00:00Z",
+                ),
+                (
+                    "warning-1",
+                    "run-123",
+                    "scout",
+                    "first",
+                    "First warning",
+                    "2026-05-24T10:00:01Z",
+                ),
+            ],
+        )
+        db.commit()
+
+    warnings = asyncio.run(get_run_warnings(settings, "run-123"))
+
+    assert warnings == [
+        {
+            "id": "warning-1",
+            "run_id": "run-123",
+            "stage_name": "scout",
+            "code": "first",
+            "message": "First warning",
+            "created_at": "2026-05-24T10:00:01Z",
+        },
+        {
+            "id": "warning-2",
+            "run_id": "run-123",
+            "stage_name": "plan",
+            "code": "second",
+            "message": "Second warning",
+            "created_at": "2026-05-24T10:00:02Z",
+        },
+    ]
