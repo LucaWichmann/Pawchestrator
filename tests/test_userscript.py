@@ -46,7 +46,19 @@ def test_userscript_renders_panel_and_readiness_states() -> None:
 
     assert 'const PAW = "\\uD83D\\uDC3E"' in source
     assert 'const PANEL_ID = "pawchestrator-panel"' in source
-    assert "Pawchestrator \\u00B7" in source
+    assert 'brand.className = "pawchestrator-panel-brand-name"' in source
+    assert 'brand.textContent = `${PAW} Pawchestrator`' in source
+    assert 'status.className = "pawchestrator-panel-status-text"' in source
+    assert 'status.textContent = "Checking backend..."' in source
+    assert 'panel.dataset.status = "idle"' in source
+    assert "function setPanelStatus(state)" in source
+    assert "setPanelStatus(panelStatusForRun(run))" in source
+    assert 'setPanelStatus("offline")' in source
+    assert "status.textContent = message" in source
+    assert '[data-status="running"]' in source
+    assert "border-left-color: var(--fgColor-accent" in source
+    assert "border-left-color: var(--fgColor-success" in source
+    assert "border-left-color: var(--fgColor-danger" in source
     assert "Backend connected" in source
     assert "Repo registered" in source
     assert "Claude available" in source
