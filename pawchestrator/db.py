@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
   owner TEXT NOT NULL,
   repo TEXT NOT NULL,
   issue_number INTEGER NOT NULL,
+  workflow_type TEXT NOT NULL DEFAULT 'pipeline',
   status TEXT NOT NULL DEFAULT 'pending',
   current_stage TEXT,
   pr_url TEXT,
@@ -78,6 +79,10 @@ async def init_db(settings: Settings) -> Path:
         except sqlite3.OperationalError as error:
             if "duplicate column name" not in str(error).lower():
                 raise
+        await db.execute(
+            "ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS "
+            "workflow_type TEXT NOT NULL DEFAULT 'pipeline'"
+        )
         await db.commit()
     return settings.database_path
 
@@ -138,9 +143,10 @@ async def create_pipeline_run(
         await db.execute(
             """
             INSERT INTO workflow_runs (
-              id, owner, repo, issue_number, status, current_stage, created_at, updated_at
+              id, owner, repo, issue_number, workflow_type, status, current_stage,
+              created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, 'pending', NULL, ?, ?)
+            VALUES (?, ?, ?, ?, 'pipeline', 'pending', NULL, ?, ?)
             """,
             (run_id, owner, repo, issue_number, now, now),
         )
@@ -845,8 +851,8 @@ async def get_run_state(settings: Settings, run_id: str) -> dict[str, object] | 
         db.row_factory = aiosqlite.Row
         run_cursor = await db.execute(
             """
-            SELECT id, owner, repo, issue_number, status, current_stage, pr_url,
-                   created_at, updated_at
+            SELECT id, owner, repo, issue_number, workflow_type, status,
+                   current_stage, pr_url, created_at, updated_at
             FROM workflow_runs
             WHERE id = ?
             """,
