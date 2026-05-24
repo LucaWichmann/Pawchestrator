@@ -33,6 +33,42 @@ def test_init_db_creates_mvp0_tables(tmp_path: Path) -> None:
         }
 
     assert "github_comment_id" in columns
+    assert "workflow_type" in columns
+
+
+def test_init_db_migrates_legacy_workflow_runs_table(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    settings.app_dir.mkdir(parents=True, exist_ok=True)
+
+    with sqlite3.connect(settings.database_path) as db:
+        db.execute(
+            """
+            CREATE TABLE workflow_runs (
+              id TEXT PRIMARY KEY,
+              owner TEXT NOT NULL,
+              repo TEXT NOT NULL,
+              issue_number INTEGER NOT NULL,
+              status TEXT NOT NULL DEFAULT 'pending',
+              current_stage TEXT,
+              pr_url TEXT,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            )
+            """
+        )
+        db.commit()
+
+    asyncio.run(init_db(settings))
+    asyncio.run(init_db(settings))
+
+    with sqlite3.connect(settings.database_path) as db:
+        columns = {
+            row[1]
+            for row in db.execute("PRAGMA table_info(workflow_runs)").fetchall()
+        }
+
+    assert "github_comment_id" in columns
+    assert "workflow_type" in columns
 
 
 def test_upsert_worktree_record_inserts_and_updates(tmp_path: Path) -> None:

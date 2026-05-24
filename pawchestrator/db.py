@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -74,17 +73,24 @@ async def init_db(settings: Settings) -> Path:
     ensure_app_dir(settings)
     async with aiosqlite.connect(settings.database_path) as db:
         await db.executescript(SCHEMA_SQL)
-        try:
-            await db.execute("ALTER TABLE workflow_runs ADD COLUMN github_comment_id TEXT")
-        except sqlite3.OperationalError as error:
-            if "duplicate column name" not in str(error).lower():
-                raise
-        await db.execute(
-            "ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS "
-            "workflow_type TEXT NOT NULL DEFAULT 'pipeline'"
+        await _add_column_if_missing(db, "github_comment_id TEXT")
+        await _add_column_if_missing(
+            db,
+            "workflow_type TEXT NOT NULL DEFAULT 'pipeline'",
         )
         await db.commit()
     return settings.database_path
+
+
+async def _add_column_if_missing(
+    db: aiosqlite.Connection,
+    column_definition: str,
+) -> None:
+    column_name = column_definition.split(maxsplit=1)[0]
+    cursor = await db.execute("PRAGMA table_info(workflow_runs)")
+    existing_columns = {str(row[1]) for row in await cursor.fetchall()}
+    if column_name not in existing_columns:
+        await db.execute(f"ALTER TABLE workflow_runs ADD COLUMN {column_definition}")
 
 
 def utc_now_iso() -> str:
