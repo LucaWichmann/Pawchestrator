@@ -18,6 +18,14 @@ def test_userscript_header_is_tampermonkey_installable() -> None:
     assert "// @grant        GM_addStyle" in source
     assert "// @grant        GM_xmlhttpRequest" in source
     assert "// @connect      127.0.0.1" in source
+    assert (
+        "// @downloadURL  https://raw.githubusercontent.com/LucaWichmann/Pawchestrator/main/Pawchestrator.user.js"
+        in source
+    )
+    assert (
+        "// @updateURL    https://raw.githubusercontent.com/LucaWichmann/Pawchestrator/main/Pawchestrator.user.js"
+        in source
+    )
 
 
 def test_userscript_uses_issue_status_backend_contract() -> None:

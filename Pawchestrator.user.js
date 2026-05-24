@@ -11,6 +11,8 @@
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
 // @connect      127.0.0.1
+// @downloadURL  https://raw.githubusercontent.com/LucaWichmann/Pawchestrator/main/Pawchestrator.user.js
+// @updateURL    https://raw.githubusercontent.com/LucaWichmann/Pawchestrator/main/Pawchestrator.user.js
 // ==/UserScript==
 
 (function () {
