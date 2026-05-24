@@ -3,7 +3,7 @@
 // @namespace    https://github.com/LucaWichmann/Pawchestrator
 // @version      0.1.0
 // @description  Agent orchestration controls for GitHub issues
-// @match        https://github.com/*/*/issues/*
+// @match        https://github.com/*
 // @run-at       document-idle
 // @grant        GM_addStyle
 // @grant        GM_deleteValue
@@ -79,6 +79,17 @@
     }
 
     return { owner, repo, number: issueNumber };
+  }
+
+  function isIssuePage() {
+    const [, owner, repo, type, number, extra] = window.location.pathname.split("/");
+    const issueNumber = Number.parseInt(number, 10);
+    return Boolean(owner)
+      && Boolean(repo)
+      && type === "issues"
+      && String(issueNumber) === number
+      && issueNumber > 0
+      && !extra;
   }
 
   function isVisible(element) {
@@ -514,7 +525,21 @@
     return newIssue;
   }
 
+  function removeHeaderAction() {
+    [START_ID, STATUS_ID, GRILL_ID, GRILL_STATUS_ID].forEach((id) => {
+      const element = document.getElementById(id);
+      if (element) {
+        element.remove();
+      }
+    });
+  }
+
   function injectHeaderAction() {
+    if (!isIssuePage()) {
+      removeHeaderAction();
+      return;
+    }
+
     const actions = findHeaderActions();
     if (!actions) {
       return;
@@ -581,7 +606,23 @@
     }, pathnameChanged ? 0 : REINJECT_DEBOUNCE_MS);
   }
 
+  function installNavigationHooks() {
+    ["pushState", "replaceState"].forEach((method) => {
+      const original = history[method];
+      history[method] = function (...args) {
+        const result = original.apply(this, args);
+        scheduleHeaderInjection();
+        return result;
+      };
+    });
+
+    ["turbo:load", "turbo:render", "popstate"].forEach((eventName) => {
+      window.addEventListener(eventName, scheduleHeaderInjection);
+    });
+  }
+
   injectHeaderAction();
+  installNavigationHooks();
 
   const observer = new MutationObserver(() => {
     scheduleHeaderInjection();

@@ -12,7 +12,8 @@ def test_userscript_header_is_tampermonkey_installable() -> None:
     source = _read_userscript()
 
     assert "// ==UserScript==" in source
-    assert "// @match        https://github.com/*/*/issues/*" in source
+    assert "// @match        https://github.com/*" in source
+    assert "// @match        https://github.com/*/*/issues/*" not in source
     assert "// @run-at       document-idle" in source
     assert "// @grant        GM_addStyle" in source
     assert "// @grant        GM_xmlhttpRequest" in source
@@ -88,6 +89,33 @@ def test_userscript_reinjects_after_client_side_navigation() -> None:
     assert "const pathnameChanged = activePathname !== window.location.pathname" in source
     assert "activePathname = window.location.pathname" in source
     assert "pathnameChanged ? 0 : REINJECT_DEBOUNCE_MS" in source
+    assert "installNavigationHooks" in source
+    assert '["pushState", "replaceState"]' in source
+    assert "original.apply(this, args)" in source
+    assert '["turbo:load", "turbo:render", "popstate"]' in source
+    assert "window.addEventListener(eventName, scheduleHeaderInjection)" in source
+
+
+def test_userscript_gates_injection_to_issue_pages() -> None:
+    source = _read_userscript()
+
+    assert "function isIssuePage()" in source
+    assert 'type === "issues"' in source
+    assert "String(issueNumber) === number" in source
+    assert "issueNumber > 0" in source
+    assert "!extra" in source
+    assert "if (!isIssuePage())" in source
+    assert "removeHeaderAction()" in source
+    assert "return;" in source
+
+
+def test_userscript_removes_controls_on_non_issue_pages() -> None:
+    source = _read_userscript()
+
+    assert "function removeHeaderAction()" in source
+    assert "[START_ID, STATUS_ID, GRILL_ID, GRILL_STATUS_ID].forEach" in source
+    assert "document.getElementById(id)" in source
+    assert "element.remove()" in source
 
 
 def test_userscript_rehomes_stale_header_controls() -> None:
