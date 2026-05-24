@@ -170,6 +170,23 @@ class GitHubIssueClient:
             raise GitHubError("GitHub comment response did not include an id")
         return int(payload["id"])
 
+    async def fetch_admin_collaborators(self, owner: str, repo: str) -> list[str]:
+        async with httpx.AsyncClient(
+            base_url=self._api_base,
+            headers=self._headers(),
+            transport=self._transport,
+        ) as client:
+            collaborators = await self._get_all_pages(
+                client,
+                f"/repos/{owner}/{repo}/collaborators?permission=admin",
+            )
+
+        return [
+            collaborator.get("login", "")
+            for collaborator in collaborators
+            if isinstance(collaborator.get("login"), str)
+        ]
+
     async def patch_issue_body(
         self,
         owner: str,
