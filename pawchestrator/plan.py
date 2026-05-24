@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -14,12 +15,19 @@ from pawchestrator.db import (
     get_run_state,
     start_plan_run,
 )
-from pawchestrator.runners import Runner, RunnerTask, resolve_runner
+from pawchestrator.runners import (
+    Runner,
+    RunnerTask,
+    resolve_runner,
+    runner_tool_mismatch_warning,
+)
 
 IMPLEMENTATION_PLAN_SCHEMA = "pawchestrator.implementation_plan.v1"
+REQUIRED_TOOLS: list[str] = ["Read", "Glob", "Grep"]
 VALID_RISKS = {"low", "medium", "high"}
 MAX_PROMPT_FINDINGS = 5
 MAX_PROMPT_RISKS = 5
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -54,6 +62,7 @@ async def run_plan(
     local_repo_path = (repo_path or Path.cwd()).resolve()
     stage_id = await start_plan_run(settings, run_id=run_id)
     active_runner = runner or resolve_runner(settings, "plan", "claude")
+    _log_tool_mismatch(active_runner)
     log_path = _plan_log_path(settings, run_id)
     artifact_path = _plan_artifact_path(settings, run_id)
 
@@ -105,6 +114,16 @@ async def run_plan(
         log_path=log_path,
         plan=plan,
     )
+
+
+def _log_tool_mismatch(runner: Runner) -> None:
+    warning = runner_tool_mismatch_warning(
+        runner,
+        stage_name="plan",
+        required_tools=REQUIRED_TOOLS,
+    )
+    if warning is not None:
+        LOGGER.warning(warning)
 
 
 def build_plan_prompt(snapshot: dict[str, Any], scout_report: dict[str, Any]) -> str:

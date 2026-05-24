@@ -7,6 +7,7 @@ from pawchestrator.config import (
     ClaudeRunnerSettings,
     CodexRunnerSettings,
     RunnerSettings,
+    StageSettings,
 )
 from pawchestrator.config import Settings
 from pawchestrator.doctor import (
@@ -18,6 +19,7 @@ from pawchestrator.doctor import (
     check_claude_runner,
     check_codex_runner,
     check_port_available,
+    check_stage_tool_mismatches,
     check_sqlite_writable,
     check_wsl,
     has_required_failures,
@@ -193,6 +195,52 @@ def test_codex_runner_check_warns_for_explicit_wsl_health_failure(monkeypatch) -
     assert result.status == STATUS_WARN
     assert "not runnable in WSL" in result.message
     assert result.required is False
+
+
+def test_stage_tool_mismatch_check_passes_when_claude_allows_required_tools() -> None:
+    results = check_stage_tool_mismatches(Settings())
+
+    assert results == []
+
+
+def test_stage_tool_mismatch_check_warns_for_partial_claude_allowlist() -> None:
+    settings = Settings(
+        runners=RunnerSettings(
+            claude=ClaudeRunnerSettings(allowed_tools=["Read"]),
+        ),
+        stages={"implement": StageSettings(runner="claude")},
+    )
+
+    results = check_stage_tool_mismatches(settings)
+
+    assert [result.label for result in results] == [
+        "scout tools",
+        "plan tools",
+        "implement tools",
+    ]
+    assert all(result.status == STATUS_WARN for result in results)
+    assert all(result.required is False for result in results)
+    assert "Glob, Grep" in results[0].message
+    assert "Glob, Grep" in results[1].message
+    assert "Edit" in results[2].message
+
+
+def test_stage_tool_mismatch_check_skips_codex_runner() -> None:
+    settings = Settings(
+        runners=RunnerSettings(
+            claude=ClaudeRunnerSettings(allowed_tools=[]),
+        ),
+        stages={
+            "scout": StageSettings(runner="codex"),
+            "plan": StageSettings(runner="codex"),
+            "grill": StageSettings(runner="codex"),
+            "implement": StageSettings(runner="codex"),
+        },
+    )
+
+    results = check_stage_tool_mismatches(settings)
+
+    assert results == []
 
 
 def test_wsl_check_warns_when_missing_on_windows(monkeypatch) -> None:

@@ -363,6 +363,33 @@ RUNNERS: dict[str, Runner] = {
 }
 
 
+def runner_tool_mismatch_warning(
+    runner: Runner,
+    *,
+    stage_name: str,
+    required_tools: list[str],
+) -> str | None:
+    """Return a warning when Claude's effective allowlist misses stage tools."""
+
+    if not isinstance(runner, ClaudeRunner):
+        return None
+
+    config = _effective_claude_config(
+        runner.config,
+        runner.stage_overrides,
+        stage_name,
+    )
+    allowed_tools = set(config.allowed_tools)
+    missing_tools = [tool for tool in required_tools if tool not in allowed_tools]
+    if not missing_tools:
+        return None
+
+    return (
+        f"stage {stage_name} requires tools not allowed for ClaudeRunner: "
+        f"{', '.join(missing_tools)}"
+    )
+
+
 def resolve_runner(settings: Settings, stage_name: str, default: str) -> Runner:
     """Resolve the configured runner for a stage."""
 

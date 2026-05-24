@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,13 +19,28 @@ from pawchestrator.db import (
     start_implement_run,
     upsert_worktree_record,
 )
-from pawchestrator.runners import Runner, RunnerTask, resolve_runner
+from pawchestrator.runners import (
+    Runner,
+    RunnerTask,
+    resolve_runner,
+    runner_tool_mismatch_warning,
+)
 
 IMPLEMENTATION_REPORT_SCHEMA = "pawchestrator.implementation_report.v1"
+REQUIRED_TOOLS: list[str] = [
+    "Read",
+    "Glob",
+    "Grep",
+    "Edit",
+    "MultiEdit",
+    "Write",
+    "Bash",
+]
 DEFAULT_BASE_BRANCH = "main"
 DEFAULT_REMOTE = "origin"
 SLUG_MAX_LENGTH = 40
 MAX_PROMPT_APPROACH_SUMMARY_CHARS = 150
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -61,6 +77,7 @@ async def run_implement(
     stage_id = await start_implement_run(settings, run_id=run_id)
     source_repo_path = (repo_path or Path.cwd()).resolve()
     active_runner = runner or resolve_runner(settings, "implement", "codex")
+    _log_tool_mismatch(active_runner)
     log_path = _implement_log_path(settings, run_id)
     artifact_path = _implementation_report_path(settings, run_id)
     worktree_info: WorktreeInfo | None = None
@@ -196,6 +213,16 @@ async def run_implement(
         branch=worktree_info.branch,
         report=report,
     )
+
+
+def _log_tool_mismatch(runner: Runner) -> None:
+    warning = runner_tool_mismatch_warning(
+        runner,
+        stage_name="implement",
+        required_tools=REQUIRED_TOOLS,
+    )
+    if warning is not None:
+        LOGGER.warning(warning)
 
 
 async def _sync_codegraph_for_implement(

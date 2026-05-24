@@ -14,12 +14,24 @@ import httpx
 
 from pawchestrator.config import DEFAULT_PORT, LOCAL_HOST, Settings
 from pawchestrator.db import count_registered_repos, init_db
-from pawchestrator.runners import ClaudeRunner, CodexRunner
+from pawchestrator import grill, implement, plan, scout
+from pawchestrator.runners import (
+    ClaudeRunner,
+    CodexRunner,
+    resolve_runner,
+    runner_tool_mismatch_warning,
+)
 from pawchestrator.sessions import load_sessions
 
 STATUS_PASS = "pass"
 STATUS_WARN = "warn"
 STATUS_FAIL = "fail"
+STAGE_TOOL_REQUIREMENTS: tuple[tuple[str, str, list[str]], ...] = (
+    ("scout", "claude", scout.REQUIRED_TOOLS),
+    ("plan", "claude", plan.REQUIRED_TOOLS),
+    ("grill", "claude", grill.REQUIRED_TOOLS),
+    ("implement", "codex", implement.REQUIRED_TOOLS),
+)
 
 
 @dataclass(frozen=True)
@@ -41,6 +53,7 @@ def run_checks(settings: Settings, port: int = DEFAULT_PORT) -> list[CheckResult
         check_claude_runner(settings),
         check_codex_runner(settings),
         check_port_available(port),
+        *check_stage_tool_mismatches(settings),
         check_backend_routes(settings, port),
         check_sqlite_writable(settings),
         check_repo_registry(settings),
@@ -83,6 +96,28 @@ def check_codex_runner(settings: Settings | None = None) -> CheckResult:
     )
     status = STATUS_PASS if healthy else STATUS_WARN
     return CheckResult("codex", status, message, required=False)
+
+
+def check_stage_tool_mismatches(settings: Settings) -> list[CheckResult]:
+    results: list[CheckResult] = []
+    for stage_name, default_runner, required_tools in STAGE_TOOL_REQUIREMENTS:
+        runner = resolve_runner(settings, stage_name, default_runner)
+        warning = runner_tool_mismatch_warning(
+            runner,
+            stage_name=stage_name,
+            required_tools=required_tools,
+        )
+        if warning is None:
+            continue
+        results.append(
+            CheckResult(
+                f"{stage_name} tools",
+                STATUS_WARN,
+                warning,
+                required=False,
+            )
+        )
+    return results
 
 
 def check_wsl(settings: Settings | None = None) -> CheckResult:
