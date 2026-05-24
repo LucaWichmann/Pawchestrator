@@ -1,6 +1,6 @@
 # Pawchestrator — Domain Context
 
-Local-first GitHub-native agent orchestration platform. Augments GitHub issue pages with workflow controls. Coordinates local agents (Claude Code, Codex) through subscription-backed tooling to run issue-to-PR pipelines on the developer's machine.
+Local agent orchestration triggered from GitHub issues, right from inside your browser. Augments GitHub issue pages with workflow controls. Coordinates local agents (Claude Code, Codex) through a pipeline that runs on the developer's machine and surfaces results back to GitHub.
 
 ---
 
@@ -250,11 +250,11 @@ MVP0 pipeline is complete and end-to-end verified (snapshot → scout → plan �
 
 **Grill sprint: complete.**
 
-**Next sprint target: Pawchestrator Panel (userscript UI overhaul + status endpoint)**
+**Next sprint target: Pawchestrator Panel polish + README refresh**
 
-Design decisions (locked via grilling session 2026-05-24):
+Design decisions (locked via grilling sessions 2026-05-24 and 2026-05-25):
 
-**Panel placement:** Injected below the issue body — after `IssueBody-module__outerContainer__ULNTb` — as a sibling element. Uses GitHub CSS variables and `prc-Button-*` class conventions for native look.
+**Panel placement:** Injected below the issue body — after `IssueBody-module__outerContainer__ULNTb` — as a sibling element. Uses GitHub CSS variables and `prc-Button-*` class conventions for native look. `margin-left` is computed at inject time as `innerBox.getBoundingClientRect().left - outerContainer.getBoundingClientRect().left` where `innerBox = [data-testid="issue-body"]`. This aligns the panel with the bordered comment box, not the avatar column edge.
 
 **Always-visible readiness:** Panel renders on every issue page, not just after a run starts. Shows backend connection, repo registration, runner health even before any run exists for the issue.
 
@@ -290,6 +290,14 @@ Design decisions (locked via grilling session 2026-05-24):
 **Runner health cache:** 60-second in-memory TTL. Spawns `claude --version` / `codex --version` at most once per minute. Never blocks a panel load.
 
 **Warnings inline:** `run_warnings` rows included in the status endpoint response under each run object. Not a separate fetch.
+
+**README hero (locked 2026-05-25):** caveman-style hero at top — centered emoji + H1 + tagline + badges + nav links + `---` — then install section immediately below. No "At a glance" table before install.
+- Hero tagline: *"GitHub issue in. Local agents run. Code comes out."*
+- GitHub repo description: *"Local agent orchestration triggered from GitHub issues, right from inside your browser."*
+
+**Click-to-install userscript (locked 2026-05-25):** `@downloadURL` and `@updateURL` added to userscript header pointing to raw GitHub URL. Install badge in README. Prerequisites section links to Tampermonkey for Chrome (Chrome Web Store) and Firefox (Firefox Add-ons).
+
+**Panel visual polish (locked 2026-05-25):** Left accent border on panel, color-coded by run status (idle=gray, running=blue, done=green, failed=red). Brand label ("🐾 Pawchestrator") separated from dynamic status text in panel bar.
 
 **Deferred:**
 - Tauri desktop viewer (MVP1 per PRD)
