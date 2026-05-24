@@ -9,14 +9,14 @@ import pytest
 from typer.testing import CliRunner
 
 from pawchestrator import cli
-from pawchestrator.config import Settings
+from pawchestrator.config import Settings, StageSettings
 from pawchestrator.db import init_db
 from pawchestrator.plan import (
     build_plan_prompt,
     normalize_implementation_plan,
     run_plan,
 )
-from pawchestrator.runners import Runner, RunnerResult, RunnerTask
+from pawchestrator.runners import CodexRunner, Runner, RunnerResult, RunnerTask
 
 
 class FakeRunner(Runner):
@@ -172,6 +172,34 @@ def test_run_plan_writes_artifact_log_and_records_stage(tmp_path: Path) -> None:
     assert run == ("plan_complete", "plan")
     assert stage == ("complete", None)
     assert artifact == ("implementation_plan", str(result.artifact_path))
+
+
+def test_run_plan_uses_codex_runner_when_stage_overrides_runner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = Settings(
+        app_dir=tmp_path,
+        stages={"plan": StageSettings(runner="codex")},
+    )
+    run_id = "run-123"
+    asyncio.run(_insert_scout_run(settings, run_id))
+    _write_snapshot(settings, run_id)
+    _write_scout_report(settings, run_id)
+    seen: dict[str, RunnerTask] = {}
+
+    async def fake_check_health(self: CodexRunner) -> tuple[bool, str]:
+        return True, "ok"
+
+    async def fake_run_task(self: CodexRunner, task: RunnerTask) -> RunnerResult:
+        seen["task"] = task
+        return FakeRunner().result
+
+    monkeypatch.setattr(CodexRunner, "check_health", fake_check_health)
+    monkeypatch.setattr(CodexRunner, "run_task", fake_run_task)
+
+    asyncio.run(run_plan(run_id, settings, repo_path=tmp_path))
+
+    assert seen["task"].stage_name == "plan"
 
 
 def test_run_plan_records_failure_and_log(tmp_path: Path) -> None:
