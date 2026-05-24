@@ -24,6 +24,8 @@ Local-first GitHub-native agent orchestration platform. Augments GitHub issue pa
 
 **Doctor** — CLI command that checks all required and optional dependencies and reports their status.
 
+**RunWarning** — A non-fatal diagnostic event emitted by a Stage during a Run. Stored in the `run_warnings` table (1:n to `workflow_runs`). Surfaced in the GitHub issue comment alongside run state. Distinct from Stage errors: a warning does not fail the Stage; an error does.
+
 **Grill** — A standalone read-only analysis action triggered from the GitHub issue page. Explores the local codebase, infers acceptance criteria from issue context + code, appends a `## Pawchestrator Suggested Criteria` section to the issue body, and posts a comment only if there are questions it cannot answer from codebase context. Does not create a worktree, does not run Codex, does not modify local files. Produces a `GrillReport` artifact. Reuses the run infrastructure with `workflow_type = "grill"` to keep state tracking consistent without coupling to pipeline logic.
 
 **GrillReport** — Artifact produced by the Grill action. Contains `suggested_criteria` (inferred from codebase), `unanswerable_questions` (posted to GitHub if non-empty), `body_updated` (bool), `comment_posted` (bool), `comment_id` (int or null).
@@ -40,25 +42,40 @@ Tampermonkey button click on GitHub issue
   → Plan        ClaudeRunner            → ImplementationPlan artifact
   → Implement   CodexRunner             → ImplementationReport + file edits
   → Verify      ShellRunner             → VerificationReport artifact
-  → PR          gh pr create (draft)    → PR URL
+  → PR          gh pr create             → PR URL + assignment
 ```
 
 No human gates in MVP 0. No repair loop. No YAML workflow engine. No pairing security token. All hardcoded.
 
 ---
 
-## Stage-to-runner mapping (MVP 0, hardcoded)
+## Stage-to-runner mapping (configurable via config.toml)
 
-| Stage    | Runner         | Notes                                |
+| Stage    | Default Runner | Notes                                |
 |----------|----------------|--------------------------------------|
-| Snapshot | GitHub API     | httpx + gh auth token                |
+| Snapshot | GitHub API     | httpx + gh auth token — not configurable |
 | Scout    | ClaudeRunner   | Read-only, JSON output               |
+| Grill    | ClaudeRunner   | Read-only enforced for Claude; codex has no tool allowlist |
 | Plan     | ClaudeRunner   | JSON output                          |
 | Implement| CodexRunner    | File edits via patch                 |
-| Verify   | ShellRunner    | Runs repo-configured build/test cmds |
-| PR       | gh CLI         | `gh pr create --draft`               |
+| Verify   | ShellRunner    | Runs repo-configured build/test cmds — not configurable |
+| PR       | gh CLI         | `gh pr create` (draft configurable) — not configurable |
 
-Configurable per-stage via workflow YAML in MVP 1.
+Agent stages (scout, grill, plan, implement) are configurable via `[stages.X]` in `config.toml`:
+
+```toml
+[stages.implement]
+runner = "claude"   # override default
+
+[stages.plan]
+runner = "codex"    # override default
+```
+
+Valid values: `"claude"`, `"codex"`. Validated at config load; unknown values are rejected. Omitting `runner` uses the stage default.
+
+**Runner capability model:** Runner config defines maximum capabilities (ceiling). Stage constraints narrow within that ceiling — e.g. grill forces Claude to read-only tools regardless of runner config. If a stage requires a tool not in the runner's `allowed_tools`, Pawchestrator emits a warning at `doctor` and at pipeline start (non-fatal).
+
+**Codex limitation:** Codex CLI has no tool allowlist equivalent (`--allowedTools`). Stage read-only enforcement applies to ClaudeRunner only. Assigning codex to grill removes the read-only guarantee — documented, not warned at runtime.
 
 ---
 
@@ -128,6 +145,7 @@ Pawchestrator does NOT inject MCP config per invocation. Doctor checks both conf
 workflow_runs   (id, owner, repo, issue_number, status, current_stage, workflow_type, created_at, updated_at)
 workflow_stages (id, run_id, stage_name, status, started_at, completed_at, error)
 artifacts       (id, run_id, artifact_type, file_path, created_at)
+run_warnings    (id, run_id, stage_name, code, message, created_at)
 ```
 
 `workflow_type` distinguishes run kinds: `"pipeline"` (default, snapshot→PR) and `"grill"` (standalone analysis, no worktree). Pipeline code must assert `workflow_type != "grill"` before creating worktrees or invoking Codex.
@@ -281,10 +299,21 @@ When a run starts via browser trigger, the pipeline looks up `(owner, repo)` in 
 
 ---
 
+## PR creation policy
+
+**Draft flag:** configurable via `[pr] draft = false` in `config.toml`. Default is non-draft (ready-for-review).
+
+**Assignment:** configurable via `[pr] assign = true`. Default on. When enabled:
+- All assignees from `IssueSnapshot.assignees` are set as PR assignees and review requesters.
+- If `assignees` is empty, Pawchestrator queries `GET /repos/{owner}/{repo}/collaborators?permission=admin` to find admin collaborators and uses that list as fallback.
+- If the admin collaborators call fails or returns empty, Pawchestrator emits a `RunWarning` (code: `assignment_lookup_failed`) and continues — PR is created unassigned.
+- Assignment is applied whether the PR is freshly created or already exists (`gh pr edit --add-assignee`).
+
+---
+
 ## Open decisions
 
 - Desktop app framework: decision deferred. Python + userscript is the active mode.
-- Configurable stage-to-runner mapping via workflow YAML
 - Skill files format and loading
 - GitHub REST API direct PR creation (replacing `gh` dependency)
 - Failure repair loop (max 2 attempts)
