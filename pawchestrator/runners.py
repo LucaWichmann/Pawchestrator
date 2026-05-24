@@ -63,7 +63,7 @@ class ClaudeRunner(Runner):
     ) -> None:
         self.config = config or ClaudeRunnerSettings()
         self.debug = debug
-        self.stage_overrides = stage_overrides or {}
+        self.stage_overrides = {} if stage_overrides is None else stage_overrides
 
     async def check_health(self) -> tuple[bool, str]:
         if self.config.execution == "wsl":
@@ -158,7 +158,7 @@ class CodexRunner(Runner):
     ) -> None:
         self.config = config or CodexRunnerSettings()
         self.debug = debug
-        self.stage_overrides = stage_overrides or {}
+        self.stage_overrides = {} if stage_overrides is None else stage_overrides
 
     async def check_health(self) -> tuple[bool, str]:
         if self.config.execution == "wsl":

@@ -50,6 +50,8 @@ async def run_implement(
     *,
     repo_path: Path | None = None,
     runner: Runner | None = None,
+    repair_context: dict[str, Any] | None = None,
+    repair_attempt: int | None = None,
 ) -> ImplementationResult:
     state = await get_run_state(settings, run_id)
     if state is None:
@@ -108,6 +110,8 @@ async def run_implement(
                     snapshot,
                     implementation_plan,
                     worktree_info.path,
+                    repair_context=repair_context,
+                    repair_attempt=repair_attempt,
                 ),
                 cwd=worktree_info.path,
                 run_id=run_id,
@@ -276,8 +280,12 @@ def build_implement_prompt(
     snapshot: dict[str, Any],
     implementation_plan: dict[str, Any],
     worktree_path: Path,
+    *,
+    repair_context: dict[str, Any] | None = None,
+    repair_attempt: int | None = None,
 ) -> str:
     prompt_plan = _prompt_implementation_plan(implementation_plan)
+    repair_section = _prompt_repair_context(repair_context, repair_attempt)
 
     return f"""You are implementing a GitHub issue in a local git worktree.
 
@@ -293,10 +301,26 @@ IssueSnapshot JSON:
 
 Implementation plan:
 {json.dumps(prompt_plan, indent=2, sort_keys=True)}
+{repair_section}
 
 Implement the changes described in the plan. Make granular, well-named commits as you go.
 Commit message format: `type(scope): description` (conventional commits).
 Do not run build or test commands - verification is handled separately.
+"""
+
+
+def _prompt_repair_context(
+    repair_context: dict[str, Any] | None,
+    repair_attempt: int | None,
+) -> str:
+    if repair_context is None:
+        return ""
+    attempt = repair_attempt if repair_attempt is not None else 1
+    return f"""
+Verification failed after implementation. Repair attempt: {attempt}
+
+Use this verification feedback to repair the existing worktree changes:
+{json.dumps(repair_context, indent=2, sort_keys=True)}
 """
 
 

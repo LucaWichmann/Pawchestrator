@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from pawchestrator.config import Settings
+from pawchestrator.config import PipelineSettings, Settings
 from pawchestrator.db import (
     complete_implement_run,
     complete_plan_run,
@@ -22,7 +22,7 @@ from pawchestrator.db import (
     start_verify_run,
 )
 from pawchestrator.github import PAWCHESTRATOR_LABELS
-from pawchestrator.pipeline import run_pipeline
+from pawchestrator.pipeline import VerificationFailedError, run_pipeline
 
 
 def test_run_pipeline_runs_all_stages_and_marks_completed(
@@ -152,6 +152,170 @@ def test_run_pipeline_passes_allow_empty_commit_to_pr_stage(
     )
 
     assert allow_empty_commit_values == [True]
+
+
+def test_run_pipeline_blocks_pr_when_verify_fails_without_repair(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(
+        app_dir=tmp_path,
+        pipeline=PipelineSettings(verify_repair_attempts=0),
+    )
+    calls: list[str] = []
+    progress: list[str] = []
+    _patch_successful_stages(monkeypatch, calls)
+    _patch_verify_results(monkeypatch, calls, ["failed"])
+
+    with pytest.raises(VerificationFailedError, match="verification failed"):
+        asyncio.run(
+            run_pipeline(
+                "https://github.com/owner/repo/issues/42",
+                settings,
+                repo_path=tmp_path,
+                progress=progress.append,
+            )
+        )
+
+    assert calls == ["snapshot", "scout", "plan", "implement", "verify"]
+    assert "[verify] done - status: failed" in progress
+    assert not any(call == "pr" for call in calls)
+    with sqlite3.connect(settings.database_path) as db:
+        run = db.execute(
+            "SELECT status, current_stage, pr_url FROM workflow_runs"
+        ).fetchone()
+        stages = db.execute(
+            """
+            SELECT stage_name, status, error
+            FROM workflow_stages
+            ORDER BY stage_name, started_at
+            """
+        ).fetchall()
+
+    assert run == ("failed", "verify", None)
+    assert ("verify", "failed", "test exited 1: assertion failed") in stages
+    assert ("pr", "pending", None) in stages
+
+
+def test_run_pipeline_repairs_failed_verify_then_creates_pr(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    calls: list[str] = []
+    repair_contexts: list[tuple[dict[str, object] | None, int | None]] = []
+    _patch_successful_stages(monkeypatch, calls, repair_contexts=repair_contexts)
+    _patch_verify_results(monkeypatch, calls, ["failed", "passed"])
+
+    result = asyncio.run(
+        run_pipeline(
+            "https://github.com/owner/repo/issues/42",
+            settings,
+            repo_path=tmp_path,
+        )
+    )
+
+    assert calls == [
+        "snapshot",
+        "scout",
+        "plan",
+        "implement",
+        "verify",
+        "implement",
+        "verify",
+        "pr",
+    ]
+    assert result.pr_url == "https://github.com/owner/repo/pull/99"
+    assert repair_contexts == [
+        (None, None),
+        (
+            {
+                "status": "failed",
+                "commands": [
+                    {
+                        "command": "pytest",
+                        "exit_code": 1,
+                        "stdout_summary": "",
+                        "stderr_summary": "assertion failed",
+                    }
+                ],
+                "skip_reason": None,
+                "verify_log_tail": (
+                    "[command] test: pytest\n"
+                    "[exit_code] 1\n"
+                    "[stdout]\n\n"
+                    "[stderr]\n"
+                    "assertion failed\n"
+                ),
+            },
+            1,
+        ),
+    ]
+    with sqlite3.connect(settings.database_path) as db:
+        run = db.execute(
+            "SELECT status, current_stage, pr_url FROM workflow_runs"
+        ).fetchone()
+        stages = db.execute(
+            """
+            SELECT stage_name, status
+            FROM workflow_stages
+            WHERE stage_name IN ('implement', 'verify', 'pr')
+            ORDER BY started_at
+            """
+        ).fetchall()
+
+    assert run == ("completed", "pr", "https://github.com/owner/repo/pull/99")
+    assert stages == [
+        ("implement", "complete"),
+        ("verify", "failed"),
+        ("implement", "complete"),
+        ("verify", "complete"),
+        ("pr", "complete"),
+    ]
+
+
+def test_run_pipeline_exhausts_verify_repairs_and_leaves_pr_pending(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(
+        app_dir=tmp_path,
+        pipeline=PipelineSettings(verify_repair_attempts=2),
+    )
+    calls: list[str] = []
+    _patch_successful_stages(monkeypatch, calls)
+    _patch_verify_results(monkeypatch, calls, ["failed", "failed", "failed"])
+
+    with pytest.raises(VerificationFailedError):
+        asyncio.run(
+            run_pipeline(
+                "https://github.com/owner/repo/issues/42",
+                settings,
+                repo_path=tmp_path,
+            )
+        )
+
+    assert calls == [
+        "snapshot",
+        "scout",
+        "plan",
+        "implement",
+        "verify",
+        "implement",
+        "verify",
+        "implement",
+        "verify",
+    ]
+    with sqlite3.connect(settings.database_path) as db:
+        pr_stage = db.execute(
+            """
+            SELECT status
+            FROM workflow_stages
+            WHERE stage_name = 'pr'
+            """
+        ).fetchone()
+
+    assert pr_stage == ("pending",)
 
 
 def test_run_pipeline_updates_stage_labels(
@@ -299,6 +463,7 @@ def _patch_successful_stages(
     calls: list[str],
     *,
     allow_empty_commit_values: list[bool] | None = None,
+    repair_contexts: list[tuple[dict[str, object] | None, int | None]] | None = None,
 ) -> None:
     async def fake_snapshot(issue_url: str, settings: Settings, *, run_id: str):
         calls.append("snapshot")
@@ -348,8 +513,17 @@ def _patch_successful_stages(
         )
         return SimpleNamespace(plan={})
 
-    async def fake_implement(run_id: str, settings: Settings, *, repo_path: Path | None = None):
+    async def fake_implement(
+        run_id: str,
+        settings: Settings,
+        *,
+        repo_path: Path | None = None,
+        repair_context: dict[str, object] | None = None,
+        repair_attempt: int | None = None,
+    ):
         calls.append("implement")
+        if repair_contexts is not None:
+            repair_contexts.append((repair_context, repair_attempt))
         stage_id = await start_implement_run(settings, run_id=run_id)
         artifact_path = settings.app_dir / "runs" / run_id / "implementation_report.json"
         artifact_path.parent.mkdir(parents=True, exist_ok=True)
@@ -405,3 +579,63 @@ def _patch_successful_stages(
     monkeypatch.setattr("pawchestrator.pipeline.run_implement", fake_implement)
     monkeypatch.setattr("pawchestrator.pipeline.run_verify", fake_verify)
     monkeypatch.setattr("pawchestrator.pipeline.run_pr", fake_pr)
+
+
+def _patch_verify_results(
+    monkeypatch: pytest.MonkeyPatch,
+    calls: list[str],
+    statuses: list[str],
+) -> None:
+    remaining = list(statuses)
+
+    async def fake_verify(run_id: str, settings: Settings):
+        calls.append("verify")
+        if not remaining:
+            raise AssertionError("unexpected verify call")
+        status = remaining.pop(0)
+        passed = status == "passed"
+        stage_id = await start_verify_run(settings, run_id=run_id)
+        artifact_path = settings.app_dir / "runs" / run_id / "verification_report.json"
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        report = {
+            "schema": "pawchestrator.verification_report.v1",
+            "status": status,
+            "commands": [
+                {
+                    "command": "pytest",
+                    "exit_code": 0 if passed else 1,
+                    "stdout_summary": "",
+                    "stderr_summary": "" if passed else "assertion failed",
+                }
+            ],
+            "skip_reason": None,
+        }
+        artifact_path.write_text("{}", encoding="utf-8")
+        log_path = settings.app_dir / "runs" / run_id / "stdout" / "verify.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(
+            (
+                "[command] test: pytest\n"
+                f"[exit_code] {0 if passed else 1}\n"
+                "[stdout]\n\n"
+                "[stderr]\n"
+                f"{'' if passed else 'assertion failed'}\n"
+            ),
+            encoding="utf-8",
+        )
+        await complete_verify_run(
+            settings,
+            run_id=run_id,
+            stage_id=stage_id,
+            artifact_path=artifact_path,
+            passed=passed,
+            error=None if passed else "test exited 1: assertion failed",
+        )
+        return SimpleNamespace(
+            run_id=run_id,
+            artifact_path=artifact_path,
+            log_path=log_path,
+            report=report,
+        )
+
+    monkeypatch.setattr("pawchestrator.pipeline.run_verify", fake_verify)

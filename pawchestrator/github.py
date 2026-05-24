@@ -338,8 +338,13 @@ def format_run_comment(
     started_at = str(run_state.get("created_at") or run_state.get("started_at") or "")
     updated_at = str(run_state.get("updated_at") or "")
     pr_url = run_state.get("pr_url")
-    failed_stage = run_state.get("failed_stage") or _failed_stage_from_state(run_state)
-    error = run_state.get("error") or _error_from_state(run_state)
+    failure_status = status == "failed" or status.endswith("_failed")
+    failed_stage = (
+        run_state.get("failed_stage") or _failed_stage_from_state(run_state)
+        if failure_status
+        else None
+    )
+    error = run_state.get("error") or _error_from_state(run_state) if failure_status else None
 
     lines = [
         "## Pawchestrator run",
@@ -355,7 +360,7 @@ def format_run_comment(
     ]
     if pr_url:
         lines.append(f"- PR: {pr_url}")
-    if status == "failed" or failed_stage or error:
+    if failure_status or failed_stage or error:
         lines.append(f"- Failed stage: `{failed_stage or current_stage}`")
         if error:
             lines.append(f"- Error: `{error}`")

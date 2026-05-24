@@ -253,7 +253,7 @@ def test_run_verify_stops_after_first_failure(tmp_path: Path) -> None:
         ).fetchone()
 
     assert run == ("verify_failed", "verify")
-    assert stage == ("complete", None)
+    assert stage == ("failed", "test exited 8: failed")
 
 
 def test_run_verify_skips_missing_config(tmp_path: Path) -> None:

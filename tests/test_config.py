@@ -33,6 +33,7 @@ def test_runner_settings_defaults_match_low_token_profile() -> None:
     assert settings.codegraph.sync_policy == "safe-lazy"
     assert settings.pr.draft is False
     assert settings.pr.assign is True
+    assert settings.pipeline.verify_repair_attempts == 1
     assert settings.debug is False
 
 
@@ -77,6 +78,9 @@ sync_policy = "safe-lazy"
 draft = true
 assign = false
 
+[pipeline]
+verify_repair_attempts = 2
+
 [stages.scout.claude]
 allowed_tools = ["Read"]
 bypass_permissions = false
@@ -117,6 +121,7 @@ approval_policy = "never"
     assert settings.codegraph.sync_policy == "safe-lazy"
     assert settings.pr.draft is True
     assert settings.pr.assign is False
+    assert settings.pipeline.verify_repair_attempts == 2
     assert settings.stages["scout"].claude.allowed_tools == ["Read"]
     assert settings.stages["scout"].claude.bypass_permissions is False
     assert settings.stages["implement"].codex.execution == "native"

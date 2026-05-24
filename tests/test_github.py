@@ -403,6 +403,31 @@ def test_format_run_comment_includes_failure_details() -> None:
     assert "- Error: `plan exploded`" in body
 
 
+def test_format_run_comment_does_not_treat_repaired_failed_stage_as_terminal() -> None:
+    body = format_run_comment(
+        {
+            "id": "run-123",
+            "owner": "owner",
+            "repo": "repo",
+            "issue_number": 42,
+            "status": "completed",
+            "current_stage": "pr",
+            "created_at": "2026-05-23T00:00:00Z",
+            "updated_at": "2026-05-23T00:05:00Z",
+            "stages": [
+                {"stage_name": "verify", "status": "failed", "error": "test failed"},
+                {"stage_name": "verify", "status": "complete"},
+                {"stage_name": "pr", "status": "complete"},
+            ],
+        }
+    )
+
+    assert "- Failed stage:" not in body
+    assert "- Error:" not in body
+    assert "| Verify | `failed` |" in body
+    assert "| Verify | `complete` |" in body
+
+
 def test_format_run_comment_includes_warnings_when_present() -> None:
     body = format_run_comment(
         {

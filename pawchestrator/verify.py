@@ -263,6 +263,7 @@ async def run_verify(
             stage_id=stage_id,
             artifact_path=artifact_path,
             passed=status == "passed",
+            error=_verification_error(results) if status == "failed" else None,
         )
     except Exception as error:
         if not log_path.exists():
@@ -333,6 +334,17 @@ def summarize_output(output: str) -> str:
     if len(summary) <= SUMMARY_MAX_CHARS:
         return summary
     return summary[: SUMMARY_MAX_CHARS - 3].rstrip() + "..."
+
+
+def _verification_error(results: list[CommandResult]) -> str | None:
+    failed = next((result for result in results if result.exit_code != 0), None)
+    if failed is None:
+        return None
+    detail = summarize_output(failed.stderr) or summarize_output(failed.stdout)
+    message = f"{failed.name} exited {failed.exit_code}"
+    if detail:
+        return f"{message}: {detail}"
+    return message
 
 
 def _verification_report_path(settings: Settings, run_id: str) -> Path:

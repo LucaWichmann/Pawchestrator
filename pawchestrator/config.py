@@ -120,6 +120,14 @@ class PrSettings(BaseSettings):
     assign: bool = True
 
 
+class PipelineSettings(BaseSettings):
+    """Pipeline orchestration settings."""
+
+    model_config = SettingsConfigDict(extra="ignore")
+
+    verify_repair_attempts: int = Field(default=1, ge=0)
+
+
 class Settings(BaseSettings):
     """Runtime settings loaded from defaults and optional config.toml."""
 
@@ -131,6 +139,7 @@ class Settings(BaseSettings):
     runners: RunnerSettings = Field(default_factory=RunnerSettings)
     codegraph: CodeGraphSettings = Field(default_factory=CodeGraphSettings)
     pr: PrSettings = Field(default_factory=PrSettings)
+    pipeline: PipelineSettings = Field(default_factory=PipelineSettings)
     stages: dict[str, StageSettings] = Field(default_factory=dict)
 
     @property
@@ -160,6 +169,7 @@ def load_settings(config_path: Path | None = None) -> Settings:
     runners_data = data.get("runners", {})
     codegraph_data = data.get("codegraph", {})
     pr_data = data.get("pr", {})
+    pipeline_data = data.get("pipeline", {})
     stages_data = data.get("stages", {})
     app_dir = Path(app_data.get("app_dir", default_app_dir)).expanduser()
     return Settings(
@@ -169,6 +179,7 @@ def load_settings(config_path: Path | None = None) -> Settings:
         runners=RunnerSettings(**runners_data),
         codegraph=CodeGraphSettings(**codegraph_data),
         pr=PrSettings(**pr_data),
+        pipeline=PipelineSettings(**pipeline_data),
         stages={name: StageSettings(**stage) for name, stage in stages_data.items()},
     )
 

@@ -140,6 +140,31 @@ def test_build_implement_prompt_compresses_plan_for_prompt_only(tmp_path: Path) 
     assert "notes" in plan["steps"][0]
 
 
+def test_build_implement_prompt_includes_repair_context(tmp_path: Path) -> None:
+    prompt = build_implement_prompt(
+        _snapshot(),
+        {"steps": [{"description": "Fix tests.", "files_to_modify": ["tests/test_x.py"]}]},
+        tmp_path,
+        repair_context={
+            "status": "failed",
+            "commands": [
+                {
+                    "command": "pytest",
+                    "exit_code": 1,
+                    "stderr_summary": "assertion failed",
+                }
+            ],
+            "verify_log_tail": "FAILED tests/test_x.py",
+        },
+        repair_attempt=2,
+    )
+
+    assert "Verification failed after implementation" in prompt
+    assert "Repair attempt: 2" in prompt
+    assert "FAILED tests/test_x.py" in prompt
+    assert '"command": "pytest"' in prompt
+
+
 def test_files_changed_from_diff_dedupes_paths() -> None:
     diff = "\n".join(
         [

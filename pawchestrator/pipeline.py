@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable
 from uuid import uuid4
 
 from pawchestrator.config import Settings
@@ -43,6 +43,10 @@ LOGGER = logging.getLogger(__name__)
 class PipelineResult:
     run_id: str
     pr_url: str
+
+
+class VerificationFailedError(RuntimeError):
+    """Raised when verification fails after all repair attempts."""
 
 
 async def run_pipeline(
@@ -89,8 +93,17 @@ async def run_pipeline(
     async def plan_stage() -> ImplementationPlanResult:
         return await run_plan(active_run_id, settings, repo_path=resolved_repo_path)
 
-    async def implement_stage():
-        return await run_implement(active_run_id, settings, repo_path=resolved_repo_path)
+    async def implement_stage(
+        repair_context: dict[str, Any] | None = None,
+        repair_attempt: int | None = None,
+    ):
+        return await run_implement(
+            active_run_id,
+            settings,
+            repo_path=resolved_repo_path,
+            repair_context=repair_context,
+            repair_attempt=repair_attempt,
+        )
 
     async def verify_stage() -> VerificationResult:
         return await run_verify(active_run_id, settings)
@@ -120,6 +133,37 @@ async def run_pipeline(
         verification = await _run_stage("verify", verify_stage, progress)
         _print_done(progress, "verify", f"status: {verification.report.get('status', 'unknown')}")
         await _edit_run_comment(settings, active_run_id, comment_client)
+        repair_attempt = 0
+        max_repair_attempts = settings.pipeline.verify_repair_attempts
+        while _verification_status(verification) == "failed" and repair_attempt < max_repair_attempts:
+            repair_attempt += 1
+            progress(
+                f"[verify] failed - repair attempt {repair_attempt}/{max_repair_attempts}"
+            )
+            await _swap_stage_label(settings, active_run_id, comment_client, "implementing")
+            await _run_stage(
+                "implement",
+                lambda: implement_stage(
+                    _verification_repair_context(verification),
+                    repair_attempt,
+                ),
+                progress,
+            )
+            await _edit_run_comment(settings, active_run_id, comment_client)
+            await _swap_stage_label(settings, active_run_id, comment_client, "verifying")
+            verification = await _run_stage("verify", verify_stage, progress)
+            _print_done(
+                progress,
+                "verify",
+                f"status: {verification.report.get('status', 'unknown')}",
+            )
+            await _edit_run_comment(settings, active_run_id, comment_client)
+        if _verification_status(verification) == "failed":
+            raise VerificationFailedError(_verification_failure_message(verification))
+        if _verification_status(verification) not in {"passed", "skipped"}:
+            raise VerificationFailedError(
+                f"verification did not pass: {_verification_status(verification)}"
+            )
         pr = await _run_stage("pr", pr_stage, progress)
         pr_url = pr.pr_url
         _print_done(progress, "pr", pr_url)
@@ -158,6 +202,43 @@ def _print_done(progress: ProgressFn, stage_name: str, suffix: str | None = None
     if suffix:
         message = f"{message} - {suffix}"
     progress(message)
+
+
+def _verification_status(verification: VerificationResult) -> str:
+    return str(verification.report.get("status") or "unknown")
+
+
+def _verification_failure_message(verification: VerificationResult) -> str:
+    commands = verification.report.get("commands")
+    if isinstance(commands, list):
+        for command in commands:
+            if not isinstance(command, dict) or command.get("exit_code") == 0:
+                continue
+            detail = str(command.get("stderr_summary") or command.get("stdout_summary") or "")
+            message = f"verification failed: {command.get('command')} exited {command.get('exit_code')}"
+            if detail:
+                return f"{message}: {detail}"
+            return message
+    return "verification failed"
+
+
+def _verification_repair_context(verification: VerificationResult) -> dict[str, Any]:
+    return {
+        "status": _verification_status(verification),
+        "commands": verification.report.get("commands") or [],
+        "skip_reason": verification.report.get("skip_reason"),
+        "verify_log_tail": _tail_text(verification.log_path),
+    }
+
+
+def _tail_text(path: Path, *, max_chars: int = 8000) -> str:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    return text[-max_chars:]
 
 
 async def _post_initial_run_comment(

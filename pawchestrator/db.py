@@ -808,9 +808,11 @@ async def complete_verify_run(
     stage_id: str,
     artifact_path: Path,
     passed: bool,
+    error: str | None = None,
 ) -> None:
     now = utc_now_iso()
     run_status = "verify_complete" if passed else "verify_failed"
+    stage_status = "complete" if passed else "failed"
     async with aiosqlite.connect(settings.database_path) as db:
         await db.execute(
             """
@@ -823,10 +825,10 @@ async def complete_verify_run(
         await db.execute(
             """
             UPDATE workflow_stages
-            SET status = 'complete', completed_at = ?
+            SET status = ?, error = ?, completed_at = ?
             WHERE id = ?
             """,
-            (now, stage_id),
+            (stage_status, error, now, stage_id),
         )
         await db.execute(
             """
