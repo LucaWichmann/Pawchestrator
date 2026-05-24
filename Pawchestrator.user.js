@@ -144,10 +144,47 @@
       padding-top: 10px;
     }
 
+    #${PANEL_ID} .pawchestrator-grill-section {
+      border-top: 1px solid var(--borderColor-muted, #d8dee4);
+      margin-top: 10px;
+      padding-top: 10px;
+    }
+
     #${PANEL_ID} .pawchestrator-pipeline-title {
       color: var(--fgColor-muted, #59636e);
       font-weight: 600;
       margin-bottom: 8px;
+    }
+
+    #${PANEL_ID} .pawchestrator-grill-title {
+      color: var(--fgColor-muted, #59636e);
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+
+    #${PANEL_ID} .pawchestrator-grill-details {
+      color: var(--fgColor-muted, #59636e);
+      display: grid;
+      gap: 4px;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    }
+
+    #${PANEL_ID} .pawchestrator-grill-status[data-active="true"]::before {
+      animation: pawchestrator-spin 0.8s linear infinite;
+      border: 1px solid var(--fgColor-accent, #0969da);
+      border-radius: 50%;
+      border-right-color: transparent;
+      content: "";
+      display: inline-block;
+      height: 10px;
+      margin-right: 6px;
+      vertical-align: -1px;
+      width: 10px;
+    }
+
+    #${PANEL_ID} .pawchestrator-grill-error {
+      color: var(--fgColor-danger, #cf222e);
+      grid-column: 1 / -1;
     }
 
     #${PANEL_ID} .pawchestrator-timeline {
@@ -597,6 +634,89 @@
     parent.append(section);
   }
 
+  function grillReport(grill) {
+    return grill.grill_report || grill.report || grill.artifact || {};
+  }
+
+  function countGrillValue(grill, report, countKey, listKey) {
+    if (Number.isFinite(grill[countKey])) {
+      return grill[countKey];
+    }
+    if (Number.isFinite(report[countKey])) {
+      return report[countKey];
+    }
+    return Array.isArray(report[listKey]) ? report[listKey].length : 0;
+  }
+
+  function grillBodyUpdated(grill, report) {
+    return grill.body_updated === true || report.body_updated === true;
+  }
+
+  function grillTimestamp(grill) {
+    return grill.updated_at || grill.completed_at || grill.started_at || "";
+  }
+
+  function formatGrillTimestamp(value) {
+    if (!value) {
+      return "unknown";
+    }
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return String(value);
+    }
+    return date.toLocaleString();
+  }
+
+  function isGrillActive(grill) {
+    return Boolean(grill && !RUN_DONE.has(grill.status));
+  }
+
+  function renderGrillDetail(parent, label, value) {
+    const item = document.createElement("div");
+    item.textContent = `${label}: ${value}`;
+    parent.append(item);
+  }
+
+  function renderGrillSection(parent, grill) {
+    if (!grill) {
+      return;
+    }
+
+    const section = document.createElement("section");
+    section.className = "pawchestrator-grill-section";
+
+    const title = document.createElement("div");
+    title.className = "pawchestrator-grill-title";
+    title.textContent = "Grill";
+    section.append(title);
+
+    const details = document.createElement("div");
+    details.className = "pawchestrator-grill-details";
+
+    const active = isGrillActive(grill);
+    const status = document.createElement("div");
+    status.className = "pawchestrator-grill-status";
+    status.dataset.active = String(active);
+    status.textContent = active ? "[grill] running..." : `Status: ${grill.status || "unknown"}`;
+    details.append(status);
+
+    const report = grillReport(grill);
+    renderGrillDetail(details, "Criteria suggested", countGrillValue(grill, report, "criteria_count", "suggested_criteria"));
+    renderGrillDetail(details, "Questions posted", countGrillValue(grill, report, "questions_posted_count", "unanswerable_questions"));
+    renderGrillDetail(details, "Issue body updated", grillBodyUpdated(grill, report) ? "yes" : "no");
+    renderGrillDetail(details, "Last grill run", formatGrillTimestamp(grillTimestamp(grill)));
+
+    if (grill.status === "grill_failed" || grill.status === "failed") {
+      const error = document.createElement("div");
+      error.className = "pawchestrator-grill-error";
+      error.textContent = summarizeError(grill);
+      details.append(error);
+    }
+
+    section.append(details);
+    parent.append(section);
+  }
+
   function renderStatus(status) {
     const panel = document.getElementById(PANEL_ID);
     if (!panel) {
@@ -640,6 +760,7 @@
     }
 
     renderPipeline(body, status.pipeline);
+    renderGrillSection(body, status.grill);
   }
 
   function renderOffline() {
