@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from pawchestrator import __version__
 from pawchestrator.config import LOCAL_HOST, Settings, load_settings
 from pawchestrator.db import get_run_state, init_db, mark_run_failed
+from pawchestrator.grill import run_grill
 from pawchestrator.pipeline import run_pipeline
 from pawchestrator.sessions import (
     _pair_lock,
@@ -25,6 +26,12 @@ from pawchestrator.sessions import (
 
 
 class IssueStartRequest(BaseModel):
+    owner: str = Field(min_length=1)
+    repo: str = Field(min_length=1)
+    number: int = Field(gt=0)
+
+
+class IssueGrillRequest(BaseModel):
     owner: str = Field(min_length=1)
     repo: str = Field(min_length=1)
     number: int = Field(gt=0)
@@ -119,6 +126,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         return {"run_id": run_id}
 
+    @app.post("/issue/grill")
+    async def issue_grill(
+        body: IssueGrillRequest,
+        background_tasks: BackgroundTasks,
+    ) -> dict[str, str]:
+        url = f"https://github.com/{body.owner}/{body.repo}/issues/{body.number}"
+        run_id = await _prepare_grill_run(url, runtime_settings)
+        background_tasks.add_task(
+            _run_grill_background,
+            url,
+            runtime_settings,
+            run_id=run_id,
+        )
+        return {"run_id": run_id}
+
     return app
 
 
@@ -155,6 +177,23 @@ async def _run_pipeline_background(
         print(f"[run {run_id}] failed: {error}")
 
 
+async def _run_grill_background(
+    issue_url_value: str,
+    settings: Settings,
+    *,
+    run_id: str,
+) -> None:
+    try:
+        await run_grill(
+            issue_url_value,
+            settings,
+            run_id=run_id,
+        )
+    except Exception as error:
+        await mark_run_failed(settings, run_id=run_id)
+        print(f"[run {run_id}] grill failed: {error}")
+
+
 async def _prepare_pipeline_run(issue_url_value: str, settings: Settings) -> str:
     from uuid import uuid4
 
@@ -164,6 +203,24 @@ async def _prepare_pipeline_run(issue_url_value: str, settings: Settings) -> str
     reference = parse_issue_url(issue_url_value)
     run_id = str(uuid4())
     await create_pipeline_run(
+        settings,
+        run_id=run_id,
+        owner=reference.owner,
+        repo=reference.repo,
+        issue_number=reference.number,
+    )
+    return run_id
+
+
+async def _prepare_grill_run(issue_url_value: str, settings: Settings) -> str:
+    from uuid import uuid4
+
+    from pawchestrator.db import create_grill_run
+    from pawchestrator.github import parse_issue_url
+
+    reference = parse_issue_url(issue_url_value)
+    run_id = str(uuid4())
+    await create_grill_run(
         settings,
         run_id=run_id,
         owner=reference.owner,

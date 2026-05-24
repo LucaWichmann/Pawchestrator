@@ -21,6 +21,7 @@ from pawchestrator.db import (
     list_repo_registrations,
     lookup_repo_path,
 )
+from pawchestrator.grill import run_grill
 from pawchestrator.doctor import STATUS_FAIL, STATUS_PASS, STATUS_WARN, has_required_failures, run_checks
 from pawchestrator.implement import run_implement
 from pawchestrator.issues import snapshot_issue
@@ -128,6 +129,26 @@ def issue_start(
 
     typer.echo(f"Run ID: {result.run_id}")
     typer.echo(f"Draft PR: {result.pr_url}")
+
+
+@issue_app.command("grill")
+def issue_grill(github_issue_url: str) -> None:
+    """Run the Grill action for a GitHub issue."""
+
+    settings = load_settings()
+    try:
+        result = asyncio.run(run_grill(github_issue_url, settings))
+    except Exception as error:
+        typer.secho(f"Grill failed: {error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from error
+
+    typer.echo(f"Run ID: {result.run_id}")
+    typer.echo(f"Status: {result.report.status}")
+    typer.echo(f"Suggested criteria: {len(result.report.suggested_criteria)}")
+    typer.echo(f"Unanswerable questions: {len(result.report.unanswerable_questions)}")
+    typer.echo(f"Body updated: {result.report.body_updated}")
+    typer.echo(f"Comment posted: {result.report.comment_posted}")
+    typer.echo(f"Report: {result.artifact_path}")
 
 
 @repo_app.command("add")
