@@ -137,15 +137,19 @@ def test_userscript_injects_panel_after_github_issue_body() -> None:
     assert "panel.previousElementSibling !== issueBody" in source
 
 
-def test_userscript_keeps_only_action_buttons_in_issue_header() -> None:
+def test_userscript_renders_action_buttons_inside_panel_bar() -> None:
     source = _read_userscript()
 
-    assert '[data-testid="issue-header"] [data-component="PH_Actions"]' in source
-    assert "HeaderMenu-module__menuActionsContainer__K0Mga" in source
-    assert "findHeaderActions" in source
-    assert "findNewIssueHost" in source
+    assert 'bar.className = "pawchestrator-panel-bar"' in source
     assert "createStartButton" in source
     assert "createGrillButton" in source
+    assert "bar.append(toggle, summary, createStartButton(), createGrillButton())" in source
+    assert source.index("createStartButton()") < source.index("panel.append(bar, body)")
+    assert source.index("createGrillButton()") < source.index("panel.append(bar, body)")
+    assert "injectHeaderActions" not in source
+    assert "findHeaderActions" not in source
+    assert "findNewIssueHost" not in source
+    assert '[data-testid="issue-header"] [data-component="PH_Actions"]' not in source
     assert 'button.dataset.component = "Button"' in source
     assert 'button.dataset.size = "medium"' in source
     assert 'button.dataset.variant = "default"' in source
@@ -232,18 +236,17 @@ def test_userscript_removes_controls_on_non_issue_pages() -> None:
     source = _read_userscript()
 
     assert "function removeInjectedControls()" in source
-    assert "[START_ID, GRILL_ID, PANEL_ID].forEach" in source
-    assert "document.getElementById(id)" in source
-    assert "element.remove()" in source
+    assert "document.getElementById(PANEL_ID)?.remove()" in source
+    assert "[START_ID, GRILL_ID, PANEL_ID].forEach" not in source
     assert "stopIssueStatusPolling()" in source
 
 
-def test_userscript_rehomes_stale_header_controls_and_panel() -> None:
+def test_userscript_rehomes_stale_panel_only() -> None:
     source = _read_userscript()
 
-    assert "existingButton && document.contains(existingButton) ? existingButton : createStartButton()" in source
-    assert "existingGrillButton && document.contains(existingGrillButton) ? existingGrillButton : createGrillButton()" in source
     assert "existingPanel && document.contains(existingPanel) ? existingPanel : createPanel()" in source
-    assert "button.parentElement !== actions" in source
-    assert "grillButton.parentElement !== actions" in source
+    assert "existingButton && document.contains(existingButton) ? existingButton : createStartButton()" not in source
+    assert "existingGrillButton && document.contains(existingGrillButton) ? existingGrillButton : createGrillButton()" not in source
+    assert "button.parentElement !== actions" not in source
+    assert "grillButton.parentElement !== actions" not in source
     assert "panel.previousElementSibling !== issueBody" in source

@@ -346,31 +346,6 @@
       && !extra;
   }
 
-  function isVisible(element) {
-    const rect = element.getBoundingClientRect();
-    return rect.width > 0
-      && rect.height > 0
-      && window.getComputedStyle(element).visibility !== "hidden";
-  }
-
-  function uniqueElements(elements) {
-    return [...new Set(elements.filter(Boolean))];
-  }
-
-  function findHeaderActions() {
-    const selectors = [
-      '[data-testid="issue-header"] [data-component="PH_Actions"] .HeaderMenu-module__menuActionsContainer__K0Mga',
-      '[data-testid="issue-header"] [data-component="PH_Actions"] [class*="HeaderMenu-module__menuActionsContainer"]',
-      '[data-testid="issue-header"] .HeaderMenu-module__menuActionsContainer__K0Mga',
-      '[data-testid="issue-header"] [class*="HeaderMenu-module__menuActionsContainer"]',
-    ];
-    const candidates = uniqueElements(selectors.flatMap((selector) => {
-      return Array.from(document.querySelectorAll(selector));
-    }));
-
-    return candidates.find(isVisible) || candidates[0] || null;
-  }
-
   function findIssueBodyContainer() {
     const selectors = [
       ".IssueBody-module__outerContainer__ULNTb",
@@ -379,19 +354,6 @@
     return selectors
       .map((selector) => document.querySelector(selector))
       .find(Boolean) || null;
-  }
-
-  function findNewIssueHost(actions) {
-    const newIssue = actions.querySelector('a[href$="/issues/new/choose"], a[href*="/issues/new"]');
-    if (!newIssue) {
-      return null;
-    }
-
-    const parent = newIssue.parentElement;
-    if (parent && parent.parentElement === actions) {
-      return parent;
-    }
-    return newIssue;
   }
 
   function setPanelSummary(message) {
@@ -1081,44 +1043,15 @@
     const body = document.createElement("div");
     body.className = "pawchestrator-panel-body";
 
-    bar.append(toggle, summary);
+    bar.append(toggle, summary, createStartButton(), createGrillButton());
     panel.append(bar, body);
     return panel;
   }
 
   function removeInjectedControls() {
-    [START_ID, GRILL_ID, PANEL_ID].forEach((id) => {
-      const element = document.getElementById(id);
-      if (element) {
-        element.remove();
-      }
-    });
+    document.getElementById(PANEL_ID)?.remove();
     lastPipelineExpansionKey = null;
     stopIssueStatusPolling();
-  }
-
-  function injectHeaderActions() {
-    const actions = findHeaderActions();
-    if (!actions) {
-      return false;
-    }
-
-    const existingButton = document.getElementById(START_ID);
-    const existingGrillButton = document.getElementById(GRILL_ID);
-    const button = existingButton && document.contains(existingButton) ? existingButton : createStartButton();
-    const grillButton = existingGrillButton && document.contains(existingGrillButton) ? existingGrillButton : createGrillButton();
-    const newIssueHost = findNewIssueHost(actions);
-
-    if (button.parentElement !== actions) {
-      actions.insertBefore(button, newIssueHost);
-    }
-    if (grillButton.parentElement !== actions || grillButton.previousElementSibling !== button) {
-      actions.insertBefore(grillButton, newIssueHost);
-    }
-
-    button.hidden = false;
-    grillButton.hidden = false;
-    return true;
   }
 
   function injectIssuePanel() {
@@ -1146,9 +1079,8 @@
       return;
     }
 
-    const headerReady = injectHeaderActions();
     const panelReady = injectIssuePanel();
-    if (headerReady && panelReady && !activePoll) {
+    if (panelReady && !activePoll) {
       startIssueStatusPolling();
     }
   }
