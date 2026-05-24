@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -1066,6 +1067,82 @@ async def get_run_state(settings: Settings, run_id: str) -> dict[str, object] | 
     payload["stages"] = [dict(stage) for stage in stages]
     payload["artifacts"] = [dict(artifact) for artifact in artifacts]
     return payload
+
+
+async def get_latest_run_by_issue(
+    settings: Settings,
+    owner: str,
+    repo: str,
+    issue_number: int,
+    workflow_type: str,
+) -> dict[str, object] | None:
+    await init_db(settings)
+    async with aiosqlite.connect(settings.database_path) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT id
+            FROM workflow_runs
+            WHERE owner = ?
+              AND repo = ?
+              AND issue_number = ?
+              AND workflow_type = ?
+            ORDER BY updated_at DESC, created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (owner, repo, issue_number, workflow_type),
+        )
+        row = await cursor.fetchone()
+
+    if row is None:
+        return None
+
+    run = await get_run_state(settings, str(row["id"]))
+    if run is None:
+        return None
+
+    warnings = await get_run_warnings(settings, str(run["id"]))
+    run["warnings"] = warnings
+    run["run_id"] = run.pop("id")
+    if workflow_type == "pipeline":
+        run.pop("artifacts", None)
+        return run
+
+    grill_report = _read_latest_artifact(run, "grill_report")
+    run.pop("artifacts", None)
+    run.pop("pr_url", None)
+    run["grill_report"] = grill_report
+    return run
+
+
+async def is_repo_registered(settings: Settings, *, owner: str, repo: str) -> bool:
+    return await lookup_repo_path(settings, owner=owner, repo=repo) is not None
+
+
+def _read_latest_artifact(
+    run: dict[str, object],
+    artifact_type: str,
+) -> dict[str, object] | None:
+    artifacts = run.get("artifacts")
+    if not isinstance(artifacts, list):
+        return None
+
+    matching = [
+        artifact
+        for artifact in artifacts
+        if isinstance(artifact, dict) and artifact.get("artifact_type") == artifact_type
+    ]
+    if not matching:
+        return None
+
+    path = Path(str(matching[-1].get("file_path") or ""))
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 async def _start_stage_row(

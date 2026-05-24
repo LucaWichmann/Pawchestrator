@@ -17,6 +17,8 @@ from pawchestrator.runners import (
     CodexRunner,
     Runner,
     RunnerTask,
+    clear_runner_health_cache,
+    get_runner_health,
     resolve_runner,
 )
 
@@ -95,15 +97,78 @@ def test_claude_runner_reports_missing_binary(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_claude_runner_reports_found_binary(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
+            return b"claude 1.2.3", b""
+
+    async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
+        assert list(cmd) == ["C:\\bin\\claude.exe", "--version"]
+        return FakeProcess()
+
     monkeypatch.setattr(
         "pawchestrator.runners.shutil.which",
         lambda name: "C:\\bin\\claude.exe" if name == "claude" else None,
+    )
+    monkeypatch.setattr(
+        "pawchestrator.runners.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
     )
 
     healthy, message = asyncio.run(ClaudeRunner().check_health())
 
     assert healthy is True
-    assert message == "found at C:\\bin\\claude.exe"
+    assert message == "found at C:\\bin\\claude.exe (claude 1.2.3)"
+
+
+def test_runner_health_cache_reuses_version_checks_within_ttl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clear_runner_health_cache()
+    calls: list[list[str]] = []
+
+    class FakeProcess:
+        returncode = 0
+
+        def __init__(self, stdout: bytes) -> None:
+            self._stdout = stdout
+
+        async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
+            return self._stdout, b""
+
+    async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
+        calls.append(list(cmd))
+        if cmd[0] == "C:\\bin\\claude.exe":
+            return FakeProcess(b"claude 1.2.3\n")
+        if cmd[0] == "C:\\bin\\codex.exe":
+            return FakeProcess(b"codex 4.5.6\n")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(
+        "pawchestrator.runners.shutil.which",
+        lambda name: f"C:\\bin\\{name}.exe" if name in {"claude", "codex"} else None,
+    )
+    monkeypatch.setattr(
+        "pawchestrator.runners.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    settings = Settings()
+    settings.runners.codex.execution = "native"
+
+    first = asyncio.run(get_runner_health(settings))
+    second = asyncio.run(get_runner_health(settings))
+
+    assert first == {
+        "claude": {"available": True, "version": "claude 1.2.3"},
+        "codex": {"available": True, "version": "codex 4.5.6"},
+    }
+    assert second == first
+    assert calls == [
+        ["C:\\bin\\claude.exe", "--version"],
+        ["C:\\bin\\codex.exe", "--version"],
+    ]
+    clear_runner_health_cache()
 
 
 def test_claude_runner_invokes_expected_command_and_parses_result(
