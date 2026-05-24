@@ -347,11 +347,11 @@
   }
 
   function shouldAutoExpand(status) {
-    return Boolean(status && (isPipelineVisible(status.pipeline) || status.grill));
+    return Boolean(status && (status.pipeline || status.grill));
   }
 
   function isPipelineVisible(pipeline) {
-    return Boolean(pipeline && (PIPELINE_ACTIVE.has(pipeline.status) || pipeline.status === "failed"));
+    return Boolean(pipeline && (PIPELINE_ACTIVE.has(pipeline.status) || pipeline.status === "completed" || pipeline.status === "failed"));
   }
 
   function maybeAutoExpandForPipeline(status) {
