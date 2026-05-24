@@ -147,6 +147,27 @@ def test_github_issue_client_edits_comment() -> None:
     assert len(requests) == 1
 
 
+def test_github_issue_client_patches_issue_body() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.method == "PATCH"
+        assert request.url.path == "/repos/owner/repo/issues/42"
+        assert request.read() == b'{"body":"Updated issue body"}'
+        return httpx.Response(200, json={"number": 42})
+
+    client = GitHubIssueClient(
+        "token",
+        api_base="https://api.github.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    asyncio.run(client.patch_issue_body("owner", "repo", 42, "Updated issue body"))
+
+    assert len(requests) == 1
+
+
 def test_github_issue_client_ensure_label_noops_when_label_exists() -> None:
     requests: list[httpx.Request] = []
 

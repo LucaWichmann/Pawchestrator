@@ -161,6 +161,30 @@ async def create_pipeline_run(
         await db.commit()
 
 
+async def create_grill_run(
+    settings: Settings,
+    *,
+    run_id: str,
+    owner: str,
+    repo: str,
+    issue_number: int,
+) -> None:
+    await init_db(settings)
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            INSERT INTO workflow_runs (
+              id, owner, repo, issue_number, workflow_type, status, current_stage,
+              created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, 'grill', 'pending', NULL, ?, ?)
+            """,
+            (run_id, owner, repo, issue_number, now, now),
+        )
+        await db.commit()
+
+
 async def complete_snapshot_run(
     settings: Settings,
     *,
@@ -239,6 +263,95 @@ async def start_scout_run(settings: Settings, *, run_id: str) -> str:
         stage_id = await _start_stage_row(db, run_id=run_id, stage_name="scout", now=now)
         await db.commit()
     return stage_id
+
+
+async def start_grill_run(settings: Settings, *, run_id: str) -> str:
+    await init_db(settings)
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET workflow_type = 'grill',
+                status = 'grill_running',
+                current_stage = 'grill',
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (now, run_id),
+        )
+        stage_id = await _start_stage_row(db, run_id=run_id, stage_name="grill", now=now)
+        await db.commit()
+    return stage_id
+
+
+async def complete_grill_run(
+    settings: Settings,
+    *,
+    run_id: str,
+    stage_id: str,
+    artifact_path: Path,
+) -> None:
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET workflow_type = 'grill',
+                status = 'grill_complete',
+                current_stage = 'grill',
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (now, run_id),
+        )
+        await db.execute(
+            """
+            UPDATE workflow_stages
+            SET status = 'complete', completed_at = ?
+            WHERE id = ?
+            """,
+            (now, stage_id),
+        )
+        await db.execute(
+            """
+            INSERT INTO artifacts (id, run_id, artifact_type, file_path, created_at)
+            VALUES (?, ?, 'grill_report', ?, ?)
+            """,
+            (str(uuid4()), run_id, str(artifact_path), now),
+        )
+        await db.commit()
+
+
+async def fail_grill_run(
+    settings: Settings,
+    *,
+    run_id: str,
+    stage_id: str,
+    error: str,
+) -> None:
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET workflow_type = 'grill',
+                status = 'grill_failed',
+                current_stage = 'grill',
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (now, run_id),
+        )
+        await db.execute(
+            """
+            UPDATE workflow_stages
+            SET status = 'failed', error = ?, completed_at = ?
+            WHERE id = ?
+            """,
+            (error, now, stage_id),
+        )
+        await db.commit()
 
 
 async def complete_scout_run(

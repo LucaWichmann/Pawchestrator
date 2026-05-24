@@ -130,6 +130,43 @@ def test_issue_start_background_failure_does_not_raise(
     assert state_response.json()["status"] == "failed"
 
 
+def test_issue_grill_returns_run_id_and_schedules_grill(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _seed_token(settings)
+    calls = []
+
+    async def fake_run_grill(
+        issue_url: str,
+        runtime_settings: Settings,
+        *,
+        run_id: str,
+    ):
+        calls.append((issue_url, runtime_settings.app_dir, run_id))
+
+    monkeypatch.setattr("pawchestrator.server.run_grill", fake_run_grill)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.post(
+            "/issue/grill",
+            json={"owner": "owner", "repo": "repo", "number": 42},
+            headers=_token_headers(),
+        )
+        run_id = response.json()["run_id"]
+        state_response = client.get(f"/runs/{run_id}", headers=_token_headers())
+
+    assert response.status_code == 200
+    assert response.json() == {"run_id": run_id}
+    assert calls == [
+        ("https://github.com/owner/repo/issues/42", tmp_path, run_id),
+    ]
+    payload = state_response.json()
+    assert payload["id"] == run_id
+    assert payload["workflow_type"] == "grill"
+
+
 def test_cors_allows_github_for_issue_start_and_runs(tmp_path: Path) -> None:
     settings = Settings(app_dir=tmp_path)
 

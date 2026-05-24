@@ -22,6 +22,7 @@ PAWCHESTRATOR_LABELS = {
     "pr-ready": ("pawchestrator:pr-ready", "0e8a16"),
     "failed": ("pawchestrator:failed", "cf222e"),
     "blocked": ("pawchestrator:blocked", "57606a"),
+    "needs-info": ("pawchestrator:needs-info", "d29922"),
 }
 RUN_STAGE_LABELS = {
     "snapshot": "Snapshot",
@@ -168,6 +169,24 @@ class GitHubIssueClient:
         if not isinstance(payload, dict) or "id" not in payload:
             raise GitHubError("GitHub comment response did not include an id")
         return int(payload["id"])
+
+    async def patch_issue_body(
+        self,
+        owner: str,
+        repo: str,
+        number: int,
+        body: str,
+    ) -> None:
+        async with httpx.AsyncClient(
+            base_url=self._api_base,
+            headers=self._headers(),
+            transport=self._transport,
+        ) as client:
+            response = await client.patch(
+                f"/repos/{owner}/{repo}/issues/{number}",
+                json={"body": body},
+            )
+            self._raise_for_status(response)
 
     async def edit_comment(
         self,
