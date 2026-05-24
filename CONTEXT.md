@@ -264,7 +264,7 @@ Design decisions (locked via grilling sessions 2026-05-24 and 2026-05-25):
 
 **Two independent sections:** Pipeline section and Grill section rendered separately in the expanded panel. Each tracks its own latest run.
 
-**Buttons stay in header:** "🐾 Work on this issue" and "🔥 Grill Issue" stay in the GitHub issue header. Inline status text divs (`STATUS_ID`, `GRILL_STATUS_ID`) are retired — all status moves to panel.
+**Buttons move into panel (revised 2026-05-25):** "🐾 Work on this issue" and "🔥 Grill Issue" move from the GitHub issue header into the panel bar (always-visible strip), unifying all Pawchestrator controls into one surface. `injectHeaderActions` is retired. Inline status text divs (`STATUS_ID`, `GRILL_STATUS_ID`) were already retired — all status is in the panel.
 
 **New backend endpoint:** `GET /issue/{owner}/{repo}/{number}/status` — combined payload:
 ```json
