@@ -233,6 +233,8 @@ async def _create_or_find_pr(
         cmd.insert(3, "--draft")
     for assignee in assignees:
         cmd.extend(["--assignee", assignee])
+    for assignee in assignees:
+        cmd.extend(["--reviewer", assignee])
 
     stdout, stderr, exit_code = await _run_process(cmd, cwd)
     if exit_code == 0:
@@ -245,11 +247,29 @@ async def _create_or_find_pr(
             cwd,
         )
         if view_exit == 0:
-            return _extract_pr_url(view_stdout)
+            pr_url = _extract_pr_url(view_stdout)
+            await _apply_pr_assignments(branch=branch, cwd=cwd, assignees=assignees)
+            return pr_url
         view_detail = view_stderr.strip() or view_stdout.strip() or "gh pr view failed"
         raise RuntimeError(f"{detail}; failed to retrieve existing PR: {view_detail}")
 
     raise RuntimeError(detail)
+
+
+async def _apply_pr_assignments(*, branch: str, cwd: Path, assignees: list[str]) -> None:
+    if not assignees:
+        return
+
+    cmd = ["gh", "pr", "edit", branch]
+    for assignee in assignees:
+        cmd.extend(["--add-assignee", assignee])
+    for assignee in assignees:
+        cmd.extend(["--add-reviewer", assignee])
+
+    stdout, stderr, exit_code = await _run_process(cmd, cwd)
+    if exit_code != 0:
+        detail = stderr.strip() or stdout.strip() or "gh pr edit failed"
+        raise RuntimeError(detail)
 
 
 async def _ensure_branch_has_pr_commits(
