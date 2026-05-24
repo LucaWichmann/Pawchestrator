@@ -329,7 +329,10 @@ async def ensure_pawchestrator_labels(
         await client.ensure_label(owner, repo, label_name, color)
 
 
-def format_run_comment(run_state: dict[str, Any]) -> str:
+def format_run_comment(
+    run_state: dict[str, Any],
+    warnings: list[dict[str, str]] | None = None,
+) -> str:
     current_stage = str(run_state.get("current_stage") or "pending")
     status = str(run_state.get("status") or "pending")
     started_at = str(run_state.get("created_at") or run_state.get("started_at") or "")
@@ -357,6 +360,10 @@ def format_run_comment(run_state: dict[str, Any]) -> str:
         if error:
             lines.append(f"- Error: `{error}`")
     lines.extend(["", _format_stage_table(run_state)])
+    if warnings:
+        lines.extend(["", "## Warnings"])
+        for warning in warnings:
+            lines.append(f"- {warning.get('code', '')}: {warning.get('message', '')}")
     return "\n".join(lines)
 
 
