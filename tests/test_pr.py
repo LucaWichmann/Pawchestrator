@@ -105,8 +105,8 @@ def test_run_pr_pushes_branch_creates_pr_writes_artifact_and_records_stage(
     assert "main" in calls[2][0]
     assert "--head" in calls[2][0]
     assert "paw/issue-42-test" in calls[2][0]
-    assert "--assignee" in calls[2][0]
-    assert "octo" in calls[2][0]
+    assert _flag_values(calls[2][0], "--assignee") == ["octo"]
+    assert _flag_values(calls[2][0], "--reviewer") == ["octo"]
 
     draft = json.loads(result.artifact_path.read_text(encoding="utf-8"))
     assert result.artifact_path == tmp_path / "runs" / run_id / "pr_draft.json"
@@ -172,6 +172,66 @@ def test_run_pr_includes_draft_flag_when_configured(
     assert calls[2][:4] == ["gh", "pr", "create", "--draft"]
 
 
+def test_run_pr_create_includes_multiple_assignees_and_reviewers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    run_id = "run-123"
+    worktree_path = tmp_path / "worktree"
+    worktree_path.mkdir()
+    asyncio.run(_insert_verify_run(settings, run_id, worktree_path=worktree_path))
+    _write_artifacts(settings, run_id, assignees=["octo", "hubot"])
+    calls: list[list[str]] = []
+
+    async def fake_run_process(cmd: list[str], cwd: Path) -> tuple[str, str, int]:
+        calls.append(cmd)
+        if cmd[:3] == ["git", "rev-list", "--count"]:
+            return "1\n", "", 0
+        if cmd[:2] == ["git", "push"]:
+            return "pushed", "", 0
+        if cmd[:3] == ["gh", "pr", "create"]:
+            return "https://github.com/owner/repo/pull/99\n", "", 0
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr("pawchestrator.pr._run_process", fake_run_process)
+
+    asyncio.run(run_pr(run_id, settings))
+
+    create_cmd = calls[2]
+    assert _flag_values(create_cmd, "--assignee") == ["octo", "hubot"]
+    assert _flag_values(create_cmd, "--reviewer") == ["octo", "hubot"]
+
+
+def test_run_pr_create_omits_assignment_flags_when_assignees_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = Settings(app_dir=tmp_path, pr=PrSettings(assign=False))
+    run_id = "run-123"
+    worktree_path = tmp_path / "worktree"
+    worktree_path.mkdir()
+    asyncio.run(_insert_verify_run(settings, run_id, worktree_path=worktree_path))
+    _write_artifacts(settings, run_id, assignees=[])
+    calls: list[list[str]] = []
+
+    async def fake_run_process(cmd: list[str], cwd: Path) -> tuple[str, str, int]:
+        calls.append(cmd)
+        if cmd[:3] == ["git", "rev-list", "--count"]:
+            return "1\n", "", 0
+        if cmd[:2] == ["git", "push"]:
+            return "pushed", "", 0
+        if cmd[:3] == ["gh", "pr", "create"]:
+            return "https://github.com/owner/repo/pull/99\n", "", 0
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr("pawchestrator.pr._run_process", fake_run_process)
+
+    asyncio.run(run_pr(run_id, settings))
+
+    create_cmd = calls[2]
+    assert "--assignee" not in create_cmd
+    assert "--reviewer" not in create_cmd
+
+
 def test_run_pr_reuses_existing_pr_for_branch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -193,6 +253,8 @@ def test_run_pr_reuses_existing_pr_for_branch(
             return "", "a pull request already exists for branch", 1
         if cmd[:3] == ["gh", "pr", "view"]:
             return "https://github.com/owner/repo/pull/100\n", "", 0
+        if cmd[:3] == ["gh", "pr", "edit"]:
+            return "", "", 0
         raise AssertionError(f"unexpected command: {cmd}")
 
     monkeypatch.setattr("pawchestrator.pr._run_process", fake_run_process)
@@ -200,7 +262,7 @@ def test_run_pr_reuses_existing_pr_for_branch(
     result = asyncio.run(run_pr(run_id, settings))
 
     assert result.pr_url == "https://github.com/owner/repo/pull/100"
-    assert calls[-1] == [
+    assert calls[-2] == [
         "gh",
         "pr",
         "view",
@@ -210,6 +272,50 @@ def test_run_pr_reuses_existing_pr_for_branch(
         "--jq",
         ".url",
     ]
+    assert calls[-1] == [
+        "gh",
+        "pr",
+        "edit",
+        "paw/issue-42-test",
+        "--add-assignee",
+        "octo",
+        "--add-reviewer",
+        "octo",
+    ]
+
+
+def test_run_pr_reuses_existing_pr_with_multiple_assignments(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    run_id = "run-123"
+    worktree_path = tmp_path / "worktree"
+    worktree_path.mkdir()
+    asyncio.run(_insert_verify_run(settings, run_id, worktree_path=worktree_path))
+    _write_artifacts(settings, run_id, assignees=["octo", "hubot"])
+    calls: list[list[str]] = []
+
+    async def fake_run_process(cmd: list[str], cwd: Path) -> tuple[str, str, int]:
+        calls.append(cmd)
+        if cmd[:3] == ["git", "rev-list", "--count"]:
+            return "1\n", "", 0
+        if cmd[:2] == ["git", "push"]:
+            return "pushed", "", 0
+        if cmd[:3] == ["gh", "pr", "create"]:
+            return "", "a pull request already exists for branch", 1
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return "https://github.com/owner/repo/pull/100\n", "", 0
+        if cmd[:3] == ["gh", "pr", "edit"]:
+            return "", "", 0
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr("pawchestrator.pr._run_process", fake_run_process)
+
+    asyncio.run(run_pr(run_id, settings))
+
+    edit_cmd = calls[-1]
+    assert _flag_values(edit_cmd, "--add-assignee") == ["octo", "hubot"]
+    assert _flag_values(edit_cmd, "--add-reviewer") == ["octo", "hubot"]
 
 
 def test_run_pr_creates_empty_commit_when_allowed_and_branch_has_no_commits(
@@ -567,11 +673,21 @@ async def _insert_verify_run(
         await db.commit()
 
 
-def _write_artifacts(settings: Settings, run_id: str) -> None:
+def _write_artifacts(
+    settings: Settings,
+    run_id: str,
+    *,
+    assignees: list[str] | None = None,
+) -> None:
     run_dir = settings.app_dir / "runs" / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "issue.snapshot.json").write_text(
-        json.dumps({"title": "Add PR command", "assignees": ["octo"]}),
+        json.dumps(
+            {
+                "title": "Add PR command",
+                "assignees": ["octo"] if assignees is None else assignees,
+            }
+        ),
         encoding="utf-8",
     )
     (run_dir / "implementation_plan.json").write_text(
@@ -582,6 +698,10 @@ def _write_artifacts(settings: Settings, run_id: str) -> None:
         json.dumps({"status": "passed", "commands": [], "skip_reason": None}),
         encoding="utf-8",
     )
+
+
+def _flag_values(cmd: list[str], flag: str) -> list[str]:
+    return [cmd[index + 1] for index, value in enumerate(cmd[:-1]) if value == flag]
 
 
 def _assert_pr_failed(settings: Settings, run_id: str, error: str) -> None:
