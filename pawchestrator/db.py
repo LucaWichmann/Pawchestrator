@@ -44,6 +44,15 @@ CREATE TABLE IF NOT EXISTS artifacts (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS run_warnings (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES workflow_runs(id),
+  stage_name TEXT NOT NULL,
+  code TEXT NOT NULL,
+  message TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS worktrees (
   id TEXT PRIMARY KEY,
   run_id TEXT NOT NULL UNIQUE REFERENCES workflow_runs(id),
@@ -639,6 +648,44 @@ async def count_registered_repos(settings: Settings) -> int:
         cursor = await db.execute("SELECT COUNT(*) FROM github_repos")
         row = await cursor.fetchone()
     return int(row[0])
+
+
+async def insert_run_warning(
+    settings: Settings,
+    *,
+    run_id: str,
+    stage_name: str,
+    code: str,
+    message: str,
+) -> None:
+    await init_db(settings)
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            INSERT INTO run_warnings (id, run_id, stage_name, code, message, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (str(uuid4()), run_id, stage_name, code, message, now),
+        )
+        await db.commit()
+
+
+async def get_run_warnings(settings: Settings, run_id: str) -> list[dict[str, str]]:
+    await init_db(settings)
+    async with aiosqlite.connect(settings.database_path) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT id, run_id, stage_name, code, message, created_at
+            FROM run_warnings
+            WHERE run_id = ?
+            ORDER BY created_at
+            """,
+            (run_id,),
+        )
+        rows = await cursor.fetchall()
+    return [dict(row) for row in rows]
 
 
 async def start_implement_run(settings: Settings, *, run_id: str) -> str:
