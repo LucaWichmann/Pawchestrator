@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -20,10 +21,17 @@ from pawchestrator.github import (
     get_gh_token,
 )
 from pawchestrator.issues import snapshot_issue
-from pawchestrator.runners import Runner, RunnerTask, resolve_runner
+from pawchestrator.runners import (
+    Runner,
+    RunnerTask,
+    resolve_runner,
+    runner_tool_mismatch_warning,
+)
 
 GRILL_REPORT_SCHEMA = "pawchestrator.grill_report.v1"
+REQUIRED_TOOLS: list[str] = ["Read", "Glob", "Grep"]
 SUGGESTED_CRITERIA_HEADING = "## Pawchestrator Suggested Criteria"
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -190,6 +198,7 @@ async def _build_report_payload(
     # CodexRunner has no tool allowlist equivalent, so assigning codex to grill
     # intentionally removes that read-only guarantee.
     active_runner = runner or resolve_runner(settings, "grill", "claude")
+    _log_tool_mismatch(active_runner)
     healthy, message = await active_runner.check_health()
     if not healthy:
         raise RuntimeError(message)
@@ -207,6 +216,16 @@ async def _build_report_payload(
         detail = result.stderr.strip() or result.stdout.strip() or "Claude runner failed"
         raise RuntimeError(detail)
     return normalize_grill_payload(result.artifact)
+
+
+def _log_tool_mismatch(runner: Runner) -> None:
+    warning = runner_tool_mismatch_warning(
+        runner,
+        stage_name="grill",
+        required_tools=REQUIRED_TOOLS,
+    )
+    if warning is not None:
+        LOGGER.warning(warning)
 
 
 async def _publish_report(

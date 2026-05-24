@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -14,11 +15,18 @@ from pawchestrator.db import (
     get_run_state,
     start_scout_run,
 )
-from pawchestrator.runners import Runner, RunnerTask, resolve_runner
+from pawchestrator.runners import (
+    Runner,
+    RunnerTask,
+    resolve_runner,
+    runner_tool_mismatch_warning,
+)
 
 SCOUT_REPORT_SCHEMA = "pawchestrator.scout_report.v1"
+REQUIRED_TOOLS: list[str] = ["Read", "Glob", "Grep"]
 MAX_PROMPT_COMMENTS = 10
 MAX_PROMPT_COMMENT_BODY_CHARS = 400
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -48,6 +56,7 @@ async def run_scout(
     local_repo_path = (repo_path or Path.cwd()).resolve()
     stage_id = await start_scout_run(settings, run_id=run_id)
     active_runner = runner or resolve_runner(settings, "scout", "claude")
+    _log_tool_mismatch(active_runner)
     log_path = _scout_log_path(settings, run_id)
     artifact_path = _scout_artifact_path(settings, run_id)
 
@@ -99,6 +108,16 @@ async def run_scout(
         log_path=log_path,
         report=report,
     )
+
+
+def _log_tool_mismatch(runner: Runner) -> None:
+    warning = runner_tool_mismatch_warning(
+        runner,
+        stage_name="scout",
+        required_tools=REQUIRED_TOOLS,
+    )
+    if warning is not None:
+        LOGGER.warning(warning)
 
 
 def build_scout_prompt(snapshot: dict[str, Any]) -> str:
