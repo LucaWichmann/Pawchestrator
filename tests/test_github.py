@@ -401,3 +401,50 @@ def test_format_run_comment_includes_failure_details() -> None:
 
     assert "- Failed stage: `plan`" in body
     assert "- Error: `plan exploded`" in body
+
+
+def test_format_run_comment_includes_warnings_when_present() -> None:
+    body = format_run_comment(
+        {
+            "id": "run-123",
+            "owner": "owner",
+            "repo": "repo",
+            "issue_number": 42,
+            "status": "running",
+            "current_stage": "pr",
+            "created_at": "2026-05-23T00:00:00Z",
+            "updated_at": "2026-05-23T00:10:00Z",
+            "stages": [],
+        },
+        [
+            {
+                "code": "assignment_lookup_failed",
+                "message": "Could not resolve repo admin collaborators - PR created unassigned.",
+            }
+        ],
+    )
+
+    assert "## Warnings" in body
+    assert (
+        "- assignment_lookup_failed: Could not resolve repo admin collaborators - PR created unassigned."
+        in body
+    )
+
+
+def test_format_run_comment_omits_warnings_when_empty() -> None:
+    body = format_run_comment(
+        {
+            "id": "run-123",
+            "owner": "owner",
+            "repo": "repo",
+            "issue_number": 42,
+            "status": "running",
+            "current_stage": "pr",
+            "created_at": "2026-05-23T00:00:00Z",
+            "updated_at": "2026-05-23T00:10:00Z",
+            "stages": [],
+        },
+        [],
+    )
+
+    assert "## Warnings" not in body

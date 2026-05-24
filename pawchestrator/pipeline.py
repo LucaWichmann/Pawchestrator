@@ -13,6 +13,7 @@ from pawchestrator.db import (
     create_pipeline_run,
     get_github_comment_id,
     get_run_state,
+    get_run_warnings,
     get_worktree_record,
     lookup_repo_path,
     mark_run_completed,
@@ -171,12 +172,13 @@ async def _post_initial_run_comment(
         run_state = await _comment_run_state(settings, run_id)
         if run_state is None:
             return None
+        warnings = await get_run_warnings(settings, run_id)
         client = GitHubIssueClient(get_gh_token())
         comment_id = await client.post_comment(
             str(run_state["owner"]),
             str(run_state["repo"]),
             int(run_state["issue_number"]),
-            format_run_comment(run_state),
+            format_run_comment(run_state, warnings),
         )
         await store_github_comment_id(settings, run_id, comment_id)
         return client
@@ -197,12 +199,13 @@ async def _edit_run_comment(
         run_state = await _comment_run_state(settings, run_id)
         if run_state is None:
             return
+        warnings = await get_run_warnings(settings, run_id)
         active_client = client or GitHubIssueClient(get_gh_token())
         await active_client.edit_comment(
             str(run_state["owner"]),
             str(run_state["repo"]),
             comment_id,
-            format_run_comment(run_state),
+            format_run_comment(run_state, warnings),
         )
     except Exception as error:
         LOGGER.warning("GitHub run comment edit failed for %s: %s", run_id, error)
