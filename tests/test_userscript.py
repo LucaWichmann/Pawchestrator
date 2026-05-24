@@ -73,5 +73,31 @@ def test_userscript_polls_every_three_seconds_and_reinjects() -> None:
     source = _read_userscript()
 
     assert "const POLL_INTERVAL_MS = 3000" in source
+    assert "const REINJECT_DEBOUNCE_MS = 100" in source
     assert "window.setInterval" in source
     assert "new MutationObserver" in source
+    assert "scheduleHeaderInjection" in source
+    assert "window.clearTimeout(reinjectTimer)" in source
+    assert "window.setTimeout" in source
+
+
+def test_userscript_reinjects_after_client_side_navigation() -> None:
+    source = _read_userscript()
+
+    assert "let activePathname = window.location.pathname" in source
+    assert "const pathnameChanged = activePathname !== window.location.pathname" in source
+    assert "activePathname = window.location.pathname" in source
+    assert "pathnameChanged ? 0 : REINJECT_DEBOUNCE_MS" in source
+
+
+def test_userscript_rehomes_stale_header_controls() -> None:
+    source = _read_userscript()
+
+    assert "existingButton && document.contains(existingButton) ? existingButton : createStartButton()" in source
+    assert "existingStatus && document.contains(existingStatus) ? existingStatus : createStatus()" in source
+    assert "existingGrillButton && document.contains(existingGrillButton) ? existingGrillButton : createGrillButton()" in source
+    assert "existingGrillStatus && document.contains(existingGrillStatus) ? existingGrillStatus : createGrillStatus()" in source
+    assert "button.parentElement !== actions" in source
+    assert "status.parentElement !== actions" in source
+    assert "grillButton.parentElement !== actions" in source
+    assert "grillStatus.parentElement !== actions" in source

@@ -22,6 +22,7 @@
   const START_ID = "pawchestrator-start";
   const GRILL_ID = "pawchestrator-grill";
   const POLL_INTERVAL_MS = 3000;
+  const REINJECT_DEBOUNCE_MS = 100;
   const TOKEN_KEY = "pawchestrator_token";
   const PAW = "\uD83D\uDC3E";
   const FIRE = "\uD83D\uDD25";
@@ -29,6 +30,8 @@
 
   let activePollPipeline = null;
   let activePollGrill = null;
+  let activePathname = window.location.pathname;
+  let reinjectTimer = null;
 
   GM_addStyle(`
     #${STATUS_ID},
@@ -521,12 +524,19 @@
     const existingStatus = document.getElementById(STATUS_ID);
     const existingGrillButton = document.getElementById(GRILL_ID);
     const existingGrillStatus = document.getElementById(GRILL_STATUS_ID);
-    const button = existingButton || createStartButton();
-    const status = existingStatus || createStatus();
-    const grillButton = existingGrillButton || createGrillButton();
-    const grillStatus = existingGrillStatus || createGrillStatus();
+    const button = existingButton && document.contains(existingButton) ? existingButton : createStartButton();
+    const status = existingStatus && document.contains(existingStatus) ? existingStatus : createStatus();
+    const grillButton = existingGrillButton && document.contains(existingGrillButton) ? existingGrillButton : createGrillButton();
+    const grillStatus = existingGrillStatus && document.contains(existingGrillStatus) ? existingGrillStatus : createGrillStatus();
     const newIssueHost = findNewIssueHost(actions);
-    let changed = !existingButton || !existingStatus || !existingGrillButton || !existingGrillStatus;
+    let changed = !existingButton
+      || !existingStatus
+      || !existingGrillButton
+      || !existingGrillStatus
+      || button.parentElement !== actions
+      || status.parentElement !== actions
+      || grillButton.parentElement !== actions
+      || grillStatus.parentElement !== actions;
 
     if (button.parentElement !== actions) {
       actions.insertBefore(button, newIssueHost);
@@ -555,10 +565,26 @@
     }
   }
 
+  function scheduleHeaderInjection() {
+    const pathnameChanged = activePathname !== window.location.pathname;
+    if (pathnameChanged) {
+      activePathname = window.location.pathname;
+    }
+
+    if (reinjectTimer) {
+      window.clearTimeout(reinjectTimer);
+    }
+
+    reinjectTimer = window.setTimeout(() => {
+      reinjectTimer = null;
+      injectHeaderAction();
+    }, pathnameChanged ? 0 : REINJECT_DEBOUNCE_MS);
+  }
+
   injectHeaderAction();
 
   const observer = new MutationObserver(() => {
-    injectHeaderAction();
+    scheduleHeaderInjection();
   });
   observer.observe(document.documentElement, { childList: true, subtree: true });
 })();
