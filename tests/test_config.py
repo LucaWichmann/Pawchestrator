@@ -105,6 +105,9 @@ epic_branch_mode = "epic-with-sub-issues"
 [checkboxes]
 headings = ["Done When", "Ship List"]
 
+[stages.scout]
+usage_limit_fallback_runner = "codex"
+
 [stages.scout.claude]
 allowed_tools = ["Read"]
 bypass_permissions = false
@@ -153,6 +156,7 @@ approval_policy = "never"
     assert settings.pipeline.non_code_patterns == ["*.md", "notes/**"]
     assert settings.pipeline.epic_branch_mode == "epic-with-sub-issues"
     assert settings.checkboxes.headings == ["Done When", "Ship List"]
+    assert settings.stages["scout"].usage_limit_fallback_runner == "codex"
     assert settings.stages["scout"].claude.allowed_tools == ["Read"]
     assert settings.stages["scout"].claude.bypass_permissions is False
     assert settings.stages["implement"].codex.execution == "native"
