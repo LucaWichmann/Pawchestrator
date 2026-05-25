@@ -16,7 +16,9 @@ from pawchestrator.runners import (
     ClaudeRunner,
     CodexRunner,
     Runner,
+    RunnerResult,
     RunnerTask,
+    claude_usage_limit_exhausted,
     clear_runner_health_cache,
     get_runner_health,
     resolve_runner,
@@ -98,6 +100,49 @@ def test_stage_settings_rejects_invalid_runner_value() -> None:
     assert "runner" in str(error.value)
     assert "claude" in str(error.value)
     assert "codex" in str(error.value)
+
+
+def test_stage_settings_rejects_invalid_usage_limit_fallback_runner() -> None:
+    with pytest.raises(ValidationError) as error:
+        StageSettings(usage_limit_fallback_runner="claude")
+
+    assert "usage_limit_fallback_runner" in str(error.value)
+    assert "codex" in str(error.value)
+    assert "none" in str(error.value)
+
+
+def test_claude_usage_limit_exhausted_detects_structured_429() -> None:
+    result = RunnerResult(
+        exit_code=1,
+        stdout=json.dumps(
+            {
+                "is_error": True,
+                "api_error_status": 429,
+                "error": "Claude usage limit reached for this session.",
+            }
+        ),
+        stderr="",
+        artifact=None,
+    )
+
+    assert claude_usage_limit_exhausted(result) is True
+
+
+def test_claude_usage_limit_exhausted_ignores_generic_failure() -> None:
+    result = RunnerResult(
+        exit_code=1,
+        stdout=json.dumps(
+            {
+                "is_error": True,
+                "api_error_status": 500,
+                "error": "internal server error",
+            }
+        ),
+        stderr="",
+        artifact=None,
+    )
+
+    assert claude_usage_limit_exhausted(result) is False
 
 
 def test_claude_runner_reports_missing_binary(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -723,6 +768,51 @@ def test_codex_runner_invokes_expected_command_logs_and_captures_diff(
     assert (tmp_path / "runs" / "run-123" / "stdout" / "implement.log").read_text(
         encoding="utf-8"
     ) == "codex stdout\ncodex stderr\n"
+
+
+def test_codex_runner_parses_json_artifact_from_stdout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    codex_path = "C:\\bin\\codex.CMD"
+
+    class FakeProcess:
+        def __init__(self, stdout: bytes) -> None:
+            self._stdout = stdout
+            self.returncode = 0
+
+        async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
+            return self._stdout, b""
+
+    async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
+        if cmd[:3] == ("git", "diff", "HEAD"):
+            return FakeProcess(b"")
+        return FakeProcess(
+            b'{"schema":"pawchestrator.scout_report.v1",'
+            b'"findings":[{"kind":"scope","text":"Small"}]}'
+        )
+
+    monkeypatch.setattr(
+        "pawchestrator.runners.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr(
+        "pawchestrator.runners.shutil.which",
+        lambda name: codex_path if name == "codex" else None,
+    )
+
+    task = RunnerTask(
+        prompt="repo scout prompt",
+        cwd=tmp_path,
+        run_id="run-123",
+        stage_name="scout",
+    )
+
+    result = asyncio.run(CodexRunner().run_task(task))
+
+    assert result.artifact == {
+        "schema": "pawchestrator.scout_report.v1",
+        "findings": [{"kind": "scope", "text": "Small"}],
+    }
 
 
 def test_codex_runner_uses_stage_model_override_without_mutating_global_config(

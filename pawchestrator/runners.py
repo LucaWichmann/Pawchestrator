@@ -257,7 +257,7 @@ class CodexRunner(Runner):
                 exit_code=exit_code,
                 stdout=stdout,
                 stderr=stderr,
-                artifact=None,
+                artifact=_parse_json_artifact(stdout),
                 diff=diff,
             )
 
@@ -306,7 +306,7 @@ class CodexRunner(Runner):
             exit_code=exit_code,
             stdout=stdout,
             stderr=stderr,
-            artifact=None,
+            artifact=_parse_json_artifact(stdout),
             diff=diff,
         )
 
@@ -392,7 +392,7 @@ class CodexRunner(Runner):
             exit_code=exit_code,
             stdout=stdout,
             stderr=stderr,
-            artifact=None,
+            artifact=_parse_json_artifact(stdout),
             diff=diff,
         )
 
@@ -481,6 +481,29 @@ def runner_tool_mismatch_warning(
         f"stage {stage_name} requires tools not allowed for ClaudeRunner: "
         f"{', '.join(missing_tools)}"
     )
+
+
+def claude_usage_limit_exhausted(result: RunnerResult) -> bool:
+    """Return true for Claude usage/session exhaustion, not generic failures."""
+
+    if result.exit_code == 0:
+        return False
+
+    combined = f"{result.stdout}\n{result.stderr}"
+    structured = _parse_json_object(result.stdout) or _extract_json_object(result.stdout)
+    if structured is None:
+        structured = _parse_json_object(result.stderr) or _extract_json_object(
+            result.stderr
+        )
+
+    status = _nested_value(structured, "api_error_status")
+    if status is None:
+        status = _nested_value(structured, "status")
+    is_error = _nested_value(structured, "is_error")
+
+    has_429 = status == 429 or status == "429"
+    has_error_signal = is_error is True or has_429
+    return has_error_signal and _has_usage_limit_wording(combined.lower())
 
 
 def resolve_runner(settings: Settings, stage_name: str, default: str) -> Runner:
@@ -1039,6 +1062,31 @@ def _parse_json_object(text: str) -> dict[str, Any] | None:
     except json.JSONDecodeError:
         return None
     return parsed if isinstance(parsed, dict) else None
+
+
+def _nested_value(value: object, key: str) -> object:
+    if isinstance(value, dict):
+        if key in value:
+            return value[key]
+        for child in value.values():
+            found = _nested_value(child, key)
+            if found is not None:
+                return found
+    if isinstance(value, list):
+        for child in value:
+            found = _nested_value(child, key)
+            if found is not None:
+                return found
+    return None
+
+
+def _has_usage_limit_wording(text: str) -> bool:
+    exhaustion_terms = ("exhaust", "exceeded", "reached", "limit reached", "too many")
+    if "usage" in text and "limit" in text:
+        return any(term in text for term in exhaustion_terms)
+    if "session" in text and "limit" in text:
+        return any(term in text for term in exhaustion_terms)
+    return False
 
 
 def _extract_json_object(text: str) -> dict[str, Any] | None:
