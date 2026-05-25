@@ -17,6 +17,7 @@ from pawchestrator.db import (
     create_epic_run,
     fail_stale_runs_on_startup,
     get_latest_epic_run_by_issue,
+    get_latest_grill_run_by_issue,
     get_latest_run_by_issue,
     get_run_state,
     init_db,
@@ -155,13 +156,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 number,
                 "pipeline",
             ),
-            get_latest_run_by_issue(
-                runtime_settings,
-                owner,
-                repo,
-                number,
-                "grill",
-            ),
+            get_latest_grill_run_by_issue(runtime_settings, owner, repo, number),
             get_latest_epic_run_by_issue(runtime_settings, owner, repo, number),
         )
         return {
