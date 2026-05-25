@@ -22,6 +22,7 @@
   const PANEL_ID = "pawchestrator-panel";
   const START_ID = "pawchestrator-start";
   const GRILL_ID = "pawchestrator-grill";
+  const CONFIRM_OVERLAY_ID = "pawchestrator-confirm-overlay";
   const POLL_INTERVAL_MS = 3000;
   const REINJECT_DEBOUNCE_MS = 100;
   const TOKEN_KEY = "pawchestrator_token";
@@ -30,6 +31,11 @@
   const FIRE = "\uD83D\uDD25";
   const WARNING = "\u26A0";
   const OFFLINE_MESSAGE = "Pawchestrator not running \u2014 start with `pawchestrator serve`";
+  const GRILL_WAITING_STATUS = "grill_waiting";
+  const GRILL_LABEL = `${FIRE} Grill Issue`;
+  const REGRILL_LABEL = `${FIRE} Re-grill`;
+  const REGRILL_CONFIRM_MESSAGE =
+    "Grill is still waiting for answers on this issue. Are you sure you want to re-grill?";
   const RUN_DONE = new Set([
     "completed",
     "failed",
@@ -64,6 +70,7 @@
   let lastPipelineExpansionKey = null;
   let reinjectTimer = null;
   let grillReplyObserverState = null;
+  let latestIssueStatus = null;
 
   GM_addStyle(`
     #${START_ID},
@@ -372,6 +379,60 @@
 
     #${PANEL_ID} a {
       color: var(--fgColor-accent, #0969da);
+    }
+
+    #${CONFIRM_OVERLAY_ID} {
+      align-items: flex-start;
+      background: rgba(31, 35, 40, 0.45);
+      bottom: 0;
+      display: flex;
+      justify-content: center;
+      left: 0;
+      padding: 12vh 16px 16px;
+      position: fixed;
+      right: 0;
+      top: 0;
+      z-index: 99999;
+    }
+
+    .pawchestrator-confirm-dialog {
+      background: var(--bgColor-default, #ffffff);
+      border: 1px solid var(--borderColor-default, #d0d7de);
+      border-radius: 6px;
+      box-shadow: var(--shadow-floating-large, 0 8px 24px rgba(140, 149, 159, 0.2));
+      color: var(--fgColor-default, #24292f);
+      font-size: 14px;
+      line-height: 20px;
+      max-width: 440px;
+      overflow: hidden;
+      width: min(440px, 100%);
+    }
+
+    .pawchestrator-confirm-header {
+      align-items: center;
+      background: var(--bgColor-muted, #f6f8fa);
+      border-bottom: 1px solid var(--borderColor-default, #d0d7de);
+      display: flex;
+      font-weight: 600;
+      min-height: 40px;
+      padding: 8px 16px;
+    }
+
+    .pawchestrator-confirm-body {
+      padding: 16px;
+    }
+
+    .pawchestrator-confirm-actions {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+      padding: 0 16px 16px;
+    }
+
+    .pawchestrator-confirm-actions .pawchestrator-confirm-danger {
+      background: var(--button-danger-bgColor-rest, #cf222e);
+      border-color: var(--button-danger-borderColor-rest, rgba(31, 35, 40, 0.15));
+      color: var(--button-danger-fgColor-rest, #ffffff);
     }
   `);
 
@@ -855,6 +916,77 @@
     }
   }
 
+  function createDialogButton(labelText, variant, onClick) {
+    const button = createButton("", "", labelText, onClick);
+    button.removeAttribute("id");
+    delete button.dataset.testid;
+    if (variant === "danger") {
+      button.classList.add("pawchestrator-confirm-danger");
+    }
+    return button;
+  }
+
+  function showConfirmDialog(message, options = {}) {
+    document.getElementById(CONFIRM_OVERLAY_ID)?.remove();
+
+    return new Promise((resolve) => {
+      const overlay = document.createElement("div");
+      overlay.id = CONFIRM_OVERLAY_ID;
+      overlay.setAttribute("role", "presentation");
+
+      const dialog = document.createElement("div");
+      dialog.className = "pawchestrator-confirm-dialog";
+      dialog.setAttribute("role", "dialog");
+      dialog.setAttribute("aria-modal", "true");
+      dialog.setAttribute("aria-labelledby", "pawchestrator-confirm-title");
+      dialog.setAttribute("aria-describedby", "pawchestrator-confirm-message");
+
+      const header = document.createElement("div");
+      header.id = "pawchestrator-confirm-title";
+      header.className = "pawchestrator-confirm-header";
+      header.textContent = options.title || "Confirm action";
+
+      const body = document.createElement("div");
+      body.id = "pawchestrator-confirm-message";
+      body.className = "pawchestrator-confirm-body";
+      body.textContent = message;
+
+      const actions = document.createElement("div");
+      actions.className = "pawchestrator-confirm-actions";
+
+      let settled = false;
+      const close = (confirmed) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        document.removeEventListener("keydown", onKeydown);
+        overlay.remove();
+        resolve(confirmed);
+      };
+      const onKeydown = (event) => {
+        if (event.key === "Escape") {
+          close(false);
+        }
+      };
+
+      const noButton = createDialogButton(options.cancelLabel || "No", "default", () => close(false));
+      const yesButton = createDialogButton(options.confirmLabel || "Yes", "danger", () => close(true));
+      actions.append(noButton, yesButton);
+
+      dialog.append(header, body, actions);
+      overlay.append(dialog);
+      overlay.addEventListener("click", (event) => {
+        if (event.target === overlay) {
+          close(false);
+        }
+      });
+      document.addEventListener("keydown", onKeydown);
+      document.body.append(overlay);
+      noButton.focus();
+    });
+  }
+
   function findGrillReplySubmit(form) {
     return Array.from(form.querySelectorAll("button, input[type='submit']")).find((button) => {
       if (button.disabled) {
@@ -986,7 +1118,7 @@
     status.className = "pawchestrator-grill-status";
     status.dataset.active = String(active);
     status.dataset.status = grill.status || "unknown";
-    if (grill.status === "grill_waiting") {
+    if (grill.status === GRILL_WAITING_STATUS) {
       status.dataset.active = "false";
       status.textContent = "Waiting for your reply. Reply to the questions comment on GitHub to continue.";
     } else {
@@ -1012,10 +1144,12 @@
   }
 
   function renderStatus(status) {
+    latestIssueStatus = status;
     const panel = document.getElementById(PANEL_ID);
     if (!panel) {
       return;
     }
+    updateGrillButton(status.grill);
 
     const run = currentRun(status);
     setPanelSummary(summarizeRun(run));
@@ -1057,7 +1191,7 @@
     renderPipeline(body, status.pipeline);
     renderEpicSection(body, status.epic);
     renderGrillSection(body, status.grill);
-    if (status.grill?.status === "grill_waiting") {
+    if (status.grill?.status === GRILL_WAITING_STATUS) {
       attachGrillReplyObserver(status.grill);
     } else {
       disconnectGrillReplyObserver();
@@ -1065,7 +1199,9 @@
   }
 
   function renderOffline() {
+    latestIssueStatus = null;
     disconnectGrillReplyObserver();
+    updateGrillButton(null);
     setPanelSummary(OFFLINE_MESSAGE);
     setPanelStatus("offline");
     const panel = document.getElementById(PANEL_ID);
@@ -1287,13 +1423,25 @@
 
   async function startGrill() {
     const button = document.getElementById(GRILL_ID);
-    if (button) {
-      button.disabled = true;
-    }
-
     try {
       const issue = parseIssueReference();
       await getOrAcquireToken(setPanelSummary);
+      const status = latestIssueStatus || await fetchIssueStatus(issue);
+      latestIssueStatus = status;
+      updateGrillButton(status.grill);
+      if (status.grill?.status === GRILL_WAITING_STATUS) {
+        const confirmed = await showConfirmDialog(REGRILL_CONFIRM_MESSAGE, {
+          title: "Re-grill issue?",
+          confirmLabel: "Yes",
+          cancelLabel: "No",
+        });
+        if (!confirmed) {
+          return;
+        }
+      }
+      if (button) {
+        button.disabled = true;
+      }
       setPanelSummary("[grill] starting...");
       panelExpandedByUser = true;
       setPanelExpanded(true);
@@ -1345,8 +1493,19 @@
     return createButton(START_ID, "pawchestrator-work-button", `${PAW} Work on this issue`, startRun);
   }
 
-  function createGrillButton() {
-    return createButton(GRILL_ID, "pawchestrator-grill-button", `${FIRE} Grill Issue`, startGrill);
+  function grillButtonLabel(grill) {
+    return grill?.status === GRILL_WAITING_STATUS ? REGRILL_LABEL : GRILL_LABEL;
+  }
+
+  function updateGrillButton(grill) {
+    const button = document.getElementById(GRILL_ID);
+    if (button) {
+      setButtonText(button, grillButtonLabel(grill));
+    }
+  }
+
+  function createGrillButton(grill) {
+    return createButton(GRILL_ID, "pawchestrator-grill-button", grillButtonLabel(grill), startGrill);
   }
 
   function createPanel() {
