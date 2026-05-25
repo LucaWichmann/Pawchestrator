@@ -141,6 +141,7 @@ async def run_implement(
                     snapshot,
                     implementation_plan,
                     worktree_info.path,
+                    run_id=run_id,
                     repair_context=repair_context,
                     repair_attempt=repair_attempt,
                 ),
@@ -346,12 +347,13 @@ def build_implement_prompt(
     implementation_plan: dict[str, Any],
     worktree_path: Path,
     *,
+    run_id: str = "",
     repair_context: dict[str, Any] | None = None,
     repair_attempt: int | None = None,
 ) -> str:
     prompt_plan = _prompt_implementation_plan(implementation_plan)
     repair_section = _prompt_repair_context(repair_context, repair_attempt)
-    checkbox_section = _prompt_checkbox_criteria(snapshot)
+    checkbox_section = _prompt_checkbox_criteria(snapshot, run_id)
 
     return f"""You are implementing a GitHub issue in a local git worktree.
 
@@ -376,7 +378,7 @@ Do not run build or test commands - verification is handled separately.
 """
 
 
-def _prompt_checkbox_criteria(snapshot: dict[str, Any]) -> str:
+def _prompt_checkbox_criteria(snapshot: dict[str, Any], run_id: str) -> str:
     checkboxes = _list_value(snapshot.get("checkboxes"))
     if not checkboxes:
         return ""
@@ -385,11 +387,14 @@ def _prompt_checkbox_criteria(snapshot: dict[str, Any]) -> str:
         f"{snapshot.get('owner', '')}/{snapshot.get('repo', '')}/"
         f"{snapshot.get('number', '')}"
     )
+    checkbox_command = f"pawchestrator checkbox check {issue_ref} <index>"
+    if run_id:
+        checkbox_command = f"{checkbox_command} --run-id {run_id}"
+
     lines = [
         "",
         "Acceptance criteria checkboxes — call "
-        f"`pawchestrator checkbox check {issue_ref} <index>` via Bash immediately "
-        "after addressing each criterion:",
+        f"`{checkbox_command}` via Bash immediately after addressing each criterion:",
     ]
     for checkbox in checkboxes:
         if not isinstance(checkbox, dict):

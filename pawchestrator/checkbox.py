@@ -5,8 +5,10 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 
 from pawchestrator.config import DEFAULT_CHECKBOX_HEADINGS
+from pawchestrator.db import get_checkbox_marks_for_run_issue, record_checkbox_mark
 from pawchestrator.github import (
     CHECKED_CHECKBOX_RE,
     HEADING_RE,
@@ -28,6 +30,7 @@ class ScopedCheckbox:
     index: int
     line_number: int
     line: str
+    text: str
     checked: bool
 
 
@@ -36,12 +39,52 @@ async def check_checkbox(
     reference: IssueReference,
     index: int,
     headings: Sequence[str] = DEFAULT_CHECKBOX_HEADINGS,
+    *,
+    run_id: str | None = None,
+    db_path: Path | None = None,
 ) -> bool:
     if index < 0:
         raise CheckboxError("checkbox index must be non-negative")
+    if run_id is not None and db_path is None:
+        raise CheckboxError("db_path is required when run_id is provided")
 
     body = await client.fetch_issue_body(reference)
-    updated_body = check_checkbox_in_body(body, index, headings)
+    if run_id is None:
+        updated_body = check_checkbox_in_body(body, index, headings)
+    else:
+        checkboxes = find_scoped_checkboxes(body, headings)
+        if not checkboxes:
+            raise CheckboxError("no in-scope checkboxes found in issue body")
+        if index >= len(checkboxes):
+            raise CheckboxError(
+                f"checkbox index {index} out of range; "
+                f"found {len(checkboxes)} in-scope checkboxes"
+            )
+
+        await record_checkbox_mark(
+            db_path,
+            run_id=run_id,
+            owner=reference.owner,
+            repo=reference.repo,
+            issue_number=reference.number,
+            checkbox_index=index,
+            checkbox_text=checkboxes[index].text,
+        )
+        marks = await get_checkbox_marks_for_run_issue(
+            db_path,
+            run_id=run_id,
+            owner=reference.owner,
+            repo=reference.repo,
+            issue_number=reference.number,
+        )
+        updated_body = body
+        for mark in marks:
+            updated_body = check_checkbox_in_body(
+                updated_body,
+                int(mark["checkbox_index"]),
+                headings,
+            )
+
     if updated_body == body:
         return False
 
@@ -105,6 +148,7 @@ def find_scoped_checkboxes(
                     index=len(checkboxes),
                     line_number=line_number,
                     line=raw_line,
+                    text=checkbox_match.group("suffix").strip(),
                     checked=CHECKED_CHECKBOX_RE.match(raw_line) is not None,
                 )
             )

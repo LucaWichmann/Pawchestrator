@@ -228,7 +228,17 @@ async def _start_issue_from_cli(
 
 
 @checkbox_app.command("check")
-def checkbox_check(issue_ref: str, index: int) -> None:
+def checkbox_check(
+    issue_ref: str,
+    index: int,
+    run_id: Annotated[
+        str | None,
+        typer.Option(
+            "--run-id",
+            help="Workflow run ID for durable run-scoped checkbox marks.",
+        ),
+    ] = None,
+) -> None:
     """Check one in-scope checkbox in a GitHub issue body."""
 
     settings = load_settings()
@@ -236,14 +246,21 @@ def checkbox_check(issue_ref: str, index: int) -> None:
         reference = parse_issue_shorthand(issue_ref)
         token = get_gh_token()
         client = GitHubIssueClient(token)
-        changed = asyncio.run(
-            check_checkbox(
-                client,
-                reference,
-                index,
-                settings.checkboxes.headings,
+        if run_id is None:
+            changed = asyncio.run(
+                check_checkbox(client, reference, index, settings.checkboxes.headings)
             )
-        )
+        else:
+            changed = asyncio.run(
+                check_checkbox(
+                    client,
+                    reference,
+                    index,
+                    settings.checkboxes.headings,
+                    run_id=run_id,
+                    db_path=settings.database_path,
+                )
+            )
     except Exception as error:
         typer.secho(f"Checkbox check failed: {error}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from error
