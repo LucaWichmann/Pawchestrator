@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 from uuid import uuid4
 
+from pawchestrator.checkbox import reconcile_checkbox_marks
 from pawchestrator.config import Settings
 from pawchestrator.db import (
     create_pipeline_run,
@@ -15,6 +16,7 @@ from pawchestrator.db import (
     get_run_state,
     get_run_warnings,
     get_worktree_record,
+    insert_run_warning,
     lookup_repo_path,
     mark_run_completed,
     mark_run_failed,
@@ -130,6 +132,15 @@ async def run_pipeline(
             pr_kwargs["base_branch"] = pr_base_branch
         return await run_pr(active_run_id, settings, **pr_kwargs)
 
+    async def reconcile_marks(stage_name: str) -> None:
+        await _reconcile_checkbox_marks(
+            settings,
+            active_run_id,
+            comment_client,
+            stage_name=stage_name,
+            progress=progress,
+        )
+
     pr_url = ""
     try:
         await _run_stage("snapshot", snapshot_stage, progress)
@@ -143,6 +154,7 @@ async def run_pipeline(
         await _edit_run_comment(settings, active_run_id, comment_client)
         await _swap_stage_label(settings, active_run_id, comment_client, "implementing")
         await _run_stage("implement", implement_stage, progress)
+        await reconcile_marks("implement")
         await _edit_run_comment(settings, active_run_id, comment_client)
         await _swap_stage_label(settings, active_run_id, comment_client, "verifying")
         verification = await _run_stage("verify", verify_stage, progress)
@@ -165,6 +177,7 @@ async def run_pipeline(
                 ),
                 progress,
             )
+            await reconcile_marks("implement")
             await _edit_run_comment(settings, active_run_id, comment_client)
             await _swap_stage_label(settings, active_run_id, comment_client, "verifying")
             verification = await _run_stage("verify", verify_stage, progress)
@@ -180,6 +193,7 @@ async def run_pipeline(
             raise VerificationFailedError(
                 f"verification did not pass: {_verification_status(verification)}"
             )
+        await reconcile_marks("verify")
         if create_pr:
             pr = await _run_stage("pr", pr_stage, progress)
             pr_url = pr.pr_url
@@ -230,6 +244,57 @@ def _print_done(progress: ProgressFn, stage_name: str, suffix: str | None = None
     if suffix:
         message = f"{message} - {suffix}"
     progress(message)
+
+
+async def _reconcile_checkbox_marks(
+    settings: Settings,
+    run_id: str,
+    client: GitHubIssueClient | None,
+    *,
+    stage_name: str,
+    progress: ProgressFn,
+) -> None:
+    try:
+        active_client: Any = client or _LazyGitHubIssueClient()
+        await reconcile_checkbox_marks(settings, run_id, active_client)
+    except Exception as error:
+        message = f"checkbox reconciliation after {stage_name} failed: {error}"
+        LOGGER.warning(message)
+        await insert_run_warning(
+            settings,
+            run_id=run_id,
+            stage_name=stage_name,
+            code="checkbox_reconciliation_failed",
+            message=message,
+        )
+        progress(f"[{stage_name}] warning - {message}")
+
+
+class _LazyGitHubIssueClient:
+    def __init__(self) -> None:
+        self._client: GitHubIssueClient | None = None
+
+    def _active_client(self) -> GitHubIssueClient:
+        if self._client is None:
+            self._client = GitHubIssueClient(get_gh_token())
+        return self._client
+
+    async def fetch_issue_body(self, reference: Any) -> str:
+        return await self._active_client().fetch_issue_body(reference)
+
+    async def patch_issue_body(
+        self,
+        owner: str,
+        repo: str,
+        issue_number: int,
+        body: str,
+    ) -> None:
+        await self._active_client().patch_issue_body(
+            owner,
+            repo,
+            issue_number,
+            body,
+        )
 
 
 def _verification_status(verification: VerificationResult) -> str:

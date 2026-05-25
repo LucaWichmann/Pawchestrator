@@ -9,7 +9,7 @@ from pathlib import Path
 
 import aiosqlite
 
-from pawchestrator.config import DEFAULT_CHECKBOX_HEADINGS
+from pawchestrator.config import DEFAULT_CHECKBOX_HEADINGS, Settings
 from pawchestrator.db import SCHEMA_SQL, utc_now_iso
 from pawchestrator.github import (
     CHECKED_CHECKBOX_RE,
@@ -75,6 +75,45 @@ async def check_checkbox(
         updated_body,
     )
     return True
+
+
+async def reconcile_checkbox_marks(
+    settings: Settings,
+    run_id: str,
+    client: GitHubIssueClient,
+) -> bool:
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.executescript(SCHEMA_SQL)
+        marks = await _get_checkbox_marks_for_run(db, run_id=run_id)
+
+    if not marks:
+        return False
+
+    changed = False
+    for issue_marks in _group_marks_by_issue(marks):
+        first_mark = issue_marks[0]
+        reference = IssueReference(
+            owner=str(first_mark["owner"]),
+            repo=str(first_mark["repo"]),
+            number=int(first_mark["issue_number"]),
+            source_url=(
+                "https://github.com/"
+                f"{first_mark['owner']}/{first_mark['repo']}/issues/"
+                f"{first_mark['issue_number']}"
+            ),
+        )
+        body = await client.fetch_issue_body(reference)
+        changed = (
+            await _patch_until_stored_marks_checked(
+                client,
+                reference,
+                body,
+                issue_marks,
+                settings.checkboxes.headings,
+            )
+            or changed
+        )
+    return changed
 
 
 async def _check_run_scoped_checkbox(
@@ -164,6 +203,20 @@ async def _patch_until_stored_marks_checked(
     )
 
 
+def _group_marks_by_issue(
+    marks: Sequence[dict[str, object]],
+) -> list[list[dict[str, object]]]:
+    grouped: dict[tuple[str, str, int], list[dict[str, object]]] = {}
+    for mark in marks:
+        key = (
+            str(mark["owner"]),
+            str(mark["repo"]),
+            int(mark["issue_number"]),
+        )
+        grouped.setdefault(key, []).append(mark)
+    return list(grouped.values())
+
+
 def _apply_checkbox_marks(
     body: str,
     marks: Sequence[dict[str, object]],
@@ -249,6 +302,26 @@ async def _get_checkbox_marks_for_run_issue(
         ORDER BY checkbox_index
         """,
         (run_id, owner, repo, issue_number),
+    )
+    rows = await cursor.fetchall()
+    return [dict(row) for row in rows]
+
+
+async def _get_checkbox_marks_for_run(
+    db: aiosqlite.Connection,
+    *,
+    run_id: str,
+) -> list[dict[str, object]]:
+    db.row_factory = aiosqlite.Row
+    cursor = await db.execute(
+        """
+        SELECT run_id, owner, repo, issue_number, checkbox_index, checkbox_text,
+               created_at, updated_at
+        FROM checkbox_marks
+        WHERE run_id = ?
+        ORDER BY owner, repo, issue_number, checkbox_index
+        """,
+        (run_id,),
     )
     rows = await cursor.fetchall()
     return [dict(row) for row in rows]

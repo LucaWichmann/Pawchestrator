@@ -5,7 +5,13 @@ from pathlib import Path
 import httpx
 import pytest
 
-from pawchestrator.checkbox import CheckboxError, check_checkbox, check_checkbox_in_body
+from pawchestrator.checkbox import (
+    CheckboxError,
+    check_checkbox,
+    check_checkbox_in_body,
+    reconcile_checkbox_marks,
+)
+from pawchestrator.config import Settings
 from pawchestrator.github import GitHubIssueClient, parse_issue_shorthand
 
 
@@ -209,3 +215,91 @@ def test_run_scoped_overlapping_checkbox_checks_converge(
     asyncio.run(run_checks())
 
     assert body == "## Acceptance Criteria\n\n- [x] First\n- [x] Second\n"
+
+
+def test_reconcile_checkbox_marks_noops_when_no_marks_exist(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        raise AssertionError("reconciliation should not call GitHub without marks")
+
+    client = GitHubIssueClient(
+        "token",
+        api_base="https://api.github.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    changed = asyncio.run(reconcile_checkbox_marks(settings, "run-1", client))
+
+    assert changed is False
+    assert requests == []
+
+
+def test_reconcile_checkbox_marks_reapplies_all_stored_marks(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    body = (
+        "## Acceptance Criteria\n\n"
+        "- [ ] First\n"
+        "- [ ] Second\n"
+        "- [ ] Third\n"
+        "- [ ] Fourth\n"
+        "- [ ] Fifth\n"
+    )
+    partial_body = (
+        "## Acceptance Criteria\n\n"
+        "- [x] First\n"
+        "- [ ] Second\n"
+        "- [x] Third\n"
+        "- [ ] Fourth\n"
+        "- [ ] Fifth\n"
+    )
+    complete_body = (
+        "## Acceptance Criteria\n\n"
+        "- [x] First\n"
+        "- [x] Second\n"
+        "- [x] Third\n"
+        "- [x] Fourth\n"
+        "- [x] Fifth\n"
+    )
+    current_body = body
+    patched_bodies: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal current_body
+        if request.method == "GET":
+            return httpx.Response(200, json={"body": current_body})
+
+        assert request.method == "PATCH"
+        current_body = json.loads(request.read())["body"]
+        patched_bodies.append(current_body)
+        return httpx.Response(200, json={"number": 42})
+
+    client = GitHubIssueClient(
+        "token",
+        api_base="https://api.github.test",
+        transport=httpx.MockTransport(handler),
+    )
+    reference = parse_issue_shorthand("owner/repo/42")
+
+    for index in range(5):
+        asyncio.run(
+            check_checkbox(
+                client,
+                reference,
+                index,
+                run_id="run-1",
+                db_path=settings.database_path,
+            )
+        )
+
+    current_body = partial_body
+
+    changed = asyncio.run(reconcile_checkbox_marks(settings, "run-1", client))
+
+    assert changed is True
+    assert current_body == complete_body
+    assert patched_bodies[-1] == complete_body
