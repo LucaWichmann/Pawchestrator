@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from pawchestrator import __version__
 from pawchestrator.config import LOCAL_HOST, Settings, load_settings
 from pawchestrator.db import (
+    fail_stale_runs_on_startup,
     get_latest_run_by_issue,
     get_run_state,
     init_db,
@@ -54,6 +55,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         database_path = await init_db(runtime_settings)
+        await fail_stale_runs_on_startup(runtime_settings)
         app.state.settings = runtime_settings
         app.state.database_path = database_path
         yield

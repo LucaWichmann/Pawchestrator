@@ -41,9 +41,9 @@ def test_issue_status_returns_active_pipeline_run(
     settings = Settings(app_dir=tmp_path)
     _seed_token(settings)
     _stub_runner_health(monkeypatch)
-    _insert_pipeline_run(settings, status="plan_running", current_stage="plan")
 
     with TestClient(create_app(settings)) as client:
+        _insert_pipeline_run(settings, status="plan_running", current_stage="plan")
         response = client.get(
             "/issue/owner/repo/42/status",
             headers=_token_headers(),
@@ -57,6 +57,32 @@ def test_issue_status_returns_active_pipeline_run(
     assert payload["pipeline"]["workflow_type"] == "pipeline"
     assert payload["pipeline"]["stages"][0]["stage_name"] == "plan"
     assert payload["pipeline"]["warnings"] == []
+
+
+def test_issue_status_marks_stale_pipeline_failed_on_startup(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _seed_token(settings)
+    _stub_runner_health(monkeypatch)
+    _insert_pipeline_run(settings, status="plan_running", current_stage="plan")
+
+    with TestClient(create_app(settings)) as client:
+        response = client.get(
+            "/issue/owner/repo/42/status",
+            headers=_token_headers(),
+        )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["pipeline"]["run_id"] == "pipeline-run"
+    assert payload["pipeline"]["status"] == "failed"
+    assert payload["pipeline"]["current_stage"] == "plan"
+    assert payload["pipeline"]["stages"][0]["status"] == "failed"
+    assert payload["pipeline"]["stages"][0]["error"] == (
+        "Run aborted: Pawchestrator stopped before this run finished."
+    )
 
 
 def test_issue_status_returns_completed_pipeline_with_warnings(

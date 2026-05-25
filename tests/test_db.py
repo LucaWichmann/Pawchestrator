@@ -6,12 +6,15 @@ from uuid import UUID
 from pawchestrator.config import Settings
 from pawchestrator.db import (
     create_pipeline_run,
+    create_grill_run,
+    fail_stale_runs_on_startup,
     get_github_comment_id,
     get_runs_by_group_id,
     get_run_warnings,
     init_db,
     insert_run_warning,
     list_tables,
+    STALE_RUN_ERROR,
     store_github_comment_id,
     upsert_worktree_record,
 )
@@ -177,6 +180,144 @@ def test_create_pipeline_run_inserts_all_pending_stages(tmp_path: Path) -> None:
         ("verify", "pending"),
         ("pr", "pending"),
     ]
+
+
+def test_fail_stale_runs_marks_pending_pipeline_failed(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    asyncio.run(
+        create_pipeline_run(
+            settings,
+            run_id="run-123",
+            owner="owner",
+            repo="repo",
+            issue_number=42,
+        )
+    )
+
+    cleaned = asyncio.run(fail_stale_runs_on_startup(settings))
+
+    assert cleaned == 1
+    run, stages = _fetch_run_and_stages(tmp_path, "run-123")
+    assert run == ("failed", "snapshot", None)
+    assert stages["snapshot"] == ("failed", STALE_RUN_ERROR)
+    assert stages["scout"] == ("pending", None)
+
+
+def test_fail_stale_runs_marks_running_stage_failed(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    asyncio.run(
+        create_pipeline_run(
+            settings,
+            run_id="run-123",
+            owner="owner",
+            repo="repo",
+            issue_number=42,
+        )
+    )
+    _set_run_state(tmp_path, "run-123", status="plan_running", current_stage="plan")
+    _set_stage_state(tmp_path, "run-123", "plan", "running")
+
+    cleaned = asyncio.run(fail_stale_runs_on_startup(settings))
+
+    assert cleaned == 1
+    run, stages = _fetch_run_and_stages(tmp_path, "run-123")
+    assert run == ("failed", "plan", None)
+    assert stages["plan"] == ("failed", STALE_RUN_ERROR)
+
+
+def test_fail_stale_runs_marks_next_stage_after_completed_stage_failed(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    asyncio.run(
+        create_pipeline_run(
+            settings,
+            run_id="run-123",
+            owner="owner",
+            repo="repo",
+            issue_number=42,
+        )
+    )
+    _set_run_state(tmp_path, "run-123", status="plan_complete", current_stage="plan")
+    for stage_name in ("snapshot", "scout", "plan"):
+        _set_stage_state(tmp_path, "run-123", stage_name, "complete")
+
+    cleaned = asyncio.run(fail_stale_runs_on_startup(settings))
+
+    assert cleaned == 1
+    run, stages = _fetch_run_and_stages(tmp_path, "run-123")
+    assert run == ("failed", "implement", None)
+    assert stages["plan"] == ("complete", None)
+    assert stages["implement"] == ("failed", STALE_RUN_ERROR)
+
+
+def test_fail_stale_runs_marks_pr_complete_with_url_completed(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    asyncio.run(
+        create_pipeline_run(
+            settings,
+            run_id="run-123",
+            owner="owner",
+            repo="repo",
+            issue_number=42,
+        )
+    )
+    _set_run_state(
+        tmp_path,
+        "run-123",
+        status="pr_complete",
+        current_stage="pr",
+        pr_url="https://github.com/owner/repo/pull/99",
+    )
+    _set_stage_state(tmp_path, "run-123", "pr", "complete")
+
+    cleaned = asyncio.run(fail_stale_runs_on_startup(settings))
+
+    assert cleaned == 1
+    run, stages = _fetch_run_and_stages(tmp_path, "run-123")
+    assert run == ("completed", "pr", "https://github.com/owner/repo/pull/99")
+    assert stages["pr"] == ("complete", None)
+
+
+def test_fail_stale_runs_leaves_terminal_runs_unchanged(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    asyncio.run(
+        create_pipeline_run(
+            settings,
+            run_id="run-123",
+            owner="owner",
+            repo="repo",
+            issue_number=42,
+        )
+    )
+    _set_run_state(tmp_path, "run-123", status="completed", current_stage="pr")
+
+    cleaned = asyncio.run(fail_stale_runs_on_startup(settings))
+
+    assert cleaned == 0
+    run, _ = _fetch_run_and_stages(tmp_path, "run-123")
+    assert run == ("completed", "pr", None)
+
+
+def test_fail_stale_runs_marks_grill_failed(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    asyncio.run(
+        create_grill_run(
+            settings,
+            run_id="run-123",
+            owner="owner",
+            repo="repo",
+            issue_number=42,
+        )
+    )
+    _set_run_state(tmp_path, "run-123", status="grill_running", current_stage="grill")
+
+    cleaned = asyncio.run(fail_stale_runs_on_startup(settings))
+
+    assert cleaned == 1
+    run, stages = _fetch_run_and_stages(tmp_path, "run-123")
+    assert run == ("failed", "grill", None)
+    assert stages["grill"] == ("failed", STALE_RUN_ERROR)
 
 
 def test_github_comment_id_helpers_store_and_fetch_id(tmp_path: Path) -> None:
@@ -392,3 +533,66 @@ def test_get_runs_by_group_id_returns_matching_runs_ordered_by_created_at(
         "created_at": "2026-05-24T10:00:01Z",
         "updated_at": "2026-05-24T10:00:03Z",
     }
+
+
+def _set_run_state(
+    tmp_path: Path,
+    run_id: str,
+    *,
+    status: str,
+    current_stage: str | None,
+    pr_url: str | None = None,
+) -> None:
+    with sqlite3.connect(tmp_path / "database.sqlite") as db:
+        db.execute(
+            """
+            UPDATE workflow_runs
+            SET status = ?, current_stage = ?, pr_url = ?
+            WHERE id = ?
+            """,
+            (status, current_stage, pr_url, run_id),
+        )
+        db.commit()
+
+
+def _set_stage_state(
+    tmp_path: Path,
+    run_id: str,
+    stage_name: str,
+    status: str,
+) -> None:
+    with sqlite3.connect(tmp_path / "database.sqlite") as db:
+        db.execute(
+            """
+            UPDATE workflow_stages
+            SET status = ?, error = NULL
+            WHERE run_id = ? AND stage_name = ?
+            """,
+            (status, run_id, stage_name),
+        )
+        db.commit()
+
+
+def _fetch_run_and_stages(
+    tmp_path: Path,
+    run_id: str,
+) -> tuple[tuple[str, str | None, str | None], dict[str, tuple[str, str | None]]]:
+    with sqlite3.connect(tmp_path / "database.sqlite") as db:
+        run = db.execute(
+            """
+            SELECT status, current_stage, pr_url
+            FROM workflow_runs
+            WHERE id = ?
+            """,
+            (run_id,),
+        ).fetchone()
+        stage_rows = db.execute(
+            """
+            SELECT stage_name, status, error
+            FROM workflow_stages
+            WHERE run_id = ?
+            ORDER BY rowid
+            """,
+            (run_id,),
+        ).fetchall()
+    return run, {name: (status, error) for name, status, error in stage_rows}

@@ -27,10 +27,10 @@ def test_health_returns_version_and_local_bind(tmp_path: Path) -> None:
 
 def test_run_state_returns_run_stages_and_artifacts(tmp_path: Path) -> None:
     settings = Settings(app_dir=tmp_path)
-    _insert_run_state(settings)
     _seed_token(settings)
 
     with TestClient(create_app(settings)) as client:
+        _insert_run_state(settings)
         response = client.get("/runs/run-123", headers=_token_headers())
 
     assert response.status_code == 200
