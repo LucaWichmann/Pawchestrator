@@ -85,6 +85,7 @@ def test_github_issue_client_fetches_snapshot_and_paginated_comments() -> None:
                         "user": {"login": "bob"},
                         "body": "Second",
                         "created_at": "2026-05-23T00:01:00Z",
+                        "in_reply_to_id": 101,
                     }
                 ],
             )
@@ -96,9 +97,11 @@ def test_github_issue_client_fetches_snapshot_and_paginated_comments() -> None:
                 },
                 json=[
                     {
+                        "id": 101,
                         "user": {"login": "alice"},
                         "body": "First",
                         "created_at": "2026-05-23T00:00:00Z",
+                        "in_reply_to_id": None,
                     }
                 ],
             )
@@ -123,11 +126,13 @@ def test_github_issue_client_fetches_snapshot_and_paginated_comments() -> None:
             "author": "alice",
             "body": "First",
             "created_at": "2026-05-23T00:00:00Z",
+            "in_reply_to_id": None,
         },
         {
             "author": "bob",
             "body": "Second",
             "created_at": "2026-05-23T00:01:00Z",
+            "in_reply_to_id": 101,
         },
     ]
     assert len(requests) == 3
