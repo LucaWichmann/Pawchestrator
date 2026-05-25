@@ -85,6 +85,18 @@ CREATE TABLE IF NOT EXISTS github_repos (
   added_at TEXT NOT NULL,
   UNIQUE(owner, repo)
 );
+
+CREATE TABLE IF NOT EXISTS checkbox_marks (
+  run_id TEXT NOT NULL,
+  owner TEXT NOT NULL,
+  repo TEXT NOT NULL,
+  issue_number INTEGER NOT NULL,
+  checkbox_index INTEGER NOT NULL,
+  checkbox_text TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (run_id, owner, repo, issue_number, checkbox_index)
+);
 """
 
 
@@ -1615,3 +1627,70 @@ async def list_tables(database_path: Path) -> set[str]:
         )
         rows = await cursor.fetchall()
     return {row[0] for row in rows}
+
+
+async def record_checkbox_mark(
+    database_path: Path,
+    *,
+    run_id: str,
+    owner: str,
+    repo: str,
+    issue_number: int,
+    checkbox_index: int,
+    checkbox_text: str,
+) -> None:
+    now = utc_now_iso()
+    async with aiosqlite.connect(database_path) as db:
+        await db.executescript(SCHEMA_SQL)
+        await db.execute(
+            """
+            INSERT INTO checkbox_marks (
+              run_id, owner, repo, issue_number, checkbox_index, checkbox_text,
+              created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(run_id, owner, repo, issue_number, checkbox_index)
+            DO UPDATE SET
+              checkbox_text = excluded.checkbox_text,
+              updated_at = excluded.updated_at
+            """,
+            (
+                run_id,
+                owner,
+                repo,
+                issue_number,
+                checkbox_index,
+                checkbox_text,
+                now,
+                now,
+            ),
+        )
+        await db.commit()
+
+
+async def get_checkbox_marks_for_run_issue(
+    database_path: Path,
+    *,
+    run_id: str,
+    owner: str,
+    repo: str,
+    issue_number: int,
+) -> list[dict[str, object]]:
+    async with aiosqlite.connect(database_path) as db:
+        await db.executescript(SCHEMA_SQL)
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT run_id, owner, repo, issue_number, checkbox_index, checkbox_text,
+                   created_at, updated_at
+            FROM checkbox_marks
+            WHERE run_id = ?
+              AND owner = ?
+              AND repo = ?
+              AND issue_number = ?
+            ORDER BY checkbox_index
+            """,
+            (run_id, owner, repo, issue_number),
+        )
+        rows = await cursor.fetchall()
+    return [dict(row) for row in rows]
