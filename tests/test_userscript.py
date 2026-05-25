@@ -95,6 +95,31 @@ def test_userscript_renders_independent_grill_section() -> None:
     assert source.index("renderPipeline(body, status.pipeline)") < source.index("renderGrillSection(body, status.grill)")
 
 
+def test_userscript_renders_epic_section_with_sub_run_timelines() -> None:
+    source = _read_userscript()
+
+    assert "function renderEpicSection(parent, epic)" in source
+    assert 'section.className = "pawchestrator-epic-section"' in source
+    assert 'title.textContent = `Epic: ${epicStatus(epic)}`' in source
+    assert 'row.className = "pawchestrator-epic-run"' in source
+    assert 'rowTitle.textContent = `#${subRun.issue_number}${titleText}`' in source
+    assert "renderPipelineTimeline(row, subRun)" in source
+    assert "renderEpicSection(body, status.epic)" in source
+    assert source.index("renderPipeline(body, status.pipeline)") < source.index("renderEpicSection(body, status.epic)")
+    assert source.index("renderEpicSection(body, status.epic)") < source.index("renderGrillSection(body, status.grill)")
+
+
+def test_userscript_epic_updates_panel_status_and_auto_expand() -> None:
+    source = _read_userscript()
+
+    assert "function epicSummaryRun(epic)" in source
+    assert 'workflow_type: "epic"' in source
+    assert "const runs = [epicSummaryRun(status.epic), status.pipeline, status.grill].filter(Boolean)" in source
+    assert "function epicStatus(epic)" in source
+    assert 'run.status === "running" || /_running$/.test(run.status || "")' in source
+    assert "epicSubRuns(status.epic).some((run) => !RUN_DONE.has(run.status))" in source
+
+
 def test_userscript_renders_grill_status_outcome_and_failures() -> None:
     source = _read_userscript()
 
@@ -177,10 +202,32 @@ def test_userscript_collapses_by_default_and_auto_expands_for_runs() -> None:
     assert 'panel.dataset.expanded = "false"' in source
     assert "let panelExpandedByUser = null" in source
     assert "function shouldAutoExpand(status)" in source
-    assert "status.pipeline || status.grill" in source
+    assert "status.pipeline ||" in source
+    assert "status.grill ||" in source
     assert "setPanelExpanded(shouldAutoExpand(status))" in source
     assert 'panel.dataset.expanded = String(expanded)' in source
     assert 'toggle.setAttribute("aria-expanded", String(expanded))' in source
+
+
+def test_userscript_epic_confirm_gate_and_pending_start_render() -> None:
+    source = _read_userscript()
+
+    assert "const status = await fetchIssueStatus(issue)" in source
+    assert "if (status.epic_confirm && !confirmEpicStart(status.epic))" in source
+    assert "function confirmEpicStart(epic)" in source
+    assert "window.confirm" in source
+    assert 'response?.type === "epic"' in source
+    assert "function epicFromStartResponse(response)" in source
+    assert 'status: "pending"' in source
+    assert "stages: PIPELINE_STAGES.map((stage_name) => ({ stage_name, status: \"pending\" }))" in source
+
+
+def test_userscript_non_epic_start_path_still_posts_issue() -> None:
+    source = _read_userscript()
+
+    assert 'requestJson("/issue/start"' in source
+    assert "body: JSON.stringify(issue)" in source
+    assert "startIssueStatusPolling()" in source
 
 
 def test_userscript_avoids_sidebar_body_and_floating_fallbacks() -> None:

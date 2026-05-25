@@ -48,6 +48,7 @@ def test_run_epic_runs_sub_issues_sequentially_with_shared_group_id(
     ]
     assert result.group_id == "group-123"
     assert result.sub_runs[0].issue_number == 43
+    assert result.sub_runs[0].title == "First child"
     assert result.sub_runs[0].run_id == "run-43"
     assert result.sub_runs[0].pr_url == "https://github.com/owner/repo/pull/43"
     assert result.sub_runs[1].issue_number == 44

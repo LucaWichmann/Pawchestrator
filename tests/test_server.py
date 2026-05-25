@@ -132,7 +132,7 @@ def test_issue_start_routes_epic_when_sub_issues_exist(
         calls.append((issue_url, runtime_settings.app_dir, repo_path, group_id))
         return SimpleNamespace(
             group_id=group_id,
-            sub_runs=[SimpleNamespace(issue_number=43, run_id="run-43")],
+            sub_runs=[SimpleNamespace(issue_number=43, title="First child", run_id="run-43")],
         )
 
     async def fail_run_pipeline(*_args, **_kwargs):
@@ -152,7 +152,9 @@ def test_issue_start_routes_epic_when_sub_issues_exist(
     assert response.status_code == 200
     assert payload["type"] == "epic"
     assert payload["group_id"]
-    assert payload["sub_runs"] == [{"issue_number": 43, "run_id": "run-43"}]
+    assert payload["sub_runs"] == [
+        {"issue_number": 43, "title": "First child", "run_id": "run-43"}
+    ]
     assert client.fetched is True
     assert client.run_count_at_fetch == 0
     assert calls == [

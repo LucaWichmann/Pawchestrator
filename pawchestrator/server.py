@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from pawchestrator import __version__
 from pawchestrator.config import LOCAL_HOST, Settings, load_settings
 from pawchestrator.db import (
+    create_epic_run,
     fail_stale_runs_on_startup,
     get_latest_epic_run_by_issue,
     get_latest_run_by_issue,
@@ -60,6 +61,7 @@ class PipelineStartResponse(BaseModel):
 
 class EpicSubRunResponse(BaseModel):
     issue_number: int
+    title: str = ""
     run_id: str
 
 
@@ -195,6 +197,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
 
             group_id = str(uuid4())
+            await create_epic_run(
+                runtime_settings,
+                run_id=str(uuid4()),
+                owner=body.owner,
+                repo=body.repo,
+                issue_number=body.number,
+                group_id=group_id,
+            )
             result = await run_epic(
                 url,
                 runtime_settings,
@@ -206,6 +216,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 sub_runs=[
                     EpicSubRunResponse(
                         issue_number=sub_run.issue_number,
+                        title=getattr(sub_run, "title", ""),
                         run_id=sub_run.run_id,
                     )
                     for sub_run in result.sub_runs
