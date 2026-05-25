@@ -34,6 +34,15 @@ def test_runner_settings_defaults_match_low_token_profile() -> None:
     assert settings.pr.draft is False
     assert settings.pr.assign is True
     assert settings.pipeline.verify_repair_attempts == 1
+    assert settings.checkboxes.headings == [
+        "Acceptance Criteria",
+        "AC",
+        "Definition of Gone",
+        "DoD",
+        "Checklist",
+        "Requirements",
+        "Tasks",
+    ]
     assert settings.debug is False
 
 
@@ -81,6 +90,9 @@ assign = false
 [pipeline]
 verify_repair_attempts = 2
 
+[checkboxes]
+headings = ["Done When", "Ship List"]
+
 [stages.scout.claude]
 allowed_tools = ["Read"]
 bypass_permissions = false
@@ -122,6 +134,7 @@ approval_policy = "never"
     assert settings.pr.draft is True
     assert settings.pr.assign is False
     assert settings.pipeline.verify_repair_attempts == 2
+    assert settings.checkboxes.headings == ["Done When", "Ship List"]
     assert settings.stages["scout"].claude.allowed_tools == ["Read"]
     assert settings.stages["scout"].claude.bypass_permissions is False
     assert settings.stages["implement"].codex.execution == "native"

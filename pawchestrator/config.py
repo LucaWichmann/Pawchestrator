@@ -15,6 +15,15 @@ APP_DIR_NAME = ".pawchestrator"
 CONFIG_FILE_NAME = "config.toml"
 DATABASE_FILE_NAME = "database.sqlite"
 SESSIONS_FILE_NAME = "sessions.json"
+DEFAULT_CHECKBOX_HEADINGS = [
+    "Acceptance Criteria",
+    "AC",
+    "Definition of Gone",
+    "DoD",
+    "Checklist",
+    "Requirements",
+    "Tasks",
+]
 
 
 class BackendSettings(BaseSettings):
@@ -128,6 +137,14 @@ class PipelineSettings(BaseSettings):
     verify_repair_attempts: int = Field(default=1, ge=0)
 
 
+class CheckboxSettings(BaseSettings):
+    """Issue body checkbox parsing settings."""
+
+    model_config = SettingsConfigDict(extra="ignore")
+
+    headings: list[str] = Field(default_factory=lambda: DEFAULT_CHECKBOX_HEADINGS.copy())
+
+
 class Settings(BaseSettings):
     """Runtime settings loaded from defaults and optional config.toml."""
 
@@ -140,6 +157,7 @@ class Settings(BaseSettings):
     codegraph: CodeGraphSettings = Field(default_factory=CodeGraphSettings)
     pr: PrSettings = Field(default_factory=PrSettings)
     pipeline: PipelineSettings = Field(default_factory=PipelineSettings)
+    checkboxes: CheckboxSettings = Field(default_factory=CheckboxSettings)
     stages: dict[str, StageSettings] = Field(default_factory=dict)
 
     @property
@@ -170,6 +188,7 @@ def load_settings(config_path: Path | None = None) -> Settings:
     codegraph_data = data.get("codegraph", {})
     pr_data = data.get("pr", {})
     pipeline_data = data.get("pipeline", {})
+    checkboxes_data = data.get("checkboxes", {})
     stages_data = data.get("stages", {})
     app_dir = Path(app_data.get("app_dir", default_app_dir)).expanduser()
     return Settings(
@@ -180,6 +199,7 @@ def load_settings(config_path: Path | None = None) -> Settings:
         codegraph=CodeGraphSettings(**codegraph_data),
         pr=PrSettings(**pr_data),
         pipeline=PipelineSettings(**pipeline_data),
+        checkboxes=CheckboxSettings(**checkboxes_data),
         stages={name: StageSettings(**stage) for name, stage in stages_data.items()},
     )
 
