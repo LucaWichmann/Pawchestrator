@@ -74,6 +74,8 @@ class ClaudeStageSettings(BaseSettings):
 
     model_config = SettingsConfigDict(extra="ignore")
 
+    model: str | None = None
+    effort: Literal["low", "medium", "high", "xhigh", "max"] | None = None
     allowed_tools: list[str] | None = None
     bypass_permissions: bool | None = None
 
@@ -83,6 +85,8 @@ class CodexStageSettings(BaseSettings):
 
     model_config = SettingsConfigDict(extra="ignore")
 
+    model: str | None = None
+    reasoning_effort: Literal["low", "medium", "high", "xhigh"] | None = None
     execution: Literal["auto", "native", "wsl"] | None = None
     wsl_enabled: bool | None = None
     wsl_distro: str | None = None
