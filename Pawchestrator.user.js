@@ -335,6 +335,11 @@
     return { owner, repo, number: issueNumber };
   }
 
+  function isIssueOpen() {
+    const el = document.querySelector('[data-testid="header-state"]');
+    return el?.dataset.status === "issueOpened";
+  }
+
   function isIssuePage() {
     const [, owner, repo, type, number, extra] = window.location.pathname.split("/");
     const issueNumber = Number.parseInt(number, 10);
@@ -887,8 +892,19 @@
     renderStatus(status);
     const run = currentRun(status);
     const running = run && !RUN_DONE.has(run.status);
-    document.getElementById(START_ID)?.toggleAttribute("disabled", Boolean(status.pipeline && !RUN_DONE.has(status.pipeline.status)));
-    document.getElementById(GRILL_ID)?.toggleAttribute("disabled", Boolean(status.grill && !RUN_DONE.has(status.grill.status)));
+    const issueOpen = isIssueOpen();
+    const anyActive = Boolean(
+      (status.pipeline && !RUN_DONE.has(status.pipeline.status)) ||
+      (status.grill && !RUN_DONE.has(status.grill.status))
+    );
+    const shouldDisable = !issueOpen || anyActive;
+    const closedTitle = !issueOpen ? "Issue is closed" : "";
+    for (const id of [START_ID, GRILL_ID]) {
+      const btn = document.getElementById(id);
+      if (!btn) continue;
+      btn.toggleAttribute("disabled", shouldDisable);
+      btn.title = closedTitle;
+    }
     return running;
   }
 
@@ -898,8 +914,10 @@
     activePoll = window.setInterval(() => {
       pollIssueStatusOnce().catch(() => {
         renderOffline();
-        document.getElementById(START_ID)?.removeAttribute("disabled");
-        document.getElementById(GRILL_ID)?.removeAttribute("disabled");
+        if (isIssueOpen()) {
+          document.getElementById(START_ID)?.removeAttribute("disabled");
+          document.getElementById(GRILL_ID)?.removeAttribute("disabled");
+        }
       });
     }, POLL_INTERVAL_MS);
   }
