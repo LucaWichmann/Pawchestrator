@@ -182,6 +182,12 @@
       padding-top: 10px;
     }
 
+    #${PANEL_ID} .pawchestrator-epic-section {
+      border-top: 1px solid var(--borderColor-muted, #d8dee4);
+      margin-top: 10px;
+      padding-top: 10px;
+    }
+
     #${PANEL_ID} .pawchestrator-pipeline-title {
       color: var(--fgColor-muted, #59636e);
       font-weight: 600;
@@ -192,6 +198,28 @@
       color: var(--fgColor-muted, #59636e);
       font-weight: 600;
       margin-bottom: 6px;
+    }
+
+    #${PANEL_ID} .pawchestrator-epic-title {
+      color: var(--fgColor-muted, #59636e);
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+
+    #${PANEL_ID} .pawchestrator-epic-runs {
+      display: grid;
+      gap: 10px;
+    }
+
+    #${PANEL_ID} .pawchestrator-epic-run {
+      display: grid;
+      gap: 6px;
+    }
+
+    #${PANEL_ID} .pawchestrator-epic-run-title {
+      color: var(--fgColor-default, #24292f);
+      font-weight: 600;
+      overflow-wrap: anywhere;
     }
 
     #${PANEL_ID} .pawchestrator-grill-details {
@@ -390,7 +418,13 @@
   }
 
   function shouldAutoExpand(status) {
-    return Boolean(status && (status.pipeline || status.grill));
+    return Boolean(
+      status && (
+        status.pipeline ||
+        status.grill ||
+        epicSubRuns(status.epic).some((run) => run.status === "running" || /_running$/.test(run.status || ""))
+      )
+    );
   }
 
   function isPipelineVisible(pipeline) {
@@ -416,7 +450,7 @@
     if (!status) {
       return null;
     }
-    const runs = [status.pipeline, status.grill].filter(Boolean);
+    const runs = [epicSummaryRun(status.epic), status.pipeline, status.grill].filter(Boolean);
     return runs.find((run) => !RUN_DONE.has(run.status)) || runs[0] || null;
   }
 
@@ -480,6 +514,9 @@
     }
     if (run.status === "grill_failed") {
       return summarizeError(run);
+    }
+    if (run.workflow_type === "epic") {
+      return `Epic ${run.status || "running"}`;
     }
 
     const stage = run.current_stage || (run.workflow_type === "grill" ? "grill" : "queued");
@@ -585,26 +622,7 @@
     return -1;
   }
 
-  function renderPipeline(parent, pipeline) {
-    if (!pipeline) {
-      return;
-    }
-
-    const section = document.createElement("section");
-    section.className = "pawchestrator-pipeline";
-
-    const title = document.createElement("div");
-    title.className = "pawchestrator-pipeline-title";
-    title.textContent = "Pipeline";
-    if (pipeline.status === "completed" && pipeline.pr_url) {
-      title.append(document.createTextNode(" \u00B7 "));
-      const link = document.createElement("a");
-      link.href = pipeline.pr_url;
-      link.textContent = "PR";
-      title.append(link);
-    }
-    section.append(title);
-
+  function renderPipelineTimeline(parent, pipeline) {
     const steps = collapseStages(pipeline.stages);
     const activeIndex = activeStageIndex(pipeline, steps);
     const timeline = document.createElement("div");
@@ -627,7 +645,30 @@
       item.append(indicator, label);
       timeline.append(item);
     });
-    section.append(timeline);
+    parent.append(timeline);
+  }
+
+  function renderPipeline(parent, pipeline) {
+    if (!pipeline) {
+      return;
+    }
+
+    const section = document.createElement("section");
+    section.className = "pawchestrator-pipeline";
+
+    const title = document.createElement("div");
+    title.className = "pawchestrator-pipeline-title";
+    title.textContent = "Pipeline";
+    if (pipeline.status === "completed" && pipeline.pr_url) {
+      title.append(document.createTextNode(" \u00B7 "));
+      const link = document.createElement("a");
+      link.href = pipeline.pr_url;
+      link.textContent = "PR";
+      title.append(link);
+    }
+    section.append(title);
+
+    renderPipelineTimeline(section, pipeline);
 
     const warnings = Array.isArray(pipeline.warnings) ? pipeline.warnings : [];
     if (warnings.length > 0) {
@@ -650,6 +691,64 @@
       section.append(details);
     }
 
+    parent.append(section);
+  }
+
+  function epicSubRuns(epic) {
+    return Array.isArray(epic?.sub_runs) ? epic.sub_runs : [];
+  }
+
+  function epicStatus(epic) {
+    const runs = epicSubRuns(epic);
+    if (runs.some((run) => run.status === "failed" || /_failed$/.test(run.status || ""))) {
+      return "failed";
+    }
+    if (runs.length > 0 && runs.every((run) => run.status === "completed")) {
+      return "completed";
+    }
+    return "running";
+  }
+
+  function epicSummaryRun(epic) {
+    if (!epic) {
+      return null;
+    }
+    return {
+      workflow_type: "epic",
+      status: epicStatus(epic),
+      current_stage: "epic",
+    };
+  }
+
+  function renderEpicSection(parent, epic) {
+    if (!epic) {
+      return;
+    }
+
+    const section = document.createElement("section");
+    section.className = "pawchestrator-epic-section";
+
+    const title = document.createElement("div");
+    title.className = "pawchestrator-epic-title";
+    title.textContent = `Epic: ${epicStatus(epic)}`;
+    section.append(title);
+
+    const list = document.createElement("div");
+    list.className = "pawchestrator-epic-runs";
+    epicSubRuns(epic).forEach((subRun) => {
+      const row = document.createElement("div");
+      row.className = "pawchestrator-epic-run";
+
+      const rowTitle = document.createElement("div");
+      rowTitle.className = "pawchestrator-epic-run-title";
+      const titleText = subRun.title ? ` ${subRun.title}` : "";
+      rowTitle.textContent = `#${subRun.issue_number}${titleText}`;
+
+      row.append(rowTitle);
+      renderPipelineTimeline(row, subRun);
+      list.append(row);
+    });
+    section.append(list);
     parent.append(section);
   }
 
@@ -780,6 +879,7 @@
     }
 
     renderPipeline(body, status.pipeline);
+    renderEpicSection(body, status.epic);
     renderGrillSection(body, status.grill);
   }
 
@@ -895,7 +995,8 @@
     const issueOpen = isIssueOpen();
     const anyActive = Boolean(
       (status.pipeline && !RUN_DONE.has(status.pipeline.status)) ||
-      (status.grill && !RUN_DONE.has(status.grill.status))
+      (status.grill && !RUN_DONE.has(status.grill.status)) ||
+      epicSubRuns(status.epic).some((run) => !RUN_DONE.has(run.status))
     );
     const shouldDisable = !issueOpen || anyActive;
     const closedTitle = !issueOpen ? "Issue is closed" : "";
@@ -938,15 +1039,29 @@
     try {
       const issue = parseIssueReference();
       await getOrAcquireToken();
+      const status = await fetchIssueStatus(issue);
+      if (status.epic_confirm && !confirmEpicStart(status.epic)) {
+        if (button) {
+          button.disabled = false;
+        }
+        return;
+      }
       setPanelSummary("[snapshot] starting...");
       panelExpandedByUser = true;
       setPanelExpanded(true);
-      await requestJson("/issue/start", {
+      const response = await requestJson("/issue/start", {
         method: "POST",
         label: "Start request",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(issue),
       });
+      if (response?.type === "epic") {
+        renderStatus({
+          ...status,
+          pipeline: null,
+          epic: epicFromStartResponse(response),
+        });
+      }
       startIssueStatusPolling();
     } catch (error) {
       setPanelSummary(error.message);
@@ -954,6 +1069,32 @@
         button.disabled = false;
       }
     }
+  }
+
+  function confirmEpicStart(epic) {
+    const runs = epicSubRuns(epic);
+    const lines = runs.map((run) => {
+      const title = run.title ? ` ${run.title}` : "";
+      return `#${run.issue_number}${title}`;
+    });
+    const list = lines.length > 0 ? `\n\n${lines.join("\n")}` : "";
+    return window.confirm(`Work on this epic issue and its sub-issues?${list}`);
+  }
+
+  function epicFromStartResponse(response) {
+    return {
+      group_id: response.group_id,
+      sub_runs: (response.sub_runs || []).map((run) => ({
+        issue_number: run.issue_number,
+        run_id: run.run_id,
+        title: run.title,
+        status: "pending",
+        current_stage: null,
+        workflow_type: "pipeline",
+        stages: PIPELINE_STAGES.map((stage_name) => ({ stage_name, status: "pending" })),
+        warnings: [],
+      })),
+    };
   }
 
   async function startGrill() {
