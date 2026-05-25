@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+import json
+from typing import Any, Callable
 
 from pawchestrator.config import Settings
 from pawchestrator.db import (
@@ -95,6 +96,7 @@ async def run_epic(
                 worktree_path=epic_worktree.path,
                 draft=True,
                 allow_empty_commit=True,
+                sub_runs=[],
             )
             await set_run_pr_url(settings, run_id=parent_run_id, pr_url=epic_pr.pr_url)
             progress(f"[epic] draft PR ready - {epic_pr.pr_url}")
@@ -140,6 +142,10 @@ async def run_epic(
 
         epic_pr_url = None
         if mode == "epic":
+            if len(sub_runs) != len(sub_issues):
+                raise RuntimeError(
+                    "epic final PR blocked because not all sub-issues completed"
+                )
             epic_pr = await _create_epic_pr(
                 settings=settings,
                 run_id=parent_run_id,
@@ -149,6 +155,7 @@ async def run_epic(
                 worktree_path=epic_worktree.path,
                 draft=settings.pr.draft,
                 allow_empty_commit=False,
+                sub_runs=sub_runs,
             )
             epic_pr_url = epic_pr.pr_url
             progress(f"[epic] PR ready - {epic_pr_url}")
@@ -180,6 +187,7 @@ async def _create_epic_pr(
     worktree_path: Path,
     draft: bool,
     allow_empty_commit: bool,
+    sub_runs: list[SubRunResult],
 ) -> PrDraftResult:
     return await create_worktree_pr(
         settings=settings,
@@ -188,7 +196,12 @@ async def _create_epic_pr(
         branch=branch,
         base_branch=DEFAULT_BASE_BRANCH,
         title=f"feat: {title or f'Epic {issue_number}'} (#{issue_number})",
-        body=_epic_pr_body(run_id=run_id, issue_number=issue_number),
+        body=_epic_pr_body(
+            settings=settings,
+            run_id=run_id,
+            issue_number=issue_number,
+            sub_runs=sub_runs,
+        ),
         draft=draft,
         issue_number=issue_number,
         allow_empty_commit=allow_empty_commit,
@@ -196,16 +209,119 @@ async def _create_epic_pr(
     )
 
 
-def _epic_pr_body(*, run_id: str, issue_number: int) -> str:
-    return f"""## Summary
+def _epic_pr_body(
+    *,
+    settings: Settings,
+    run_id: str,
+    issue_number: int,
+    sub_runs: list[SubRunResult],
+) -> str:
+    if not sub_runs:
+        return f"""## Summary
 
-Pawchestrator implemented epic sub-issues.
+Pawchestrator opened this PR to collect epic sub-issue work.
 
-## Linked issue
+## Linked issues
 
-Fixes #{issue_number}
+Implements epic #{issue_number}
 
 ## Local artifacts
 
 Internal artifacts are stored locally under epic run `{run_id}` and were not posted publicly.
 """
+
+    completed_issue_refs = ", ".join(f"#{sub_run.issue_number}" for sub_run in sub_runs)
+    closing_refs = ", ".join(f"closes #{sub_run.issue_number}" for sub_run in sub_runs)
+    completed_sub_issues = "\n".join(
+        _completed_sub_issue_line(sub_run) for sub_run in sub_runs
+    )
+    changed_lines = "\n".join(
+        _change_summary_line(settings, sub_run) for sub_run in sub_runs
+    )
+    verification_lines = "\n".join(
+        _verification_summary_line(settings, sub_run) for sub_run in sub_runs
+    )
+
+    return f"""## Summary
+
+Pawchestrator implemented the completed sub-issues for epic #{issue_number}.
+
+## Linked issues
+
+Implements epic #{issue_number}
+
+Sub-issues completed: {completed_issue_refs}
+
+{closing_refs.capitalize()}
+
+## Completed sub-issues
+
+{completed_sub_issues}
+
+## What changed
+
+{changed_lines}
+
+## Verification
+
+{verification_lines}
+
+## Local artifacts
+
+Internal artifacts are stored locally under epic run `{run_id}` and child run ids listed above.
+"""
+
+
+def _completed_sub_issue_line(sub_run: SubRunResult) -> str:
+    title = f" - {sub_run.title}" if sub_run.title else ""
+    return f"- #{sub_run.issue_number}{title} (run `{sub_run.run_id}`)"
+
+
+def _change_summary_line(settings: Settings, sub_run: SubRunResult) -> str:
+    report = _read_optional_json(
+        settings.app_dir / "runs" / sub_run.run_id / "implementation_report.json"
+    )
+    summary = "not recorded"
+    if report is not None:
+        summary = str(report.get("diff_summary") or "")
+        if not summary:
+            files_changed = _string_list(report.get("files_changed"))
+            summary = (
+                _files_changed_summary(files_changed) if files_changed else "not recorded"
+            )
+    return f"- #{sub_run.issue_number}: {summary}"
+
+
+def _verification_summary_line(settings: Settings, sub_run: SubRunResult) -> str:
+    report = _read_optional_json(
+        settings.app_dir / "runs" / sub_run.run_id / "verification_report.json"
+    )
+    if report is None:
+        return f"- #{sub_run.issue_number}: not recorded"
+
+    status = str(report.get("status") or "not recorded")
+    if status == "skipped":
+        reason = str(report.get("skip_reason") or "no reason recorded")
+        return f"- #{sub_run.issue_number}: skipped - {reason}"
+    return f"- #{sub_run.issue_number}: {status}"
+
+
+def _read_optional_json(path: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str) and item]
+
+
+def _files_changed_summary(files_changed: list[str]) -> str:
+    names = ", ".join(files_changed[:5])
+    suffix = "" if len(files_changed) <= 5 else f", and {len(files_changed) - 5} more"
+    plural = "file" if len(files_changed) == 1 else "files"
+    return f"{len(files_changed)} {plural} changed: {names}{suffix}"

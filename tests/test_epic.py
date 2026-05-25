@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -60,14 +61,22 @@ def test_run_epic_mode_runs_sub_issues_on_shared_branch_then_final_pr(
     assert {call["allow_dirty_existing_worktree"] for call in calls} == {True}
     assert result.group_id == "group-123"
     assert [sub_run.pr_url for sub_run in result.sub_runs] == ["", ""]
-    assert pr_calls == [
-        {
-            "branch": "paw/epic-42-big-epic",
-            "base_branch": "main",
-            "draft": False,
-            "allow_empty_commit": False,
-        }
-    ]
+    assert len(pr_calls) == 1
+    assert _without_body(pr_calls[0]) == {
+        "branch": "paw/epic-42-big-epic",
+        "base_branch": "main",
+        "draft": False,
+        "allow_empty_commit": False,
+    }
+    assert "Implements epic #42" in str(pr_calls[0]["body"])
+    assert "Sub-issues completed: #43, #44" in str(pr_calls[0]["body"])
+    assert "Closes #43, closes #44" in str(pr_calls[0]["body"])
+    assert "- #43 - First child (run `run-43`)" in str(pr_calls[0]["body"])
+    assert "- #44 - Second child (run `run-44`)" in str(pr_calls[0]["body"])
+    assert "- #43: 2 files changed: pawchestrator/43.py, tests/test_43.py" in str(
+        pr_calls[0]["body"]
+    )
+    assert "- #44: passed" in str(pr_calls[0]["body"])
     status = asyncio.run(get_latest_epic_run_by_issue(settings, "owner", "repo", 42))
     assert status is not None
     assert status["status"] == "epic_complete"
@@ -108,14 +117,15 @@ def test_run_epic_with_sub_issues_creates_draft_epic_pr_then_child_prs(
         )
     )
 
-    assert pr_calls == [
-        {
-            "branch": "paw/epic-42-big-epic",
-            "base_branch": "main",
-            "draft": True,
-            "allow_empty_commit": True,
-        }
-    ]
+    assert len(pr_calls) == 1
+    assert _without_body(pr_calls[0]) == {
+        "branch": "paw/epic-42-big-epic",
+        "base_branch": "main",
+        "draft": True,
+        "allow_empty_commit": True,
+    }
+    assert "Implements epic #42" in str(pr_calls[0]["body"])
+    assert "Closes #" not in str(pr_calls[0]["body"])
     assert calls == [
         {
             "issue_url": "https://github.com/owner/repo/issues/43",
@@ -181,6 +191,7 @@ def test_run_epic_continues_on_failure_when_fail_fast_false(
     )
     asyncio.run(_insert_parent(settings))
     calls: list[dict[str, object]] = []
+    pr_calls: list[dict[str, object]] = []
     progress: list[str] = []
     _patch_client(
         monkeypatch,
@@ -194,26 +205,30 @@ def test_run_epic_continues_on_failure_when_fail_fast_false(
     )
     _patch_epic_worktree(monkeypatch, tmp_path)
     _patch_pipeline(monkeypatch, calls, failures={44})
-    _patch_epic_pr(monkeypatch, [])
+    _patch_epic_pr(monkeypatch, pr_calls)
 
-    result = asyncio.run(
-        run_epic(
-            "https://github.com/owner/repo/issues/42",
-            settings,
-            repo_path=tmp_path,
-            progress=progress.append,
-            group_id="group-123",
-            parent_run_id="epic-parent",
+    with pytest.raises(RuntimeError, match="final PR blocked"):
+        asyncio.run(
+            run_epic(
+                "https://github.com/owner/repo/issues/42",
+                settings,
+                repo_path=tmp_path,
+                progress=progress.append,
+                group_id="group-123",
+                parent_run_id="epic-parent",
+            )
         )
-    )
 
     assert [call["issue_url"] for call in calls] == [
         "https://github.com/owner/repo/issues/43",
         "https://github.com/owner/repo/issues/44",
         "https://github.com/owner/repo/issues/45",
     ]
-    assert [sub_run.issue_number for sub_run in result.sub_runs] == [43, 45]
     assert "[epic] sub-issue #44 failed; continuing" in progress
+    assert pr_calls == []
+    status = asyncio.run(get_latest_epic_run_by_issue(settings, "owner", "repo", 42))
+    assert status is not None
+    assert status["status"] == "epic_failed"
 
 
 class _FakeSubIssueClient:
@@ -274,6 +289,7 @@ def _patch_epic_pr(
                 "base_branch": kwargs["base_branch"],
                 "draft": kwargs["draft"],
                 "allow_empty_commit": kwargs["allow_empty_commit"],
+                "body": kwargs["body"],
             }
         )
         return SimpleNamespace(pr_url="https://github.com/owner/repo/pull/42")
@@ -317,6 +333,7 @@ def _patch_pipeline(
         issue_number = int(issue_url.rsplit("/", 1)[1])
         if issue_number in failing_numbers:
             raise RuntimeError(f"pipeline failed for {issue_number}")
+        _write_child_artifacts(settings, issue_number)
         return SimpleNamespace(
             run_id=f"run-{issue_number}",
             pr_url=(
@@ -327,3 +344,31 @@ def _patch_pipeline(
         )
 
     monkeypatch.setattr("pawchestrator.epic.run_pipeline", fake_run_pipeline)
+
+
+def _without_body(call: dict[str, object]) -> dict[str, object]:
+    return {key: value for key, value in call.items() if key != "body"}
+
+
+def _write_child_artifacts(settings: Settings, issue_number: int) -> None:
+    run_dir = settings.app_dir / "runs" / f"run-{issue_number}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "implementation_report.json").write_text(
+        json.dumps(
+            {
+                "diff_summary": (
+                    f"2 files changed: pawchestrator/{issue_number}.py, "
+                    f"tests/test_{issue_number}.py"
+                ),
+                "files_changed": [
+                    f"pawchestrator/{issue_number}.py",
+                    f"tests/test_{issue_number}.py",
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "verification_report.json").write_text(
+        json.dumps({"status": "passed", "commands": [], "skip_reason": None}),
+        encoding="utf-8",
+    )
