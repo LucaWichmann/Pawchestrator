@@ -19,8 +19,11 @@ from pawchestrator.db import (
     get_run_state,
     init_db,
     is_repo_registered,
+    lookup_repo_path,
     mark_run_failed,
 )
+from pawchestrator.epic import run_epic
+from pawchestrator.github import GitHubIssueClient, get_gh_token, parse_issue_url
 from pawchestrator.grill import run_grill
 from pawchestrator.pipeline import run_pipeline
 from pawchestrator.runners import get_runner_health
@@ -47,6 +50,22 @@ class IssueGrillRequest(BaseModel):
 
 class PairResponse(BaseModel):
     token: str
+
+
+class PipelineStartResponse(BaseModel):
+    type: str = "pipeline"
+    run_id: str
+
+
+class EpicSubRunResponse(BaseModel):
+    issue_number: int
+    run_id: str
+
+
+class EpicStartResponse(BaseModel):
+    type: str = "epic"
+    group_id: str
+    sub_runs: list[EpicSubRunResponse]
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -146,14 +165,50 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "runners": runners,
             "pipeline": pipeline,
             "grill": grill,
+            "epic_confirm": runtime_settings.pipeline.epic_confirm,
         }
 
     @app.post("/issue/start")
     async def issue_start(
         body: IssueStartRequest,
         background_tasks: BackgroundTasks,
-    ) -> dict[str, str]:
+    ) -> PipelineStartResponse | EpicStartResponse:
         url = f"https://github.com/{body.owner}/{body.repo}/issues/{body.number}"
+        reference = parse_issue_url(url)
+        client = GitHubIssueClient(get_gh_token())
+        sub_issues = await client.fetch_sub_issues(reference)
+        if sub_issues:
+            from uuid import uuid4
+
+            repo_path = await lookup_repo_path(
+                runtime_settings,
+                owner=body.owner,
+                repo=body.repo,
+            )
+            if repo_path is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="repo not registered - run `pawchestrator repo add <path>` first",
+                )
+
+            group_id = str(uuid4())
+            result = await run_epic(
+                url,
+                runtime_settings,
+                repo_path=repo_path.resolve(),
+                group_id=group_id,
+            )
+            return EpicStartResponse(
+                group_id=result.group_id,
+                sub_runs=[
+                    EpicSubRunResponse(
+                        issue_number=sub_run.issue_number,
+                        run_id=sub_run.run_id,
+                    )
+                    for sub_run in result.sub_runs
+                ],
+            )
+
         run_id = await _prepare_pipeline_run(url, runtime_settings)
         background_tasks.add_task(
             _run_pipeline_background,
@@ -161,7 +216,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             runtime_settings,
             run_id=run_id,
         )
-        return {"run_id": run_id}
+        return PipelineStartResponse(run_id=run_id)
 
     @app.post("/issue/grill")
     async def issue_grill(
