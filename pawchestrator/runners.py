@@ -611,6 +611,10 @@ def _effective_claude_config(
 ) -> ClaudeRunnerSettings:
     override = stage_overrides.get(stage_name)
     updates: dict[str, object] = {}
+    if override is not None and override.claude.model is not None:
+        updates["model"] = override.claude.model
+    if override is not None and override.claude.effort is not None:
+        updates["effort"] = override.claude.effort
     if override is not None and override.claude.allowed_tools is not None:
         updates["allowed_tools"] = override.claude.allowed_tools
     if override is not None and override.claude.bypass_permissions is not None:
@@ -633,6 +637,10 @@ def _effective_codex_config(
         return config
 
     updates: dict[str, object] = {}
+    if override.codex.model is not None:
+        updates["model"] = override.codex.model
+    if override.codex.reasoning_effort is not None:
+        updates["reasoning_effort"] = override.codex.reasoning_effort
     if override.codex.execution is not None:
         updates["execution"] = override.codex.execution
     if override.codex.wsl_enabled is not None:

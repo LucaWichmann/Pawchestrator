@@ -377,6 +377,49 @@ def test_claude_runner_uses_stage_permission_override(
     assert "--dangerously-skip-permissions" in calls["cmd"]
 
 
+def test_claude_runner_uses_stage_model_override_without_mutating_global_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: dict[str, object] = {}
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
+            return b'{"result": {"status": "success"}}', b""
+
+    async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
+        calls["cmd"] = list(cmd)
+        return FakeProcess()
+
+    monkeypatch.setattr(
+        "pawchestrator.runners.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+
+    config = ClaudeRunnerSettings(model="sonnet", effort="medium")
+    task = RunnerTask(
+        prompt="dedupe criteria",
+        cwd=tmp_path,
+        run_id="run-123",
+        stage_name="criteria_dedupe",
+    )
+
+    asyncio.run(
+        ClaudeRunner(
+            config,
+            stage_overrides={
+                "criteria_dedupe": StageSettings(claude={"model": "haiku"})
+            },
+        ).run_task(task)
+    )
+
+    assert calls["cmd"][calls["cmd"].index("--model") + 1] == "haiku"
+    assert calls["cmd"][calls["cmd"].index("--effort") + 1] == "medium"
+    assert config.model == "sonnet"
+    assert config.effort == "medium"
+
+
 def test_claude_runner_wsl_mode_invokes_wsl_and_preserves_tools(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -646,6 +689,72 @@ def test_codex_runner_invokes_expected_command_logs_and_captures_diff(
     assert (tmp_path / "runs" / "run-123" / "stdout" / "implement.log").read_text(
         encoding="utf-8"
     ) == "codex stdout\ncodex stderr\n"
+
+
+def test_codex_runner_uses_stage_model_override_without_mutating_global_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    codex_path = "C:\\bin\\codex.CMD"
+    calls: list[dict[str, object]] = []
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
+            return b"", b""
+
+    async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
+        calls.append({"cmd": list(cmd), "cwd": kwargs["cwd"]})
+        return FakeProcess()
+
+    monkeypatch.setattr(
+        "pawchestrator.runners.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr(
+        "pawchestrator.runners.shutil.which",
+        lambda name: codex_path if name == "codex" else None,
+    )
+
+    config = CodexRunnerSettings(model="gpt-5.5", reasoning_effort="medium")
+    task = RunnerTask(
+        prompt="dedupe criteria",
+        cwd=tmp_path,
+        run_id="run-123",
+        stage_name="criteria_dedupe",
+    )
+
+    asyncio.run(
+        CodexRunner(
+            config,
+            stage_overrides={
+                "criteria_dedupe": StageSettings(
+                    codex={
+                        "model": "gpt-5.4-mini",
+                        "reasoning_effort": "low",
+                    }
+                )
+            },
+        ).run_task(task)
+    )
+
+    assert calls[0]["cmd"] == [
+        codex_path,
+        "exec",
+        "-C",
+        str(tmp_path),
+        "-s",
+        "workspace-write",
+        "--model",
+        "gpt-5.4-mini",
+        "-c",
+        'model_reasoning_effort="low"',
+        "-c",
+        'approval_policy="never"',
+        "-",
+    ]
+    assert config.model == "gpt-5.5"
+    assert config.reasoning_effort == "medium"
 
 
 def test_codex_runner_retries_previous_response_not_found_with_resume(
