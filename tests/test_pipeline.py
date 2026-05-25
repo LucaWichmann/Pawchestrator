@@ -15,6 +15,7 @@ from pawchestrator.db import (
     complete_verify_run,
     create_snapshot_run,
     fail_plan_run,
+    get_run_warnings,
     start_implement_run,
     start_plan_run,
     start_pr_run,
@@ -304,6 +305,83 @@ def test_run_pipeline_repairs_failed_verify_then_creates_pr(
         ("verify", "complete"),
         ("pr", "complete"),
     ]
+
+
+def test_run_pipeline_reconciles_checkbox_marks_after_implement_and_verify(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    calls: list[str] = []
+    _patch_successful_stages(monkeypatch, calls)
+    _patch_verify_results(monkeypatch, calls, ["failed", "passed"])
+
+    async def fake_reconcile(settings: Settings, run_id: str, client: object) -> bool:
+        calls.append("reconcile")
+        return False
+
+    monkeypatch.setattr(
+        "pawchestrator.pipeline.reconcile_checkbox_marks",
+        fake_reconcile,
+    )
+
+    asyncio.run(
+        run_pipeline(
+            "https://github.com/owner/repo/issues/42",
+            settings,
+            repo_path=tmp_path,
+        )
+    )
+
+    assert calls == [
+        "snapshot",
+        "scout",
+        "plan",
+        "implement",
+        "reconcile",
+        "verify",
+        "implement",
+        "reconcile",
+        "verify",
+        "reconcile",
+        "pr",
+    ]
+
+
+def test_run_pipeline_records_checkbox_reconciliation_warning_without_failing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    calls: list[str] = []
+    _patch_successful_stages(monkeypatch, calls)
+
+    async def fake_reconcile(settings: Settings, run_id: str, client: object) -> bool:
+        raise RuntimeError("lost patch state")
+
+    monkeypatch.setattr(
+        "pawchestrator.pipeline.reconcile_checkbox_marks",
+        fake_reconcile,
+    )
+
+    result = asyncio.run(
+        run_pipeline(
+            "https://github.com/owner/repo/issues/42",
+            settings,
+            repo_path=tmp_path,
+        )
+    )
+    warnings = asyncio.run(get_run_warnings(settings, result.run_id))
+
+    assert calls == ["snapshot", "scout", "plan", "implement", "verify", "pr"]
+    assert result.pr_url == "https://github.com/owner/repo/pull/99"
+    assert [warning["code"] for warning in warnings] == [
+        "checkbox_reconciliation_failed",
+        "checkbox_reconciliation_failed",
+    ]
+    assert warnings[0]["stage_name"] == "implement"
+    assert warnings[1]["stage_name"] == "verify"
+    assert "lost patch state" in warnings[0]["message"]
 
 
 def test_run_pipeline_exhausts_verify_repairs_and_leaves_pr_pending(
