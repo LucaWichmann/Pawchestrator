@@ -136,6 +136,26 @@ def test_userscript_renders_grill_status_outcome_and_failures() -> None:
     assert "error.textContent = summarizeError(grill)" in source
 
 
+def test_userscript_observes_questions_comment_reply_form() -> None:
+    source = _read_userscript()
+
+    assert "function attachGrillReplyObserver(grill)" in source
+    assert "document.getElementById(commentElementId(commentId))" in source
+    assert "observer.observe(commentElement, { childList: true, subtree: true })" in source
+    assert 'status.grill?.status === "grill_waiting"' in source
+    assert "attachGrillReplyObserver(status.grill)" in source
+    assert "disconnectGrillReplyObserver()" in source
+    assert '"Answer Questions"' in source
+    assert (
+        '"Replying to Pawchestrator questions \\u2014 submitting will continue the grilling session."'
+        in source
+    )
+    assert 'submit.title = GRILL_REPLY_TOOLTIP' in source
+    assert 'await requestJson("/issue/grill"' in source
+    assert "if (state.formSeen && !state.posted)" in source
+    assert "findGrillReplyForm(state.commentElement)" in source
+
+
 def test_userscript_renders_pipeline_warnings_and_completed_pr_link_only() -> None:
     source = _read_userscript()
 
@@ -214,6 +234,15 @@ def test_userscript_epic_confirm_gate_and_pending_start_render() -> None:
 
     assert "const status = await fetchIssueStatus(issue)" in source
     assert "if (status.epic_confirm && !confirmEpicStart(status.epic))" in source
+    assert "if (status.grill?.status === GRILL_WAITING_STATUS)" in source
+    assert (
+        "Grill is still waiting for answers on this issue. "
+        "Are you sure you want to start agentic work?"
+    ) in source
+    assert "showConfirmDialog(PIPELINE_GRILL_WAITING_CONFIRM_MESSAGE" in source
+    assert 'title: "Start agentic work?"' in source
+    assert 'confirmLabel: "Yes"' in source
+    assert 'cancelLabel: "No"' in source
     assert "function confirmEpicStart(epic)" in source
     assert "window.confirm" in source
     assert 'response?.type === "epic"' in source

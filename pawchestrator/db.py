@@ -473,6 +473,24 @@ async def fail_grill_run(
         await db.commit()
 
 
+async def set_grill_waiting(settings: Settings, *, run_id: str) -> None:
+    await init_db(settings)
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET workflow_type = 'grill',
+                status = 'grill_waiting',
+                current_stage = 'grill',
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (now, run_id),
+        )
+        await db.commit()
+
+
 async def complete_scout_run(
     settings: Settings,
     *,
@@ -1175,6 +1193,9 @@ async def fail_stale_runs_on_startup(settings: Settings) -> int:
 
         for run in runs:
             run_id = str(run["id"])
+            if run["status"] == "grill_waiting":
+                continue
+
             if run["status"] == "pr_complete" and run["pr_url"]:
                 await db.execute(
                     """
@@ -1233,7 +1254,8 @@ async def get_run_state(settings: Settings, run_id: str) -> dict[str, object] | 
         run_cursor = await db.execute(
             """
             SELECT id, owner, repo, issue_number, workflow_type, status,
-                   current_stage, pr_url, epic_branch_mode, created_at, updated_at
+                   current_stage, pr_url, github_comment_id, epic_branch_mode,
+                   created_at, updated_at
             FROM workflow_runs
             WHERE id = ?
             """,
@@ -1325,6 +1347,15 @@ async def get_latest_run_by_issue(
     run.pop("pr_url", None)
     run["grill_report"] = grill_report
     return run
+
+
+async def get_latest_grill_run_by_issue(
+    settings: Settings,
+    owner: str,
+    repo: str,
+    issue_number: int,
+) -> dict[str, object] | None:
+    return await get_latest_run_by_issue(settings, owner, repo, issue_number, "grill")
 
 
 async def get_latest_epic_run_by_issue(

@@ -230,6 +230,27 @@ def test_issue_status_returns_latest_grill_run_with_report(
     assert "pr_url" not in payload["grill"]
 
 
+def test_issue_status_returns_waiting_grill_comment_id(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _seed_token(settings)
+    _stub_runner_health(monkeypatch)
+    _insert_grill_run(settings, status="grill_waiting", comment_id="12345")
+
+    with TestClient(create_app(settings)) as client:
+        response = client.get(
+            "/issue/owner/repo/42/status",
+            headers=_token_headers(),
+        )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["grill"]["status"] == "grill_waiting"
+    assert payload["grill"]["github_comment_id"] == "12345"
+
+
 def test_issue_status_reports_unregistered_repo(tmp_path: Path, monkeypatch) -> None:
     settings = Settings(app_dir=tmp_path)
     _seed_token(settings)
@@ -358,7 +379,12 @@ def _insert_pipeline_run(
     asyncio.run(insert())
 
 
-def _insert_grill_run(settings: Settings) -> None:
+def _insert_grill_run(
+    settings: Settings,
+    *,
+    status: str = "grill_complete",
+    comment_id: str | None = None,
+) -> None:
     import asyncio
 
     async def insert() -> None:
@@ -380,19 +406,23 @@ def _insert_grill_run(settings: Settings) -> None:
                 """
                 INSERT INTO workflow_runs (
                   id, owner, repo, issue_number, workflow_type, status,
-                  current_stage, created_at, updated_at
+                  current_stage, github_comment_id, created_at, updated_at
                 )
-                VALUES (?, 'owner', 'repo', 42, 'grill', 'grill_complete',
-                        'grill', ?, ?)
+                VALUES (?, 'owner', 'repo', 42, 'grill', ?,
+                        'grill', ?, ?, ?)
                 """,
                 [
                     (
                         "grill-old",
+                        status,
+                        None,
                         "2026-05-24T09:00:00Z",
                         "2026-05-24T09:00:01Z",
                     ),
                     (
                         "grill-new",
+                        status,
+                        comment_id,
                         "2026-05-24T10:00:00Z",
                         "2026-05-24T10:00:01Z",
                     ),

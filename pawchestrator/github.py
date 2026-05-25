@@ -205,6 +205,7 @@ class GitHubIssueClient:
                     "author": (comment.get("user") or {}).get("login", ""),
                     "body": comment.get("body") or "",
                     "created_at": comment.get("created_at") or "",
+                    "in_reply_to_id": comment.get("in_reply_to_id"),
                 }
                 for comment in comments
             ],
