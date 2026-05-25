@@ -1048,6 +1048,7 @@ async def fail_stale_runs_on_startup(settings: Settings) -> int:
             SELECT id, workflow_type, status, current_stage, pr_url
             FROM workflow_runs
             WHERE status NOT IN (?, ?, ?, ?)
+              AND group_id IS NULL
             ORDER BY created_at, id
             """,
             TERMINAL_RUN_STATUSES,
