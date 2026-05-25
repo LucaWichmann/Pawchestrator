@@ -156,6 +156,7 @@ async def create_pipeline_run(
     owner: str,
     repo: str,
     issue_number: int,
+    group_id: str | None = None,
 ) -> None:
     await init_db(settings)
     now = utc_now_iso()
@@ -163,12 +164,12 @@ async def create_pipeline_run(
         await db.execute(
             """
             INSERT INTO workflow_runs (
-              id, owner, repo, issue_number, workflow_type, status, current_stage,
+              id, owner, repo, issue_number, group_id, workflow_type, status, current_stage,
               created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, 'pipeline', 'pending', NULL, ?, ?)
+            VALUES (?, ?, ?, ?, ?, 'pipeline', 'pending', NULL, ?, ?)
             """,
-            (run_id, owner, repo, issue_number, now, now),
+            (run_id, owner, repo, issue_number, group_id, now, now),
         )
         for stage_name in PIPELINE_STAGES:
             await db.execute(

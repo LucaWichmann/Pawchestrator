@@ -54,6 +54,7 @@ async def run_pipeline(
     settings: Settings,
     *,
     run_id: str | None = None,
+    group_id: str | None = None,
     repo_path: Path | None = None,
     allow_empty_commit: bool = False,
     progress: ProgressFn = print,
@@ -78,6 +79,7 @@ async def run_pipeline(
             owner=reference.owner,
             repo=reference.repo,
             issue_number=reference.number,
+            group_id=group_id,
         )
 
     comment_client = await _post_initial_run_comment(settings, active_run_id)

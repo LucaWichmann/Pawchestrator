@@ -136,6 +136,7 @@ class PipelineSettings(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore")
 
     verify_repair_attempts: int = Field(default=1, ge=0)
+    epic_fail_fast: bool = True
 
 
 class CheckboxSettings(BaseSettings):
