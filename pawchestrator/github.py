@@ -77,6 +77,28 @@ def parse_issue_url(issue_url: str) -> IssueReference:
     )
 
 
+def parse_issue_shorthand(issue_ref: str) -> IssueReference:
+    parts = issue_ref.split("/")
+    if len(parts) != 3 or not all(parts):
+        raise ValueError("expected issue reference shaped {owner}/{repo}/{number}")
+
+    try:
+        number = int(parts[2])
+    except ValueError as error:
+        raise ValueError("issue number must be an integer") from error
+
+    if number < 1:
+        raise ValueError("issue number must be positive")
+
+    owner, repo = parts[0], parts[1]
+    return IssueReference(
+        owner=owner,
+        repo=repo,
+        number=number,
+        source_url=f"https://github.com/{owner}/{repo}/issues/{number}",
+    )
+
+
 def parse_checkboxes(
     body: str,
     headings: Sequence[str] = DEFAULT_CHECKBOX_HEADINGS,
@@ -189,6 +211,49 @@ class GitHubIssueClient:
             "source_url": reference.source_url,
             "fetched_at": utc_now_iso(),
         }
+
+    async def fetch_issue_body_with_etag(
+        self,
+        reference: IssueReference,
+    ) -> tuple[str, str]:
+        async with httpx.AsyncClient(
+            base_url=self._api_base,
+            headers=self._headers(),
+            transport=self._transport,
+        ) as client:
+            response = await client.get(
+                f"/repos/{reference.owner}/{reference.repo}/issues/{reference.number}",
+            )
+            self._raise_for_status(response)
+            payload = response.json()
+
+        if not isinstance(payload, dict):
+            raise GitHubError("GitHub issue response was not an object")
+
+        etag = response.headers.get("ETag")
+        if not etag:
+            raise GitHubError("GitHub issue response did not include an ETag")
+
+        return payload.get("body") or "", etag
+
+    async def patch_issue_body_with_etag(
+        self,
+        reference: IssueReference,
+        body: str,
+        etag: str,
+    ) -> None:
+        headers = self._headers()
+        headers["If-Match"] = etag
+        async with httpx.AsyncClient(
+            base_url=self._api_base,
+            headers=headers,
+            transport=self._transport,
+        ) as client:
+            response = await client.patch(
+                f"/repos/{reference.owner}/{reference.repo}/issues/{reference.number}",
+                json={"body": body},
+            )
+            self._raise_for_status(response)
 
     async def post_comment(
         self,

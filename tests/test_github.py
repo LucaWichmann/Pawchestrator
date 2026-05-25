@@ -10,6 +10,7 @@ from pawchestrator.github import (
     ensure_pawchestrator_labels,
     format_run_comment,
     parse_checkboxes,
+    parse_issue_shorthand,
     parse_issue_url,
 )
 
@@ -33,6 +34,31 @@ def test_parse_issue_url_accepts_github_issue_url() -> None:
 def test_parse_issue_url_rejects_invalid_urls(url: str) -> None:
     with pytest.raises(ValueError):
         parse_issue_url(url)
+
+
+def test_parse_issue_shorthand_accepts_owner_repo_number() -> None:
+    reference = parse_issue_shorthand("LucaWichmann/Pawchestrator/42")
+
+    assert reference.owner == "LucaWichmann"
+    assert reference.repo == "Pawchestrator"
+    assert reference.number == 42
+    assert (
+        reference.source_url
+        == "https://github.com/LucaWichmann/Pawchestrator/issues/42"
+    )
+
+
+@pytest.mark.parametrize(
+    "issue_ref",
+    [
+        "LucaWichmann/Pawchestrator",
+        "LucaWichmann/Pawchestrator/nope",
+        "LucaWichmann/Pawchestrator/0",
+    ],
+)
+def test_parse_issue_shorthand_rejects_invalid_refs(issue_ref: str) -> None:
+    with pytest.raises(ValueError):
+        parse_issue_shorthand(issue_ref)
 
 
 def test_github_issue_client_fetches_snapshot_and_paginated_comments() -> None:

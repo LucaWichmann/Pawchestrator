@@ -100,6 +100,39 @@ def test_issue_start_command_runs_pipeline(tmp_path, monkeypatch) -> None:
     assert "Draft PR: https://github.com/owner/repo/pull/99" in result.output
 
 
+def test_checkbox_check_command_uses_gh_token_and_settings(tmp_path, monkeypatch) -> None:
+    settings = Settings(app_dir=tmp_path)
+    settings.checkboxes.headings = ["Done When"]
+    calls = {}
+
+    class FakeClient:
+        def __init__(self, token: str) -> None:
+            calls["token"] = token
+
+    async def fake_check_checkbox(client, reference, index, headings):
+        calls["client"] = client
+        calls["reference"] = reference
+        calls["index"] = index
+        calls["headings"] = headings
+        return True
+
+    monkeypatch.setattr(cli, "load_settings", lambda: settings)
+    monkeypatch.setattr(cli, "get_gh_token", lambda: "token")
+    monkeypatch.setattr(cli, "GitHubIssueClient", FakeClient)
+    monkeypatch.setattr(cli, "check_checkbox", fake_check_checkbox)
+
+    result = CliRunner().invoke(cli.app, ["checkbox", "check", "owner/repo/42", "0"])
+
+    assert result.exit_code == 0
+    assert calls["token"] == "token"
+    assert calls["reference"].owner == "owner"
+    assert calls["reference"].repo == "repo"
+    assert calls["reference"].number == 42
+    assert calls["index"] == 0
+    assert calls["headings"] == ["Done When"]
+    assert "Checkbox 0 checked: owner/repo/42" in result.output
+
+
 def test_repo_add_accepts_credentialed_https_remote(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cli, "load_settings", lambda: Settings(app_dir=tmp_path))
 
