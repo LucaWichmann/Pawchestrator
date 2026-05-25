@@ -34,6 +34,12 @@ Local agent orchestration triggered from GitHub issues, right from inside your b
 
 **CheckboxHeadings** — The configured list of markdown heading texts under which `- [ ]` items are treated as CheckboxCriteria. Case-insensitive. Defaults: `Acceptance Criteria`, `AC`, `Definition of Done`, `DoD`, `Checklist`, `Requirements`, `Tasks`. Configurable via `[checkboxes] headings = [...]` in `config.toml`.
 
+**Epic** — Any GitHub issue that has sub-issues (detected via `GET /repos/{owner}/{repo}/issues/{number}/sub_issues`). No GitHub Projects or issue-type classification required. Epics are never run through the pipeline directly — all work is in their sub-issues. Pawchestrator detects epics pre-pipeline and fans out to an EpicRun.
+
+**EpicRun** — An orchestrated sequence of pipeline Runs, one per sub-issue of an Epic, executed sequentially. Identified by a `group_id` (the epic's own run ID). All child Runs share this `group_id` in `workflow_runs`. Stops on first child failure by default (`epic_fail_fast = false` to continue). No resume across separate EpicRuns — re-triggering creates a new EpicRun.
+
+**SubIssue** — A GitHub issue linked as a direct child of another issue via GitHub's sub-issues feature. Pawchestrator resolves one level of sub-issues only; sub-issues of sub-issues are not expanded.
+
 ---
 
 ## MVP 0 pipeline (hardcoded, no YAML engine)
