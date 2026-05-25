@@ -208,6 +208,13 @@ lint  = ""
 
 Verify runs build, then test. Lint/format if configured. ShellRunner captures exit codes and stdout/stderr into VerificationReport.
 
+**Non-code skip:** After implement, `run_pipeline` diffs the worktree branch against the base branch (`git diff --name-only <base>...HEAD`). If every changed file matches a configured non-code glob pattern, verification is skipped — a stub `VerificationReport` with `status = "skipped"` and `skip_reason` (listing the changed files) is written so the PR stage can proceed unchanged. If the diff command fails for any reason, verification runs anyway (fail-safe). Controlled by two `[pipeline]` config keys:
+
+- `verify_non_code_changes` (bool, default `false`) — set `true` to run verification even when only non-code files changed
+- `non_code_patterns` (list of globs, default `["*.md", "*.txt", "docs/**", "adr/**"]`) — files matching any pattern are considered non-code
+
+When skipped, `workflow_stages` records a `skipped` status row for the verify stage (not absent, not `complete` — auditable).
+
 ---
 
 ## GitHub auth
