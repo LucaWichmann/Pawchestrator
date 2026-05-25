@@ -1194,6 +1194,53 @@ async def get_latest_run_by_issue(
     return run
 
 
+async def get_latest_epic_run_by_issue(
+    settings: Settings,
+    owner: str,
+    repo: str,
+    issue_number: int,
+) -> dict[str, object] | None:
+    await init_db(settings)
+    async with aiosqlite.connect(settings.database_path) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT id, group_id
+            FROM workflow_runs
+            WHERE owner = ?
+              AND repo = ?
+              AND issue_number = ?
+              AND workflow_type = 'epic'
+            ORDER BY updated_at DESC, created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (owner, repo, issue_number),
+        )
+        row = await cursor.fetchone()
+
+    if row is None or row["group_id"] is None:
+        return None
+
+    group_id = str(row["group_id"])
+    sub_runs = []
+    for grouped_run in await get_runs_by_group_id(settings, group_id):
+        if grouped_run.get("workflow_type") != "pipeline":
+            continue
+        run = await get_run_state(settings, str(grouped_run["id"]))
+        if run is None:
+            continue
+        run["warnings"] = await get_run_warnings(settings, str(run["id"]))
+        run["run_id"] = run.pop("id")
+        run.pop("artifacts", None)
+        sub_runs.append(run)
+
+    return {
+        "group_id": group_id,
+        "epic_confirm": settings.pipeline.epic_confirm,
+        "sub_runs": sub_runs,
+    }
+
+
 async def is_repo_registered(settings: Settings, *, owner: str, repo: str) -> bool:
     return await lookup_repo_path(settings, owner=owner, repo=repo) is not None
 

@@ -15,6 +15,7 @@ from pawchestrator import __version__
 from pawchestrator.config import LOCAL_HOST, Settings, load_settings
 from pawchestrator.db import (
     fail_stale_runs_on_startup,
+    get_latest_epic_run_by_issue,
     get_latest_run_by_issue,
     get_run_state,
     init_db,
@@ -141,7 +142,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/issue/{owner}/{repo}/{number}/status")
     async def issue_status(owner: str, repo: str, number: int) -> dict[str, object]:
-        repo_registered, runners, pipeline, grill = await asyncio.gather(
+        repo_registered, runners, pipeline, grill, epic = await asyncio.gather(
             is_repo_registered(runtime_settings, owner=owner, repo=repo),
             get_runner_health(runtime_settings),
             get_latest_run_by_issue(
@@ -158,13 +159,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 number,
                 "grill",
             ),
+            get_latest_epic_run_by_issue(runtime_settings, owner, repo, number),
         )
         return {
             "backend_connected": True,
             "repo_registered": repo_registered,
             "runners": runners,
-            "pipeline": pipeline,
+            "pipeline": None if epic is not None else pipeline,
             "grill": grill,
+            "epic": epic,
             "epic_confirm": runtime_settings.pipeline.epic_confirm,
         }
 
