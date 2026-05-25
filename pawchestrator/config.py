@@ -6,7 +6,7 @@ import tomllib
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import Field
+from pydantic import Field, StrictBool
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LOCAL_HOST = "127.0.0.1"
@@ -142,6 +142,10 @@ class PipelineSettings(BaseSettings):
     verify_repair_attempts: int = Field(default=1, ge=0)
     epic_fail_fast: bool = True
     epic_confirm: bool = False
+    verify_non_code_changes: StrictBool = False
+    non_code_patterns: list[str] = Field(
+        default_factory=lambda: ["*.md", "*.txt", "docs/**", "adr/**"]
+    )
     epic_branch_mode: Literal["epic", "epic-with-sub-issues"] = "epic"
 
 
