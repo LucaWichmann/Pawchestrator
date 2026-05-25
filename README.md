@@ -163,6 +163,7 @@ reasoning_effort = "low"
 sandbox = "workspace-write"
 approval_policy = "never"
 bypass_sandbox = false
+previous_response_not_found_attempts = 3
 
 [codegraph]
 enabled = true
@@ -176,6 +177,7 @@ Notes:
 - `debug = true` prints runner argv plus captured stdout/stderr.
 - Per-stage overrides live under `[stages.<stage>.claude]` and `[stages.<stage>.codex]`.
 - `execution = "auto"` on Codex tries native first and may fall back to WSL on known Windows sandbox failures.
+- `previous_response_not_found_attempts` caps Codex recovery attempts, including the original attempt.
 - Pawchestrator tries to preserve local CodeGraph databases even when `.codegraph/` is ignored by git. Before implementation it seeds the issue worktree from the source repo index with a SQLite-safe copy; it syncs back only when git proves the run branch has already merged into `main`.
 
 ### Local state
@@ -240,4 +242,23 @@ wsl --exec sh -lc "npm install -g @openai/codex@latest && codex --version"
 ```
 
 Use `bypass_sandbox = true` only as an intentional last resort for trusted repos.
+
+### Codex `previous_response_not_found`
+
+Codex can sometimes fail with `previous_response_not_found`, especially through wrappers such as `codex-lb`. This is usually transient: rerunning the same prompt, or resuming the latest Codex exec session and sending the same prompt again, often succeeds.
+
+Pawchestrator handles this inside `CodexRunner`. When Codex exits nonzero and reports both `previous_response_not_found` and `previous_response_id`, Pawchestrator retries with:
+
+```powershell
+codex exec resume --last -
+```
+
+The original prompt is sent again through stdin. The default cap is 3 total attempts, including the first failing attempt. Configure it with:
+
+```toml
+[runners.codex]
+previous_response_not_found_attempts = 3
+```
+
+This retry is local to the Codex runner. Pawchestrator does not restart the whole workflow or paste the full workflow context into Codex again. Retry and exhaustion notes are appended to the runner log.
 

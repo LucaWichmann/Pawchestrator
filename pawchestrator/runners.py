@@ -267,8 +267,10 @@ class CodexRunner(Runner):
             config=config,
             bypass=config.bypass_sandbox,
         )
-        stdout, stderr, exit_code = await _run_process(
+        resume_cmd = _codex_resume_command(codex_path)
+        stdout, stderr, exit_code = await _run_codex_process_with_recovery(
             cmd,
+            resume_cmd=resume_cmd,
             cwd=task.cwd,
             stdin_text=task.prompt,
             debug=self.debug,
@@ -276,6 +278,7 @@ class CodexRunner(Runner):
             task=task,
             prompt_index=_prompt_index(cmd, "-"),
             prompt_stdin_chars=len(task.prompt),
+            attempts=config.previous_response_not_found_attempts,
         )
         diff = await _capture_git_diff(task.cwd)
         if (
@@ -360,8 +363,20 @@ class CodexRunner(Runner):
         if prepared is None:
             return None
         wsl_cmd, native_cwd = prepared
-        stdout, stderr, exit_code = await _run_process(
+        resume_cmd = _codex_resume_command(binary)
+        prepared_resume = await _prepare_wsl_command(
+            resume_cmd,
+            cwd=task.cwd,
+            distro=config.wsl_distro,
+            enabled=config.wsl_enabled,
+            linux_cwd=linux_cwd,
+        )
+        if prepared_resume is None:
+            return None
+        wsl_resume_cmd, _ = prepared_resume
+        stdout, stderr, exit_code = await _run_codex_process_with_recovery(
             wsl_cmd,
+            resume_cmd=wsl_resume_cmd,
             cwd=native_cwd,
             stdin_text=task.prompt,
             debug=self.debug,
@@ -369,6 +384,7 @@ class CodexRunner(Runner):
             task=task,
             prompt_index=_prompt_index(wsl_cmd, "-"),
             prompt_stdin_chars=len(task.prompt),
+            attempts=config.previous_response_not_found_attempts,
         )
         await _write_runner_log(task, stdout=stdout, stderr=stderr)
         diff = await _capture_git_diff(task.cwd)
@@ -664,6 +680,86 @@ def _codex_command(
         ]
     )
     return cmd
+
+
+def _codex_resume_command(codex_path: str) -> list[str]:
+    return [
+        codex_path,
+        "exec",
+        "resume",
+        "--last",
+        "-",
+    ]
+
+
+async def _run_codex_process_with_recovery(
+    cmd: list[str],
+    *,
+    resume_cmd: list[str],
+    cwd: Path,
+    stdin_text: str,
+    debug: bool,
+    runner_id: str,
+    task: RunnerTask,
+    prompt_index: int | None,
+    prompt_stdin_chars: int,
+    attempts: int,
+) -> tuple[str, str, int]:
+    notes: list[str] = []
+    stdout = ""
+    stderr = ""
+    exit_code = 0
+    for attempt in range(1, attempts + 1):
+        active_cmd = cmd if attempt == 1 else resume_cmd
+        active_prompt_index = (
+            _prompt_index(active_cmd, "-") if prompt_index is not None else None
+        )
+        stdout, stderr, exit_code = await _run_process(
+            active_cmd,
+            cwd=cwd,
+            stdin_text=stdin_text,
+            debug=debug,
+            runner_id=runner_id,
+            task=task,
+            prompt_index=active_prompt_index,
+            prompt_stdin_chars=prompt_stdin_chars,
+        )
+        if not _looks_like_previous_response_not_found(stdout, stderr, exit_code):
+            return stdout, _append_codex_retry_notes(stderr, notes), exit_code
+        if attempt == attempts:
+            notes.append(
+                "pawchestrator: exhausted Codex previous_response_not_found "
+                f"recovery after {attempts} total attempts."
+            )
+            return stdout, _append_codex_retry_notes(stderr, notes), exit_code
+        notes.append(
+            "pawchestrator: Codex previous_response_not_found on attempt "
+            f"{attempt}/{attempts}; retrying with `codex exec resume --last -`."
+        )
+    return stdout, _append_codex_retry_notes(stderr, notes), exit_code
+
+
+def _append_codex_retry_notes(stderr: str, notes: list[str]) -> str:
+    if not notes:
+        return stderr
+    note_text = "\n".join(notes)
+    if stderr.strip():
+        return f"{stderr.rstrip()}\n{note_text}\n"
+    return f"{note_text}\n"
+
+
+def _looks_like_previous_response_not_found(
+    stdout: str,
+    stderr: str,
+    exit_code: int,
+) -> bool:
+    if exit_code == 0:
+        return False
+    combined = f"{stdout}\n{stderr}"
+    return (
+        "previous_response_not_found" in combined
+        and "previous_response_id" in combined
+    )
 
 
 async def _prepare_wsl_command(

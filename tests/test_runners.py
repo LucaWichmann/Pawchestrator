@@ -23,6 +23,19 @@ from pawchestrator.runners import (
 )
 
 
+PREVIOUS_RESPONSE_NOT_FOUND_ERROR = b"""ERROR: {
+  "type": "error",
+  "error": {
+    "type": "invalid_request_error",
+    "code": "previous_response_not_found",
+    "message": "Previous response with id 'resp_123' not found.",
+    "param": "previous_response_id"
+  },
+  "status": 400
+}
+"""
+
+
 def test_runner_registry_contains_both_agent_runners() -> None:
     assert set(RUNNERS) == {"claude", "codex"}
     assert isinstance(RUNNERS["claude"], ClaudeRunner)
@@ -635,6 +648,175 @@ def test_codex_runner_invokes_expected_command_logs_and_captures_diff(
     ) == "codex stdout\ncodex stderr\n"
 
 
+def test_codex_runner_retries_previous_response_not_found_with_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    codex_path = "C:\\bin\\codex.CMD"
+    calls: list[list[str]] = []
+    stdins: list[bytes | None] = []
+
+    class FakeProcess:
+        def __init__(self, returncode: int, stdout: bytes, stderr: bytes) -> None:
+            self.returncode = returncode
+            self._stdout = stdout
+            self._stderr = stderr
+
+        async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
+            stdins.append(input)
+            return self._stdout, self._stderr
+
+    async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
+        calls.append(list(cmd))
+        if cmd[:3] == ("git", "diff", "HEAD"):
+            return FakeProcess(0, b"diff --git a/file.py b/file.py\n", b"")
+        if "resume" in cmd:
+            return FakeProcess(0, b"codex recovered\n", b"recovered stderr\n")
+        return FakeProcess(1, b"", PREVIOUS_RESPONSE_NOT_FOUND_ERROR)
+
+    monkeypatch.setattr(
+        "pawchestrator.runners.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr(
+        "pawchestrator.runners.shutil.which",
+        lambda name: codex_path if name == "codex" else None,
+    )
+
+    task = RunnerTask(
+        prompt="implement issue",
+        cwd=tmp_path,
+        run_id="run-retry",
+        stage_name="implement",
+    )
+
+    result = asyncio.run(CodexRunner().run_task(task))
+
+    assert calls[0][0] == codex_path
+    assert calls[1] == [codex_path, "exec", "resume", "--last", "-"]
+    assert calls[2] == ["git", "diff", "HEAD"]
+    assert stdins[:2] == [b"implement issue", b"implement issue"]
+    assert result.exit_code == 0
+    assert result.stdout == "codex recovered\n"
+    assert "previous_response_not_found on attempt 1/3" in result.stderr
+    log_text = (tmp_path / "runs" / "run-retry" / "stdout" / "implement.log").read_text(
+        encoding="utf-8"
+    )
+    assert log_text.endswith("retrying with `codex exec resume --last -`.\n")
+
+
+def test_codex_runner_exhausts_previous_response_not_found_retries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    codex_path = "C:\\bin\\codex.CMD"
+    calls: list[list[str]] = []
+
+    class FakeProcess:
+        def __init__(self, returncode: int, stdout: bytes, stderr: bytes) -> None:
+            self.returncode = returncode
+            self._stdout = stdout
+            self._stderr = stderr
+
+        async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
+            return self._stdout, self._stderr
+
+    async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
+        calls.append(list(cmd))
+        if cmd[:3] == ("git", "diff", "HEAD"):
+            return FakeProcess(0, b"", b"")
+        return FakeProcess(1, b"", PREVIOUS_RESPONSE_NOT_FOUND_ERROR)
+
+    monkeypatch.setattr(
+        "pawchestrator.runners.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr(
+        "pawchestrator.runners.shutil.which",
+        lambda name: codex_path if name == "codex" else None,
+    )
+
+    task = RunnerTask(
+        prompt="implement issue",
+        cwd=tmp_path,
+        run_id="run-retry-exhausted",
+        stage_name="implement",
+    )
+
+    result = asyncio.run(CodexRunner().run_task(task))
+
+    assert calls[:3] == [
+        [
+            codex_path,
+            "exec",
+            "-C",
+            str(tmp_path),
+            "-s",
+            "workspace-write",
+            "--model",
+            "gpt-5.5",
+            "-c",
+            'model_reasoning_effort="low"',
+            "-c",
+            'approval_policy="never"',
+            "-",
+        ],
+        [codex_path, "exec", "resume", "--last", "-"],
+        [codex_path, "exec", "resume", "--last", "-"],
+    ]
+    assert calls[3] == ["git", "diff", "HEAD"]
+    assert result.exit_code == 1
+    assert "exhausted Codex previous_response_not_found recovery" in result.stderr
+
+
+def test_codex_runner_does_not_retry_other_invalid_request_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    codex_path = "C:\\bin\\codex.CMD"
+    calls: list[list[str]] = []
+
+    class FakeProcess:
+        def __init__(self, returncode: int, stdout: bytes, stderr: bytes) -> None:
+            self.returncode = returncode
+            self._stdout = stdout
+            self._stderr = stderr
+
+        async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
+            return self._stdout, self._stderr
+
+    async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
+        calls.append(list(cmd))
+        if cmd[:3] == ("git", "diff", "HEAD"):
+            return FakeProcess(0, b"", b"")
+        return FakeProcess(
+            1,
+            b"",
+            b'{"error":{"code":"invalid_request_error","param":"model"}}',
+        )
+
+    monkeypatch.setattr(
+        "pawchestrator.runners.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr(
+        "pawchestrator.runners.shutil.which",
+        lambda name: codex_path if name == "codex" else None,
+    )
+
+    task = RunnerTask(
+        prompt="implement issue",
+        cwd=tmp_path,
+        run_id="run-no-retry",
+        stage_name="implement",
+    )
+
+    result = asyncio.run(CodexRunner().run_task(task))
+
+    assert len(calls) == 2
+    assert calls[0][0] == codex_path
+    assert calls[1] == ["git", "diff", "HEAD"]
+    assert result.exit_code == 1
+    assert "previous_response_not_found" not in result.stderr
+
+
 def test_codex_runner_debug_prints_command_and_output(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -787,6 +969,79 @@ def test_codex_runner_auto_retries_wsl_for_windows_sandbox_error(
     assert all("--dangerously-bypass-approvals-and-sandbox" not in call for call in calls)
     assert result.exit_code == 0
     assert result.stdout == "wsl stdout"
+
+
+def test_codex_runner_wsl_retries_previous_response_not_found_with_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wsl_path = "C:\\Windows\\System32\\wsl.exe"
+    calls: list[list[str]] = []
+    stdins: list[bytes | None] = []
+
+    class FakeProcess:
+        def __init__(self, returncode: int, stdout: bytes, stderr: bytes) -> None:
+            self.returncode = returncode
+            self._stdout = stdout
+            self._stderr = stderr
+
+        async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
+            stdins.append(input)
+            return self._stdout, self._stderr
+
+    async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
+        calls.append(list(cmd))
+        if cmd[:3] == ("git", "diff", "HEAD"):
+            return FakeProcess(0, b"diff --git a/file.py b/file.py\n", b"")
+        if "wslpath" in cmd:
+            return FakeProcess(0, b"/mnt/c/repo\n", b"")
+        if cmd[0] == wsl_path and "sh" in cmd:
+            return FakeProcess(0, b"/usr/local/bin/codex\ncodex-cli 0.133.0\n", b"")
+        if "resume" in cmd:
+            return FakeProcess(0, b"wsl recovered\n", b"")
+        if cmd[0] == wsl_path:
+            return FakeProcess(1, b"", PREVIOUS_RESPONSE_NOT_FOUND_ERROR)
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(
+        "pawchestrator.runners.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr("pawchestrator.runners.sys.platform", "win32")
+    monkeypatch.setattr(
+        "pawchestrator.runners.shutil.which",
+        lambda name: wsl_path if name in {"wsl.exe", "wsl"} else None,
+    )
+
+    task = RunnerTask(
+        prompt="implement issue",
+        cwd=tmp_path,
+        run_id="run-wsl-retry",
+        stage_name="implement",
+    )
+
+    result = asyncio.run(
+        CodexRunner(CodexRunnerSettings(execution="wsl")).run_task(task)
+    )
+
+    assert calls[0] == [wsl_path, "--exec", "wslpath", "-a", str(tmp_path)]
+    assert calls[1][:4] == [wsl_path, "--exec", "sh", "-lc"]
+    assert calls[2][0:5] == [wsl_path, "--cd", "/mnt/c/repo", "--exec", "codex"]
+    assert calls[3] == [
+        wsl_path,
+        "--cd",
+        "/mnt/c/repo",
+        "--exec",
+        "codex",
+        "exec",
+        "resume",
+        "--last",
+        "-",
+    ]
+    assert calls[4] == ["git", "diff", "HEAD"]
+    assert stdins[2:4] == [b"implement issue", b"implement issue"]
+    assert result.exit_code == 0
+    assert result.stdout == "wsl recovered\n"
+    assert "previous_response_not_found on attempt 1/3" in result.stderr
 
 
 def test_codex_runner_auto_does_not_bypass_when_wsl_unavailable(

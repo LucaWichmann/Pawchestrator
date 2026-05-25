@@ -66,6 +66,7 @@ class CodexRunnerSettings(BaseSettings):
     )
     approval_policy: Literal["untrusted", "on-failure", "on-request", "never"] = "never"
     bypass_sandbox: bool = False
+    previous_response_not_found_attempts: int = Field(default=3, ge=1)
 
 
 class ClaudeStageSettings(BaseSettings):

@@ -28,6 +28,7 @@ def test_runner_settings_defaults_match_low_token_profile() -> None:
     assert settings.runners.codex.sandbox == "workspace-write"
     assert settings.runners.codex.approval_policy == "never"
     assert settings.runners.codex.bypass_sandbox is False
+    assert settings.runners.codex.previous_response_not_found_attempts == 3
     assert settings.codegraph.enabled is True
     assert settings.codegraph.directory == ".codegraph"
     assert settings.codegraph.sync_policy == "safe-lazy"
@@ -77,6 +78,7 @@ reasoning_effort = "medium"
 sandbox = "read-only"
 approval_policy = "on-request"
 bypass_sandbox = true
+previous_response_not_found_attempts = 5
 
 [codegraph]
 enabled = false
@@ -128,6 +130,7 @@ approval_policy = "never"
     assert settings.runners.codex.sandbox == "read-only"
     assert settings.runners.codex.approval_policy == "on-request"
     assert settings.runners.codex.bypass_sandbox is True
+    assert settings.runners.codex.previous_response_not_found_attempts == 5
     assert settings.codegraph.enabled is False
     assert settings.codegraph.directory == ".custom-codegraph"
     assert settings.codegraph.sync_policy == "safe-lazy"
