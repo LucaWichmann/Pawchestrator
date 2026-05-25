@@ -12,6 +12,8 @@ Local agent orchestration triggered from GitHub issues, right from inside your b
 
 **Runner** — An adapter that invokes an external agent or tool and captures its output. Runners are isolated from each other and expose a common interface.
 
+**UsageLimitFallback** — An optional per-stage policy that reruns a failed Stage with another configured Runner only when the primary Runner failed because its usage/session limit is exhausted. It preserves the Stage boundary and artifact contract: the fallback Runner receives the same Stage prompt and must produce the same Stage artifact type.
+
 **Artifact** — A typed JSON or text file produced by a Stage. Artifacts are stored on disk and passed as input to subsequent stages. Agents hand off artifacts, not prose.
 
 **Worktree** — An isolated `git worktree` created per issue. One issue = one branch = one worktree. Located at `~/.pawchestrator/worktrees/{owner}/{repo}/issue-{number}/`.
@@ -26,7 +28,9 @@ Local agent orchestration triggered from GitHub issues, right from inside your b
 
 **RunWarning** — A non-fatal diagnostic event emitted by a Stage during a Run. Stored in the `run_warnings` table (1:n to `workflow_runs`). Surfaced in the GitHub issue comment alongside run state. Distinct from Stage errors: a warning does not fail the Stage; an error does.
 
-**Grill** — A standalone read-only analysis action triggered from the GitHub issue page. Explores the local codebase, infers acceptance criteria from issue context + code, appends a `## Pawchestrator Suggested Criteria` section to the issue body, and posts a questions comment if there are questions it cannot answer from codebase context. Does not create a worktree, does not run Codex, does not modify local files. Produces a `GrillReport` artifact. Reuses the run infrastructure with `workflow_type = "grill"` to keep state tracking consistent without coupling to pipeline logic.
+Usage-limit fallback emits a `RunWarning` before invoking the fallback Runner so browser overlays and GitHub comments can show that Pawchestrator is continuing with another agent while the Stage is still running.
+
+**Grill** — A standalone read-only analysis action triggered from the GitHub issue page. Explores the local codebase, infers acceptance criteria from issue context + code, appends a `## Pawchestrator Suggested Criteria` section to the issue body, and posts a questions comment if there are questions it cannot answer from codebase context. Does not create a worktree and does not modify local files. Produces a `GrillReport` artifact. Reuses the run infrastructure with `workflow_type = "grill"` to keep state tracking consistent without coupling to pipeline logic.
 
 Grill is multi-round: if questions are posted, the run transitions to `grill_waiting` and pauses. The user replies to the questions comment on GitHub; the Tampermonkey panel detects the reply (via DOM `MutationObserver` on `#issuecomment-{comment_id}`) and re-triggers `POST /issue/grill`. The endpoint auto-detects the `grill_waiting` run and resumes it: fetches reply comments (filtered by `in_reply_to_id`), re-runs the grill agent with previous questions + reply bodies as context, posts a new questions comment if unresolved questions remain (loop), or transitions to `grill_complete` if satisfied. One `GrillReport` artifact per run, overwritten each round with the latest state. See ADR 0008.
 
@@ -91,9 +95,19 @@ runner = "codex"    # override default
 
 Valid values: `"claude"`, `"codex"`. Validated at config load; unknown values are rejected. Omitting `runner` uses the stage default.
 
+Usage-limit fallback is configured per stage with `usage_limit_fallback_runner`. Unset means the stage-aware default: known Claude-backed stages with known permission intent (`scout`, `plan`, `grill`, `criteria_dedupe`) fall back to Codex when Claude reports usage/session exhaustion. `"codex"` makes that fallback explicit. `"none"` disables fallback for that Stage. Fallback only applies when the primary runner for that Stage is Claude; if the Stage primary runner is already Codex, the default fallback is inert. Future Claude stages should opt in explicitly once their permission intent is defined. Fallback does not change the Stage artifact contract: Scout must still emit `ScoutReport`, Plan must still emit `ImplementationPlan`, Grill must still emit `GrillReport`, and CriteriaDedupe must still emit dedupe output, regardless of runner. If Implement is explicitly configured with Claude primary and Codex usage-limit fallback, Codex uses the normal write-capable implement permissions because Implement is write-capable by intent.
+
+Fallback attempts remain within the same `workflow_stages` row as the original Stage attempt. Attempt history is represented by the Stage log and the emitted `RunWarning`, not by extra Stage rows.
+
+Usage-limit detection belongs to the runner layer because Claude CLI error shape is runner-specific. Stage orchestration asks the runner layer whether a `RunnerResult` represents usage exhaustion, then decides whether the configured Stage fallback applies. Runner health checks still run first to catch unavailable binaries or broken environments. The primary Claude stage attempt is the source of truth for usage exhaustion: Pawchestrator should try running the Stage and inspect Claude's output after health succeeds.
+
+If fallback also fails, the Stage error leads with the fallback failure and includes the original Claude usage-limit message for context.
+
+Claude-backed stages share usage-limit fallback orchestration through a dedicated stage fallback helper module, separate from runner implementations. Runner code classifies runner-specific exhaustion output; the helper owns fallback runner resolution, warning emission, conservative permission mapping, and attempt-log composition.
+
 **Runner capability model:** Runner config defines maximum capabilities (ceiling). Stage constraints narrow within that ceiling — e.g. grill forces Claude to read-only tools regardless of runner config. If a stage requires a tool not in the runner's `allowed_tools`, Pawchestrator emits a warning at `doctor` and at pipeline start (non-fatal).
 
-**Codex limitation:** Codex CLI has no tool allowlist equivalent (`--allowedTools`). Stage read-only enforcement applies to ClaudeRunner only. Assigning codex to grill removes the read-only guarantee — documented, not warned at runtime.
+**Codex limitation:** Codex CLI has no tool allowlist equivalent (`--allowedTools`). Stage read-only enforcement applies to ClaudeRunner tool allowlists and to Codex sandbox selection where possible. Assigning codex as a primary runner to a read-only stage cannot mirror Claude's per-tool allowlist exactly. Usage-limit fallback must still preserve the stage's permission intent: when Claude was constrained to read-only tools for Scout, Plan, Grill, or CriteriaDedupe, Codex fallback runs with a read-only sandbox for that same Stage. This fallback-specific permission mapping is conservative and is not widened by generic `[stages.X.codex]` primary-runner overrides.
 
 ---
 
@@ -166,7 +180,7 @@ artifacts       (id, run_id, artifact_type, file_path, created_at)
 run_warnings    (id, run_id, stage_name, code, message, created_at)
 ```
 
-`workflow_type` distinguishes run kinds: `"pipeline"` (default, snapshot→PR) and `"grill"` (standalone analysis, no worktree). Pipeline code must assert `workflow_type != "grill"` before creating worktrees or invoking Codex.
+`workflow_type` distinguishes run kinds: `"pipeline"` (default, snapshot→PR) and `"grill"` (standalone analysis, no worktree). Pipeline code must assert `workflow_type != "grill"` before creating worktrees or running pipeline-only stages.
 
 Grill run statuses: `pending` → `grill_running` → `grill_waiting` (questions posted, paused for reply) → `grill_running` (resumed) → `grill_complete` | `grill_failed`. `grill_waiting` is excluded from `fail_stale_runs_on_startup` — it survives server restarts. Terminal statuses: `grill_complete`, `grill_failed` (plus pipeline terminals).
 
