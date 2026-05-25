@@ -811,6 +811,70 @@ def test_run_implement_fails_when_codex_changes_no_files(
     assert "without changing files" in stage[1]
 
 
+def test_run_implement_dirty_start_fails_when_runner_adds_no_new_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    run_id = "run-123"
+    asyncio.run(_insert_plan_run(settings, run_id))
+    _write_snapshot(settings, run_id)
+    _write_plan(settings, run_id)
+    worktree_path = tmp_path / "worktree"
+    dirty_diff = "diff --git a/old.py b/old.py\n"
+    runner = FakeRunner(
+        result=RunnerResult(
+            exit_code=0,
+            stdout="no new changes\n",
+            stderr="",
+            artifact=None,
+            diff=dirty_diff,
+        )
+    )
+
+    async def fake_ensure_issue_worktree(
+        settings: Settings,
+        *,
+        snapshot: dict[str, Any],
+        source_repo_path: Path,
+        allow_dirty_existing_worktree: bool = False,
+    ) -> WorktreeInfo:
+        assert allow_dirty_existing_worktree is True
+        return WorktreeInfo(
+            path=worktree_path,
+            branch="paw/epic-42-parent",
+            reused=True,
+        )
+
+    monkeypatch.setattr(
+        "pawchestrator.implement.ensure_issue_worktree",
+        fake_ensure_issue_worktree,
+    )
+    monkeypatch.setattr(
+        "pawchestrator.implement._git_rev_parse_head",
+        lambda cwd: _async_value("base-sha"),
+    )
+    monkeypatch.setattr(
+        "pawchestrator.implement._diff_since",
+        lambda cwd, base_commit: _async_value(dirty_diff),
+    )
+
+    with pytest.raises(RuntimeError, match="without changing files"):
+        asyncio.run(
+            run_implement(
+                run_id,
+                settings,
+                repo_path=tmp_path / "source",
+                runner=runner,
+                allow_dirty_existing_worktree=True,
+            )
+        )
+
+    report_path = tmp_path / "runs" / run_id / "implementation_report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["status"] == "error"
+    assert report["files_changed"] == []
+
+
 def test_run_implement_detects_committed_changes_since_base(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

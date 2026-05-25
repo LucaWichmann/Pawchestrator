@@ -132,6 +132,9 @@ async def run_implement(
             raise RuntimeError(message)
 
         base_commit = await _git_rev_parse_head(worktree_info.path)
+        base_dirty_diff = ""
+        if allow_dirty_existing_worktree:
+            base_dirty_diff = await _diff_since(worktree_info.path, base_commit)
         result = await active_runner.run_task(
             RunnerTask(
                 prompt=build_implement_prompt(
@@ -152,8 +155,16 @@ async def run_implement(
             _codegraph_stderr(codegraph_messages, result.stderr),
         )
 
+        end_commit = await _git_rev_parse_head(worktree_info.path)
         diff = await _diff_since(worktree_info.path, base_commit)
-        if not diff.strip():
+        no_dirty_delta = (
+            allow_dirty_existing_worktree
+            and end_commit == base_commit
+            and diff == base_dirty_diff
+        )
+        if no_dirty_delta:
+            diff = ""
+        if not diff.strip() and not no_dirty_delta:
             diff = result.diff
         files_changed = files_changed_from_diff(diff)
         no_changes_error = _no_changes_error(

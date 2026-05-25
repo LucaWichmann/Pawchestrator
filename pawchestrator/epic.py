@@ -122,6 +122,7 @@ async def run_epic(
                         else epic_worktree.branch
                     ),
                     pr_base_branch=epic_worktree.branch,
+                    allow_dirty_existing_worktree=mode == "epic",
                 )
             except Exception:
                 if settings.pipeline.epic_fail_fast:

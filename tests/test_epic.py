@@ -57,6 +57,7 @@ def test_run_epic_mode_runs_sub_issues_on_shared_branch_then_final_pr(
     assert {call["create_pr"] for call in calls} == {False}
     assert {call["worktree_branch"] for call in calls} == {"paw/epic-42-big-epic"}
     assert {call["base_branch"] for call in calls} == {"main"}
+    assert {call["allow_dirty_existing_worktree"] for call in calls} == {True}
     assert result.group_id == "group-123"
     assert [sub_run.pr_url for sub_run in result.sub_runs] == ["", ""]
     assert pr_calls == [
@@ -123,6 +124,7 @@ def test_run_epic_with_sub_issues_creates_draft_epic_pr_then_child_prs(
             "worktree_branch": None,
             "base_branch": "paw/epic-42-big-epic",
             "pr_base_branch": "paw/epic-42-big-epic",
+            "allow_dirty_existing_worktree": False,
         }
     ]
     assert result.sub_runs[0].pr_url == "https://github.com/owner/repo/pull/43"
@@ -299,6 +301,7 @@ def _patch_pipeline(
         worktree_path: Path | None = None,
         base_branch: str = "main",
         pr_base_branch: str = "main",
+        allow_dirty_existing_worktree: bool = False,
     ):
         calls.append(
             {
@@ -308,6 +311,7 @@ def _patch_pipeline(
                 "worktree_branch": worktree_branch,
                 "base_branch": base_branch,
                 "pr_base_branch": pr_base_branch,
+                "allow_dirty_existing_worktree": allow_dirty_existing_worktree,
             }
         )
         issue_number = int(issue_url.rsplit("/", 1)[1])

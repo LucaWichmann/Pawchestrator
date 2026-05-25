@@ -154,6 +154,31 @@ def test_run_pipeline_passes_allow_empty_commit_to_pr_stage(
     assert allow_empty_commit_values == [True]
 
 
+def test_run_pipeline_passes_allow_dirty_to_initial_implement_stage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    calls: list[str] = []
+    allow_dirty_existing_worktree_values: list[bool] = []
+    _patch_successful_stages(
+        monkeypatch,
+        calls,
+        allow_dirty_existing_worktree_values=allow_dirty_existing_worktree_values,
+    )
+
+    asyncio.run(
+        run_pipeline(
+            "https://github.com/owner/repo/issues/42",
+            settings,
+            repo_path=tmp_path,
+            allow_dirty_existing_worktree=True,
+        )
+    )
+
+    assert allow_dirty_existing_worktree_values == [True]
+
+
 def test_run_pipeline_blocks_pr_when_verify_fails_without_repair(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
