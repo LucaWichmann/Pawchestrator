@@ -77,6 +77,7 @@ flowchart TD
 | `pawchestrator run implement <run-id>` | Re-run implementation for an existing run | Uses the run worktree and writes file edits plus a report. |
 | `pawchestrator run verify <run-id>` | Re-run verification for an existing run | Reads repo-local build/test commands and writes a verification report. |
 | `pawchestrator run pr <run-id>` | Create the draft PR for a verified run | Pushes the worktree branch and opens or reuses the draft PR. |
+| `pawchestrator checkbox check <owner>/<repo>/<number> <index>` | Check an issue-body checkbox | Manual checks update GitHub directly. `--run-id` is for Pawchestrator pipeline agents, which record run-scoped marks for later reconciliation. |
 | `pawchestrator repo add <path>` | Register a local clone | Required for browser-triggered runs that do not pass `--repo-path`. |
 | `pawchestrator repo list` | List registered repos | Shows the `owner/repo -> local path` mapping. |
 | `pawchestrator codegraph sync <run-id>` | Sync a merged CodeGraph index | Copies a run worktree index back only after its branch is already in `main`. |
