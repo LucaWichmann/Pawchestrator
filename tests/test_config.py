@@ -37,6 +37,8 @@ def test_runner_settings_defaults_match_low_token_profile() -> None:
     assert settings.pipeline.verify_repair_attempts == 1
     assert settings.pipeline.epic_fail_fast is True
     assert settings.pipeline.epic_confirm is False
+    assert settings.pipeline.verify_non_code_changes is False
+    assert settings.pipeline.non_code_patterns == ["*.md", "*.txt", "docs/**", "adr/**"]
     assert settings.pipeline.epic_branch_mode == "epic"
     assert settings.checkboxes.headings == [
         "Acceptance Criteria",
@@ -96,6 +98,8 @@ assign = false
 verify_repair_attempts = 2
 epic_fail_fast = false
 epic_confirm = true
+verify_non_code_changes = true
+non_code_patterns = ["*.md", "notes/**"]
 epic_branch_mode = "epic-with-sub-issues"
 
 [checkboxes]
@@ -145,6 +149,8 @@ approval_policy = "never"
     assert settings.pipeline.verify_repair_attempts == 2
     assert settings.pipeline.epic_fail_fast is False
     assert settings.pipeline.epic_confirm is True
+    assert settings.pipeline.verify_non_code_changes is True
+    assert settings.pipeline.non_code_patterns == ["*.md", "notes/**"]
     assert settings.pipeline.epic_branch_mode == "epic-with-sub-issues"
     assert settings.checkboxes.headings == ["Done When", "Ship List"]
     assert settings.stages["scout"].claude.allowed_tools == ["Read"]
@@ -176,6 +182,30 @@ def test_load_settings_rejects_invalid_runner_effort(tmp_path: Path) -> None:
         """
 [runners.codex]
 reasoning_effort = "max"
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValidationError):
+        load_settings(config_path)
+
+
+@pytest.mark.parametrize(
+    "pipeline_toml",
+    [
+        'verify_non_code_changes = "true"',
+        'non_code_patterns = "*.md"',
+        'non_code_patterns = ["*.md", 42]',
+    ],
+)
+def test_load_settings_rejects_invalid_pipeline_non_code_types(
+    tmp_path: Path, pipeline_toml: str
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f"""
+[pipeline]
+{pipeline_toml}
 """,
         encoding="utf-8",
     )
