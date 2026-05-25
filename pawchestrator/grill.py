@@ -32,6 +32,7 @@ from pawchestrator.runners import (
 )
 
 GRILL_REPORT_SCHEMA = "pawchestrator.grill_report.v1"
+CRITERIA_DEDUPE_SCHEMA = "pawchestrator.criteria_dedupe.v1"
 REQUIRED_TOOLS: list[str] = ["Read", "Glob", "Grep"]
 SUGGESTED_CRITERIA_HEADING = "## Pawchestrator Suggested Criteria"
 LOGGER = logging.getLogger(__name__)
@@ -88,7 +89,14 @@ async def run_grill(
             log_path=log_path,
         )
         client = github_client or GitHubIssueClient(get_gh_token())
-        report = await _publish_report(client, snapshot, report_payload)
+        report = await _publish_report(
+            client,
+            snapshot,
+            report_payload,
+            settings=settings,
+            run_id=active_run_id,
+            repo_path=local_repo_path,
+        )
 
         artifact_path.parent.mkdir(parents=True, exist_ok=True)
         artifact_path.write_text(
@@ -157,6 +165,79 @@ Return minimal valid JSON. No prose outside JSON fields.
 """
 
 
+def build_dedupe_prompt(
+    existing_criteria: list[str],
+    proposed_criteria: list[str],
+) -> str:
+    payload = {
+        "task": (
+            "Return only proposed criteria that are genuinely new. Treat paraphrases "
+            "or same-requirement restatements of existing criteria as duplicates."
+        ),
+        "existing_criteria": existing_criteria,
+        "proposed_criteria": proposed_criteria,
+        "output_schema": {
+            "schema": CRITERIA_DEDUPE_SCHEMA,
+            "unique_suggested_criteria": ["string"],
+        },
+    }
+    return json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+
+
+async def dedupe_criteria(
+    settings: Settings,
+    *,
+    run_id: str,
+    cwd: Path,
+    existing_criteria: list[str],
+    proposed_criteria: list[str],
+    runner: Runner | None = None,
+) -> list[str]:
+    normalized_existing = {_normalize_criterion(item) for item in existing_criteria}
+    normalized_seen = set(normalized_existing)
+    llm_candidates: list[str] = []
+    fallback_unique: list[str] = []
+    for criterion in proposed_criteria:
+        normalized = _normalize_criterion(criterion)
+        if not normalized or normalized in normalized_seen:
+            continue
+        normalized_seen.add(normalized)
+        llm_candidates.append(criterion)
+        fallback_unique.append(criterion)
+
+    if not llm_candidates:
+        return []
+
+    active_runner = runner or resolve_runner(settings, "criteria_dedupe", "claude")
+    healthy, message = await active_runner.check_health()
+    if not healthy:
+        LOGGER.warning(
+            "criteria dedupe runner unavailable; using normalized dedupe: %s",
+            message,
+        )
+        return fallback_unique
+
+    try:
+        result = await active_runner.run_task(
+            RunnerTask(
+                prompt=build_dedupe_prompt(existing_criteria, llm_candidates),
+                cwd=cwd.resolve(),
+                run_id=run_id,
+                stage_name="criteria_dedupe",
+            )
+        )
+        if result.exit_code != 0:
+            detail = result.stderr.strip() or result.stdout.strip() or "runner failed"
+            raise ValueError(detail)
+        return _normalize_dedupe_payload(result.artifact, fallback_unique)
+    except Exception as error:
+        LOGGER.warning(
+            "criteria dedupe runner failed; using normalized dedupe: %s",
+            error,
+        )
+        return fallback_unique
+
+
 def append_suggested_criteria(body: str, suggested_criteria: list[str]) -> tuple[str, bool]:
     if not suggested_criteria:
         return body, False
@@ -223,8 +304,49 @@ def _suggested_criteria_texts(body: str, heading_range: tuple[int, int]) -> set[
     return criteria
 
 
+def _criteria_texts(body: str) -> list[str]:
+    criteria: list[str] = []
+    for line in body.splitlines():
+        if UNCHECKED_CHECKBOX_RE.match(line) or CHECKED_CHECKBOX_RE.match(line):
+            criteria.append(_checkbox_text(line))
+    return criteria
+
+
 def _checkbox_text(line: str) -> str:
     return line.split("]", 1)[1].strip() if "]" in line else line.strip()
+
+
+def _normalize_criterion(criterion: str) -> str:
+    return " ".join(str(criterion).casefold().split())
+
+
+def _normalize_dedupe_payload(
+    artifact: dict[str, Any] | None,
+    fallback_unique: list[str],
+) -> list[str]:
+    if artifact is None:
+        raise ValueError("criteria dedupe runner did not return JSON")
+    value = artifact.get("unique_suggested_criteria")
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ValueError("criteria dedupe runner returned invalid JSON schema")
+
+    allowed = {criterion: None for criterion in fallback_unique}
+    normalized_allowed = {
+        _normalize_criterion(criterion) for criterion in fallback_unique
+    }
+    unique: list[str] = []
+    seen: set[str] = set()
+    for criterion in value:
+        normalized = _normalize_criterion(criterion)
+        if (
+            criterion not in allowed
+            or normalized not in normalized_allowed
+            or normalized in seen
+        ):
+            continue
+        seen.add(normalized)
+        unique.append(criterion)
+    return unique
 
 
 def _append_to_suggested_criteria_section(
@@ -323,6 +445,11 @@ async def _publish_report(
     client: GitHubIssueClient,
     snapshot: dict[str, Any],
     payload: dict[str, Any],
+    *,
+    settings: Settings | None = None,
+    run_id: str | None = None,
+    repo_path: Path | None = None,
+    dedupe_runner: Runner | None = None,
 ) -> GrillReport:
     owner = str(snapshot.get("owner") or "")
     repo = str(snapshot.get("repo") or "")
@@ -330,10 +457,19 @@ async def _publish_report(
     criteria = [str(item) for item in payload["suggested_criteria"]]
     questions = [str(item) for item in payload["unanswerable_questions"]]
 
-    updated_body, body_updated = append_suggested_criteria(
-        str(snapshot.get("body") or ""),
-        criteria,
-    )
+    body = str(snapshot.get("body") or "")
+    existing_criteria = _criteria_texts(body)
+    if settings is not None and run_id is not None and repo_path is not None:
+        criteria = await dedupe_criteria(
+            settings,
+            run_id=run_id,
+            cwd=repo_path,
+            existing_criteria=existing_criteria,
+            proposed_criteria=criteria,
+            runner=dedupe_runner,
+        )
+
+    updated_body, body_updated = append_suggested_criteria(body, criteria)
     if body_updated:
         await client.patch_issue_body(owner, repo, number, updated_body)
 
