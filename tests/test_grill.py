@@ -87,7 +87,29 @@ def test_build_grill_prompt_includes_read_only_instructions() -> None:
     assert "unanswerable_questions" in prompt
 
 
-def test_append_suggested_criteria_is_idempotent() -> None:
+def test_build_grill_prompt_includes_issue_comments() -> None:
+    prompt = build_grill_prompt(
+        {
+            "owner": "owner",
+            "repo": "repo",
+            "number": 42,
+            "title": "Add grill",
+            "body": "Body text",
+            "comments": [
+                {
+                    "author": "octo",
+                    "body": "The answer is pytest.",
+                    "in_reply_to_id": 123,
+                }
+            ],
+        }
+    )
+
+    assert "Issue comments:" in prompt
+    assert "- octo: The answer is pytest." in prompt
+
+
+def test_append_suggested_criteria_appends_new_round_criteria() -> None:
     body, updated = append_suggested_criteria("Original", ["First", "Second"])
 
     assert updated is True
@@ -96,9 +118,35 @@ def test_append_suggested_criteria_is_idempotent() -> None:
 
     second_body, second_updated = append_suggested_criteria(body, ["Third"])
 
-    assert second_body == body
-    assert second_updated is False
-    assert "Third" not in second_body
+    assert second_updated is True
+    assert "- [ ] First" in second_body
+    assert "- [ ] Second" in second_body
+    assert "- [ ] Third" in second_body
+
+
+def test_append_suggested_criteria_skips_exact_duplicates() -> None:
+    body = "Original\n\n## Pawchestrator Suggested Criteria\n\n- [ ] First\n- [x] Second\n"
+
+    updated_body, updated = append_suggested_criteria(body, ["First", "Second"])
+
+    assert updated is False
+    assert updated_body == body
+
+
+def test_append_suggested_criteria_inserts_before_following_section() -> None:
+    body = (
+        "Original\n\n"
+        "## Pawchestrator Suggested Criteria\n\n"
+        "- [ ] Existing\n\n"
+        "## Notes\n\n"
+        "Keep this section after criteria.\n"
+    )
+
+    updated_body, updated = append_suggested_criteria(body, ["New"])
+
+    assert updated is True
+    assert updated_body.index("- [ ] New") < updated_body.index("## Notes")
+    assert "Keep this section after criteria." in updated_body
 
 
 def test_run_grill_updates_body_without_comment_when_questions_empty(tmp_path: Path) -> None:
@@ -163,7 +211,9 @@ def test_run_grill_posts_comment_and_applies_label_for_questions(tmp_path: Path)
         )
     )
 
-    assert fake_client.patched_body is None
+    assert fake_client.patched_body is not None
+    assert "- [ ] Existing" in fake_client.patched_body
+    assert "- [ ] New" in fake_client.patched_body
     assert len(fake_client.comments) == 1
     assert "Which command verifies this?" in fake_client.comments[0]
     assert fake_client.added_labels == ["pawchestrator:needs-info"]

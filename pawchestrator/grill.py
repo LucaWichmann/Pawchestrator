@@ -16,7 +16,10 @@ from pawchestrator.db import (
     start_grill_run,
 )
 from pawchestrator.github import (
+    CHECKED_CHECKBOX_RE,
+    HEADING_RE,
     PAWCHESTRATOR_LABELS,
+    UNCHECKED_CHECKBOX_RE,
     GitHubIssueClient,
     get_gh_token,
 )
@@ -135,6 +138,9 @@ Repository: {snapshot.get("owner", "")}/{snapshot.get("repo", "")}
 Issue body:
 {snapshot.get("body", "")}
 
+Issue comments:
+{_format_prompt_comments(snapshot)}
+
 {mode}
 
 Return a JSON object matching this schema exactly:
@@ -152,14 +158,99 @@ Return minimal valid JSON. No prose outside JSON fields.
 
 
 def append_suggested_criteria(body: str, suggested_criteria: list[str]) -> tuple[str, bool]:
-    if SUGGESTED_CRITERIA_HEADING in body:
-        return body, False
     if not suggested_criteria:
         return body, False
 
-    rendered = "\n".join(f"- [ ] {criterion}" for criterion in suggested_criteria)
-    separator = "\n\n" if body.strip() else ""
-    return f"{body.rstrip()}{separator}{SUGGESTED_CRITERIA_HEADING}\n\n{rendered}\n", True
+    heading_range = _find_suggested_criteria_section(body)
+    if heading_range is None:
+        rendered = "\n".join(f"- [ ] {criterion}" for criterion in suggested_criteria)
+        separator = "\n\n" if body.strip() else ""
+        return f"{body.rstrip()}{separator}{SUGGESTED_CRITERIA_HEADING}\n\n{rendered}\n", True
+
+    existing = _suggested_criteria_texts(body, heading_range)
+    new_criteria = [criterion for criterion in suggested_criteria if criterion not in existing]
+    if not new_criteria:
+        return body, False
+
+    return _append_to_suggested_criteria_section(body, heading_range, new_criteria), True
+
+
+def _format_prompt_comments(snapshot: dict[str, Any]) -> str:
+    comments = snapshot.get("comments")
+    if not isinstance(comments, list) or not comments:
+        return "(none)"
+
+    lines: list[str] = []
+    for comment in comments:
+        if not isinstance(comment, dict):
+            continue
+        author = str(comment.get("author") or "unknown")
+        comment_body = str(comment.get("body") or "").strip()
+        if not comment_body:
+            continue
+        lines.append(f"- {author}: {comment_body}")
+    return "\n".join(lines) if lines else "(none)"
+
+
+def _find_suggested_criteria_section(body: str) -> tuple[int, int] | None:
+    lines = body.splitlines(keepends=True)
+    heading_index: int | None = None
+    for index, line in enumerate(lines):
+        if line.strip() == SUGGESTED_CRITERIA_HEADING:
+            heading_index = index
+            break
+
+    if heading_index is None:
+        return None
+
+    section_end = len(lines)
+    for index in range(heading_index + 1, len(lines)):
+        if HEADING_RE.match(lines[index]):
+            section_end = index
+            break
+
+    return heading_index, section_end
+
+
+def _suggested_criteria_texts(body: str, heading_range: tuple[int, int]) -> set[str]:
+    lines = body.splitlines(keepends=True)
+    _, section_end = heading_range
+    criteria: set[str] = set()
+    for line in lines[heading_range[0] + 1 : section_end]:
+        checkbox_match = UNCHECKED_CHECKBOX_RE.match(line) or CHECKED_CHECKBOX_RE.match(line)
+        if checkbox_match:
+            criteria.add(_checkbox_text(line))
+    return criteria
+
+
+def _checkbox_text(line: str) -> str:
+    return line.split("]", 1)[1].strip() if "]" in line else line.strip()
+
+
+def _append_to_suggested_criteria_section(
+    body: str,
+    heading_range: tuple[int, int],
+    new_criteria: list[str],
+) -> str:
+    lines = body.splitlines(keepends=True)
+    _, section_end = heading_range
+    before = "".join(lines[:section_end]).rstrip()
+    after = "".join(lines[section_end:])
+    rendered = "\n".join(f"- [ ] {criterion}" for criterion in new_criteria)
+    separator = "\n\n" if _section_has_no_criteria(lines, heading_range) else "\n"
+    updated = f"{before}{separator}{rendered}\n"
+    if after:
+        after = after.lstrip("\r\n")
+        updated = f"{updated}\n{after}"
+    return updated
+
+
+def _section_has_no_criteria(lines: list[str], heading_range: tuple[int, int]) -> bool:
+    _, section_end = heading_range
+    return not any(
+        UNCHECKED_CHECKBOX_RE.match(line) or CHECKED_CHECKBOX_RE.match(line)
+        for line in lines[heading_range[0] + 1 : section_end]
+    )
 
 
 def normalize_grill_payload(artifact: dict[str, Any] | None) -> dict[str, Any]:
