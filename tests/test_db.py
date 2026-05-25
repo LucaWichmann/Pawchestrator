@@ -6,9 +6,11 @@ from uuid import UUID
 from pawchestrator.config import Settings
 from pawchestrator.db import (
     TERMINAL_RUN_STATUSES,
+    complete_verify_run,
     create_epic_run,
     create_pipeline_run,
     create_grill_run,
+    fail_verify_run,
     fail_stale_runs_on_startup,
     get_github_comment_id,
     get_latest_grill_run_by_issue,
@@ -18,7 +20,9 @@ from pawchestrator.db import (
     insert_run_warning,
     list_tables,
     set_grill_waiting,
+    skip_verify_run,
     STALE_RUN_ERROR,
+    start_verify_run,
     store_github_comment_id,
     upsert_worktree_record,
 )
@@ -214,6 +218,114 @@ def test_create_epic_run_inserts_parent_without_stages(tmp_path: Path) -> None:
 
     assert run == ("pending", None, "epic-group", "epic")
     assert stages == (0,)
+
+
+def test_skip_verify_run_writes_skipped_status_and_reason(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    asyncio.run(
+        create_pipeline_run(
+            settings,
+            run_id="run-123",
+            owner="owner",
+            repo="repo",
+            issue_number=42,
+        )
+    )
+    stage_id = asyncio.run(start_verify_run(settings, run_id="run-123"))
+
+    asyncio.run(
+        skip_verify_run(
+            settings,
+            run_id="run-123",
+            stage_id=stage_id,
+            artifact_path=tmp_path / "runs" / "run-123" / "verification.json",
+            reason="verification intentionally bypassed",
+        )
+    )
+
+    with sqlite3.connect(tmp_path / "database.sqlite") as db:
+        run = db.execute(
+            """
+            SELECT status, current_stage
+            FROM workflow_runs
+            WHERE id = 'run-123'
+            """
+        ).fetchone()
+        stage = db.execute(
+            """
+            SELECT status, error, completed_at
+            FROM workflow_stages
+            WHERE id = ?
+            """,
+            (stage_id,),
+        ).fetchone()
+        artifact = db.execute(
+            """
+            SELECT artifact_type, file_path
+            FROM artifacts
+            WHERE run_id = 'run-123'
+            """
+        ).fetchone()
+
+    assert run == ("verify_skipped", "verify")
+    assert stage[:2] == ("skipped", "verification intentionally bypassed")
+    assert stage[2].endswith("Z")
+    assert artifact == (
+        "verification_report",
+        str(tmp_path / "runs" / "run-123" / "verification.json"),
+    )
+
+
+def test_verify_complete_and_fail_paths_are_unchanged(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    asyncio.run(
+        create_pipeline_run(
+            settings,
+            run_id="complete-run",
+            owner="owner",
+            repo="repo",
+            issue_number=42,
+        )
+    )
+    asyncio.run(
+        create_pipeline_run(
+            settings,
+            run_id="failed-run",
+            owner="owner",
+            repo="repo",
+            issue_number=43,
+        )
+    )
+    complete_stage_id = asyncio.run(
+        start_verify_run(settings, run_id="complete-run")
+    )
+    failed_stage_id = asyncio.run(start_verify_run(settings, run_id="failed-run"))
+
+    asyncio.run(
+        complete_verify_run(
+            settings,
+            run_id="complete-run",
+            stage_id=complete_stage_id,
+            artifact_path=tmp_path / "runs" / "complete-run" / "verification.json",
+            passed=True,
+        )
+    )
+    asyncio.run(
+        fail_verify_run(
+            settings,
+            run_id="failed-run",
+            stage_id=failed_stage_id,
+            error="verification failed",
+        )
+    )
+
+    complete_run, complete_stages = _fetch_run_and_stages(tmp_path, "complete-run")
+    failed_run, failed_stages = _fetch_run_and_stages(tmp_path, "failed-run")
+
+    assert complete_run == ("verify_complete", "verify", None)
+    assert complete_stages["verify"] == ("complete", None)
+    assert failed_run == ("verify_failed", "verify", None)
+    assert failed_stages["verify"] == ("failed", "verification failed")
 
 
 def test_fail_stale_runs_marks_pending_pipeline_failed(tmp_path: Path) -> None:
