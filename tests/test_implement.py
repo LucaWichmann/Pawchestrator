@@ -140,6 +140,42 @@ def test_build_implement_prompt_compresses_plan_for_prompt_only(tmp_path: Path) 
     assert "notes" in plan["steps"][0]
 
 
+def test_build_implement_prompt_includes_checkbox_criteria(tmp_path: Path) -> None:
+    snapshot = {
+        **_snapshot(),
+        "owner": "octo",
+        "repo": "widgets",
+        "number": 123,
+        "checkboxes": [
+            {"index": 0, "text": "Implement prompt includes checkbox list"},
+            {"index": 3, "text": "Prompt includes correct issue reference"},
+        ],
+    }
+
+    prompt = build_implement_prompt(snapshot, {"steps": []}, tmp_path)
+
+    assert (
+        "Acceptance criteria checkboxes — call "
+        "`pawchestrator checkbox check octo/widgets/123 <index>` via Bash "
+        "immediately after addressing each criterion:"
+    ) in prompt
+    assert "  0: Implement prompt includes checkbox list" in prompt
+    assert "  3: Prompt includes correct issue reference" in prompt
+
+
+def test_build_implement_prompt_omits_checkbox_criteria_when_empty(
+    tmp_path: Path,
+) -> None:
+    prompt = build_implement_prompt(
+        {**_snapshot(), "checkboxes": []},
+        {"steps": []},
+        tmp_path,
+    )
+
+    assert "Acceptance criteria checkboxes" not in prompt
+    assert "pawchestrator checkbox check" not in prompt
+
+
 def test_build_implement_prompt_includes_repair_context(tmp_path: Path) -> None:
     prompt = build_implement_prompt(
         _snapshot(),

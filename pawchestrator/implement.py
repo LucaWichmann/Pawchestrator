@@ -319,6 +319,7 @@ def build_implement_prompt(
 ) -> str:
     prompt_plan = _prompt_implementation_plan(implementation_plan)
     repair_section = _prompt_repair_context(repair_context, repair_attempt)
+    checkbox_section = _prompt_checkbox_criteria(snapshot)
 
     return f"""You are implementing a GitHub issue in a local git worktree.
 
@@ -335,11 +336,36 @@ IssueSnapshot JSON:
 Implementation plan:
 {json.dumps(prompt_plan, indent=2, sort_keys=True)}
 {repair_section}
+{checkbox_section}
 
 Implement the changes described in the plan. Make granular, well-named commits as you go.
 Commit message format: `type(scope): description` (conventional commits).
 Do not run build or test commands - verification is handled separately.
 """
+
+
+def _prompt_checkbox_criteria(snapshot: dict[str, Any]) -> str:
+    checkboxes = _list_value(snapshot.get("checkboxes"))
+    if not checkboxes:
+        return ""
+
+    issue_ref = (
+        f"{snapshot.get('owner', '')}/{snapshot.get('repo', '')}/"
+        f"{snapshot.get('number', '')}"
+    )
+    lines = [
+        "",
+        "Acceptance criteria checkboxes — call "
+        f"`pawchestrator checkbox check {issue_ref} <index>` via Bash immediately "
+        "after addressing each criterion:",
+    ]
+    for checkbox in checkboxes:
+        if not isinstance(checkbox, dict):
+            continue
+        index = checkbox.get("index")
+        text = str(checkbox.get("text") or "")
+        lines.append(f"  {index}: {text}")
+    return "\n".join(lines) + "\n"
 
 
 def _prompt_repair_context(
