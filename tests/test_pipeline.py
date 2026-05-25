@@ -316,9 +316,13 @@ def test_run_pipeline_reconciles_checkbox_marks_after_implement_and_verify(
     _patch_successful_stages(monkeypatch, calls)
     _patch_verify_results(monkeypatch, calls, ["failed", "passed"])
 
-    async def fake_reconcile(settings: Settings, run_id: str, client: object) -> bool:
+    async def fake_reconcile(
+        settings: Settings,
+        run_id: str,
+        client: object,
+    ) -> tuple[bool, list[dict[str, object]]]:
         calls.append("reconcile")
-        return False
+        return False, []
 
     monkeypatch.setattr(
         "pawchestrator.pipeline.reconcile_checkbox_marks",
@@ -356,7 +360,11 @@ def test_run_pipeline_records_checkbox_reconciliation_warning_without_failing(
     calls: list[str] = []
     _patch_successful_stages(monkeypatch, calls)
 
-    async def fake_reconcile(settings: Settings, run_id: str, client: object) -> bool:
+    async def fake_reconcile(
+        settings: Settings,
+        run_id: str,
+        client: object,
+    ) -> tuple[bool, list[dict[str, object]]]:
         raise RuntimeError("lost patch state")
 
     monkeypatch.setattr(
