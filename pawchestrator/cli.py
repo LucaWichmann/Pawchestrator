@@ -228,7 +228,17 @@ async def _start_issue_from_cli(
 
 
 @checkbox_app.command("check")
-def checkbox_check(issue_ref: str, index: int) -> None:
+def checkbox_check(
+    issue_ref: str,
+    index: int,
+    run_id: Annotated[
+        str | None,
+        typer.Option(
+            "--run-id",
+            help="Workflow run ID for durable run-scoped checkbox marks.",
+        ),
+    ] = None,
+) -> None:
     """Check one in-scope checkbox in a GitHub issue body."""
 
     settings = load_settings()
@@ -242,6 +252,8 @@ def checkbox_check(issue_ref: str, index: int) -> None:
                 reference,
                 index,
                 settings.checkboxes.headings,
+                run_id=run_id,
+                db_path=settings.database_path,
             )
         )
     except Exception as error:
