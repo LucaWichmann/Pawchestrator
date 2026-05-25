@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
   owner TEXT NOT NULL,
   repo TEXT NOT NULL,
   issue_number INTEGER NOT NULL,
+  group_id TEXT,
   workflow_type TEXT NOT NULL DEFAULT 'pipeline',
   status TEXT NOT NULL DEFAULT 'pending',
   current_stage TEXT,
@@ -84,6 +85,7 @@ async def init_db(settings: Settings) -> Path:
     async with aiosqlite.connect(settings.database_path) as db:
         await db.executescript(SCHEMA_SQL)
         await _add_column_if_missing(db, "github_comment_id TEXT")
+        await _add_column_if_missing(db, "group_id TEXT")
         await _add_column_if_missing(
             db,
             "workflow_type TEXT NOT NULL DEFAULT 'pipeline'",
@@ -684,6 +686,24 @@ async def get_run_warnings(settings: Settings, run_id: str) -> list[dict[str, st
             ORDER BY created_at
             """,
             (run_id,),
+        )
+        rows = await cursor.fetchall()
+    return [dict(row) for row in rows]
+
+
+async def get_runs_by_group_id(settings: Settings, group_id: str) -> list[dict]:
+    await init_db(settings)
+    async with aiosqlite.connect(settings.database_path) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT id, owner, repo, issue_number, group_id, workflow_type, status,
+                   current_stage, pr_url, created_at, updated_at
+            FROM workflow_runs
+            WHERE group_id = ?
+            ORDER BY created_at, id
+            """,
+            (group_id,),
         )
         rows = await cursor.fetchall()
     return [dict(row) for row in rows]
