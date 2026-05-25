@@ -249,6 +249,22 @@
       width: 10px;
     }
 
+    #${PANEL_ID} .pawchestrator-grill-status[data-status="grill_waiting"] {
+      background: var(--bgColor-attention-muted, #fff8c5);
+      border: 1px solid var(--borderColor-attention-muted, #d4a72c);
+      border-radius: 6px;
+      color: var(--fgColor-default, #24292f);
+      font-weight: 600;
+      grid-column: 1 / -1;
+      padding: 8px 10px;
+    }
+
+    #${PANEL_ID} .pawchestrator-grill-status[data-status="grill_waiting"]::before {
+      content: "\\26A0";
+      display: inline-block;
+      margin-right: 6px;
+    }
+
     #${PANEL_ID} .pawchestrator-grill-error {
       color: var(--fgColor-danger, #cf222e);
       grid-column: 1 / -1;
@@ -836,7 +852,13 @@
     const status = document.createElement("div");
     status.className = "pawchestrator-grill-status";
     status.dataset.active = String(active);
-    status.textContent = active ? "[grill] running..." : `Status: ${grill.status || "unknown"}`;
+    status.dataset.status = grill.status || "unknown";
+    if (grill.status === "grill_waiting") {
+      status.dataset.active = "false";
+      status.textContent = "Waiting for your reply. Reply to the questions comment on GitHub to continue.";
+    } else {
+      status.textContent = active ? "[grill] running..." : `Status: ${grill.status || "unknown"}`;
+    }
     details.append(status);
 
     const report = grillReport(grill);
