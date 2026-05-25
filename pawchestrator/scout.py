@@ -8,16 +8,21 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from pawchestrator.config import Settings
+from pawchestrator.config import Settings, StageSettings
 from pawchestrator.db import (
     complete_scout_run,
     fail_scout_run,
     get_run_state,
+    insert_run_warning,
     start_scout_run,
 )
 from pawchestrator.runners import (
+    ClaudeRunner,
+    CodexRunner,
     Runner,
+    RunnerResult,
     RunnerTask,
+    claude_usage_limit_exhausted,
     resolve_runner,
     runner_tool_mismatch_warning,
 )
@@ -57,27 +62,60 @@ async def run_scout(
     stage_id = await start_scout_run(settings, run_id=run_id)
     active_runner = runner or resolve_runner(settings, "scout", "claude")
     _log_tool_mismatch(active_runner)
+    fallback_runner = _usage_limit_fallback_runner(settings, active_runner)
     log_path = _scout_log_path(settings, run_id)
     artifact_path = _scout_artifact_path(settings, run_id)
+    prompt = build_scout_prompt(snapshot)
 
     try:
-        healthy, message = await active_runner.check_health()
-        if not healthy:
-            raise RuntimeError(message)
-
-        result = await active_runner.run_task(
-            RunnerTask(
-                prompt=build_scout_prompt(snapshot),
-                cwd=local_repo_path,
-                run_id=run_id,
-                stage_name="scout",
-            )
+        task = RunnerTask(
+            prompt=prompt,
+            cwd=local_repo_path,
+            run_id=run_id,
+            stage_name="scout",
         )
-        _write_scout_log(log_path, result.stdout, result.stderr)
+        result = await _run_checked_runner(active_runner, task)
+        _write_scout_attempt_log(log_path, active_runner.id, result, append=False)
 
         if result.exit_code != 0:
-            detail = result.stderr.strip() or result.stdout.strip() or "Claude runner failed"
-            raise RuntimeError(detail)
+            detail = _runner_failure_detail(result, active_runner.id)
+            if fallback_runner is None or not claude_usage_limit_exhausted(result):
+                raise RuntimeError(detail)
+
+            warning_message = "Claude usage limit exhausted; using Codex for scout."
+            await insert_run_warning(
+                settings,
+                run_id=run_id,
+                stage_name="scout",
+                code="scout_usage_limit_fallback",
+                message=warning_message,
+            )
+            LOGGER.warning(warning_message)
+            try:
+                fallback_result = await _run_checked_runner(fallback_runner, task)
+                _write_scout_attempt_log(
+                    log_path,
+                    fallback_runner.id,
+                    fallback_result,
+                    append=True,
+                )
+                if fallback_result.exit_code != 0:
+                    fallback_detail = _runner_failure_detail(
+                        fallback_result,
+                        fallback_runner.id,
+                    )
+                    raise RuntimeError(
+                        f"{fallback_detail}\n"
+                        f"Original Claude usage-limit failure: {detail}"
+                    )
+                result = fallback_result
+            except Exception as fallback_error:
+                if "Original Claude usage-limit failure" in str(fallback_error):
+                    raise
+                raise RuntimeError(
+                    f"{fallback_error}\n"
+                    f"Original Claude usage-limit failure: {detail}"
+                ) from fallback_error
 
         report = normalize_scout_report(result.artifact)
         artifact_path.parent.mkdir(parents=True, exist_ok=True)
@@ -107,6 +145,54 @@ async def run_scout(
         artifact_path=artifact_path,
         log_path=log_path,
         report=report,
+    )
+
+
+async def _run_checked_runner(runner: Runner, task: RunnerTask) -> RunnerResult:
+    healthy, message = await runner.check_health()
+    if not healthy:
+        raise RuntimeError(message)
+    return await runner.run_task(task)
+
+
+def _usage_limit_fallback_runner(
+    settings: Settings,
+    primary_runner: Runner,
+) -> Runner | None:
+    if not isinstance(primary_runner, ClaudeRunner):
+        return None
+
+    stage_settings = settings.stages.get("scout")
+    fallback = (
+        stage_settings.usage_limit_fallback_runner
+        if stage_settings is not None
+        else None
+    )
+    if fallback == "none":
+        return None
+    if fallback not in {None, "codex"}:
+        return None
+
+    stage_overrides = dict(settings.stages)
+    scout_settings = stage_settings or StageSettings()
+    fallback_codex = scout_settings.codex.model_copy(
+        update={"sandbox": "read-only", "bypass_sandbox": False}
+    )
+    stage_overrides["scout"] = scout_settings.model_copy(
+        update={"runner": "codex", "codex": fallback_codex}
+    )
+    return CodexRunner(
+        settings.runners.codex,
+        debug=settings.debug,
+        stage_overrides=stage_overrides,
+    )
+
+
+def _runner_failure_detail(result: RunnerResult, runner_id: str) -> str:
+    return (
+        result.stderr.strip()
+        or result.stdout.strip()
+        or f"{runner_id.capitalize()} runner failed"
     )
 
 
@@ -219,3 +305,22 @@ def _write_scout_log(log_path: Path, stdout: str, stderr: str) -> None:
         f"[stdout]\n{stdout}\n[stderr]\n{stderr}\n",
         encoding="utf-8",
     )
+
+
+def _write_scout_attempt_log(
+    log_path: Path,
+    runner_id: str,
+    result: RunnerResult,
+    *,
+    append: bool,
+) -> None:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    chunk = (
+        f"[{runner_id} stdout]\n{result.stdout}\n"
+        f"[{runner_id} stderr]\n{result.stderr}\n"
+    )
+    if append:
+        with log_path.open("a", encoding="utf-8") as log_file:
+            log_file.write(chunk)
+        return
+    log_path.write_text(chunk, encoding="utf-8")

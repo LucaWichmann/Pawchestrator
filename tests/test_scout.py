@@ -10,8 +10,14 @@ from typer.testing import CliRunner
 
 from pawchestrator import cli
 from pawchestrator.config import Settings, StageSettings
-from pawchestrator.db import init_db
-from pawchestrator.runners import CodexRunner, Runner, RunnerResult, RunnerTask
+from pawchestrator.db import get_run_warnings, init_db
+from pawchestrator.runners import (
+    ClaudeRunner,
+    CodexRunner,
+    Runner,
+    RunnerResult,
+    RunnerTask,
+)
 from pawchestrator.scout import build_scout_prompt, run_scout
 
 
@@ -125,7 +131,7 @@ def test_run_scout_writes_artifact_log_and_records_stage(tmp_path: Path) -> None
     report = json.loads(result.artifact_path.read_text(encoding="utf-8"))
     log = result.log_path.read_text(encoding="utf-8")
     assert report["next_recommended_stage"] == "plan"
-    assert "[stdout]" in log
+    assert "[fake stdout]" in log
     assert '{"result": "ok"}' in log
 
     with sqlite3.connect(tmp_path / "database.sqlite") as db:
@@ -178,6 +184,223 @@ def test_run_scout_uses_codex_runner_when_stage_overrides_runner(
     asyncio.run(run_scout(run_id, settings, repo_path=tmp_path))
 
     assert seen["task"].stage_name == "scout"
+
+
+def test_run_scout_falls_back_to_codex_for_claude_usage_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = Settings(
+        app_dir=tmp_path,
+        stages={
+            "scout": StageSettings(
+                codex={"sandbox": "danger-full-access", "bypass_sandbox": True}
+            )
+        },
+    )
+    run_id = "run-123"
+    asyncio.run(_insert_snapshot_run(settings, run_id))
+    _write_snapshot(settings, run_id)
+    seen: dict[str, object] = {}
+
+    async def fake_check_health(self: Runner) -> tuple[bool, str]:
+        return True, "ok"
+
+    async def fake_claude_run_task(
+        self: ClaudeRunner,
+        task: RunnerTask,
+    ) -> RunnerResult:
+        return RunnerResult(
+            exit_code=1,
+            stdout=json.dumps(
+                {
+                    "is_error": True,
+                    "api_error_status": 429,
+                    "error": "Claude usage limit reached for this session.",
+                }
+            ),
+            stderr="",
+            artifact=None,
+        )
+
+    async def fake_codex_run_task(
+        self: CodexRunner,
+        task: RunnerTask,
+    ) -> RunnerResult:
+        seen["task"] = task
+        seen["sandbox"] = self.stage_overrides["scout"].codex.sandbox
+        seen["bypass_sandbox"] = self.stage_overrides["scout"].codex.bypass_sandbox
+        return FakeRunner().result
+
+    monkeypatch.setattr(ClaudeRunner, "check_health", fake_check_health)
+    monkeypatch.setattr(CodexRunner, "check_health", fake_check_health)
+    monkeypatch.setattr(ClaudeRunner, "run_task", fake_claude_run_task)
+    monkeypatch.setattr(CodexRunner, "run_task", fake_codex_run_task)
+
+    result = asyncio.run(run_scout(run_id, settings, repo_path=tmp_path))
+
+    assert result.report["readiness"] == "ready"
+    assert isinstance(seen["task"], RunnerTask)
+    assert seen["sandbox"] == "read-only"
+    assert seen["bypass_sandbox"] is False
+    log = result.log_path.read_text(encoding="utf-8")
+    assert "[claude stdout]" in log
+    assert "[codex stdout]" in log
+    warnings = asyncio.run(get_run_warnings(settings, run_id))
+    assert [warning["code"] for warning in warnings] == [
+        "scout_usage_limit_fallback"
+    ]
+    assert warnings[0]["message"] == "Claude usage limit exhausted; using Codex for scout."
+
+    with sqlite3.connect(tmp_path / "database.sqlite") as db:
+        stage_count = db.execute(
+            """
+            SELECT COUNT(*) FROM workflow_stages
+            WHERE run_id = ? AND stage_name = 'scout'
+            """,
+            (run_id,),
+        ).fetchone()[0]
+
+    assert stage_count == 1
+
+
+def test_run_scout_does_not_fallback_for_non_usage_claude_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    run_id = "run-123"
+    asyncio.run(_insert_snapshot_run(settings, run_id))
+    _write_snapshot(settings, run_id)
+
+    async def fake_check_health(self: Runner) -> tuple[bool, str]:
+        return True, "ok"
+
+    async def fake_claude_run_task(
+        self: ClaudeRunner,
+        task: RunnerTask,
+    ) -> RunnerResult:
+        return RunnerResult(
+            exit_code=1,
+            stdout=json.dumps({"is_error": True, "api_error_status": 500}),
+            stderr="not signed in",
+            artifact=None,
+        )
+
+    async def fake_codex_run_task(
+        self: CodexRunner,
+        task: RunnerTask,
+    ) -> RunnerResult:
+        raise AssertionError("codex should not run")
+
+    monkeypatch.setattr(ClaudeRunner, "check_health", fake_check_health)
+    monkeypatch.setattr(CodexRunner, "check_health", fake_check_health)
+    monkeypatch.setattr(ClaudeRunner, "run_task", fake_claude_run_task)
+    monkeypatch.setattr(CodexRunner, "run_task", fake_codex_run_task)
+
+    with pytest.raises(RuntimeError, match="not signed in"):
+        asyncio.run(run_scout(run_id, settings, repo_path=tmp_path))
+
+    assert asyncio.run(get_run_warnings(settings, run_id)) == []
+
+
+def test_run_scout_respects_disabled_usage_limit_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = Settings(
+        app_dir=tmp_path,
+        stages={"scout": StageSettings(usage_limit_fallback_runner="none")},
+    )
+    run_id = "run-123"
+    asyncio.run(_insert_snapshot_run(settings, run_id))
+    _write_snapshot(settings, run_id)
+
+    async def fake_check_health(self: Runner) -> tuple[bool, str]:
+        return True, "ok"
+
+    async def fake_claude_run_task(
+        self: ClaudeRunner,
+        task: RunnerTask,
+    ) -> RunnerResult:
+        return RunnerResult(
+            exit_code=1,
+            stdout=json.dumps(
+                {
+                    "is_error": True,
+                    "api_error_status": 429,
+                    "error": "Claude usage limit reached for this session.",
+                }
+            ),
+            stderr="",
+            artifact=None,
+        )
+
+    async def fake_codex_run_task(
+        self: CodexRunner,
+        task: RunnerTask,
+    ) -> RunnerResult:
+        raise AssertionError("codex should not run")
+
+    monkeypatch.setattr(ClaudeRunner, "check_health", fake_check_health)
+    monkeypatch.setattr(CodexRunner, "check_health", fake_check_health)
+    monkeypatch.setattr(ClaudeRunner, "run_task", fake_claude_run_task)
+    monkeypatch.setattr(CodexRunner, "run_task", fake_codex_run_task)
+
+    with pytest.raises(RuntimeError, match="usage limit reached"):
+        asyncio.run(run_scout(run_id, settings, repo_path=tmp_path))
+
+    assert asyncio.run(get_run_warnings(settings, run_id)) == []
+
+
+def test_run_scout_fallback_failure_includes_original_claude_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    run_id = "run-123"
+    asyncio.run(_insert_snapshot_run(settings, run_id))
+    _write_snapshot(settings, run_id)
+
+    async def fake_check_health(self: Runner) -> tuple[bool, str]:
+        return True, "ok"
+
+    async def fake_claude_run_task(
+        self: ClaudeRunner,
+        task: RunnerTask,
+    ) -> RunnerResult:
+        return RunnerResult(
+            exit_code=1,
+            stdout=json.dumps(
+                {
+                    "is_error": True,
+                    "api_error_status": 429,
+                    "error": "Claude usage limit reached for this session.",
+                }
+            ),
+            stderr="",
+            artifact=None,
+        )
+
+    async def fake_codex_run_task(
+        self: CodexRunner,
+        task: RunnerTask,
+    ) -> RunnerResult:
+        return RunnerResult(
+            exit_code=1,
+            stdout="",
+            stderr="codex failed",
+            artifact=None,
+        )
+
+    monkeypatch.setattr(ClaudeRunner, "check_health", fake_check_health)
+    monkeypatch.setattr(CodexRunner, "check_health", fake_check_health)
+    monkeypatch.setattr(ClaudeRunner, "run_task", fake_claude_run_task)
+    monkeypatch.setattr(CodexRunner, "run_task", fake_codex_run_task)
+
+    with pytest.raises(RuntimeError) as error:
+        asyncio.run(run_scout(run_id, settings, repo_path=tmp_path))
+
+    message = str(error.value)
+    assert message.startswith("codex failed")
+    assert "Original Claude usage-limit failure" in message
+    assert "usage limit reached" in message
 
 
 def test_run_scout_records_failure_and_log(tmp_path: Path) -> None:
