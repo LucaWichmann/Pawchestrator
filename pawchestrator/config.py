@@ -137,6 +137,7 @@ class PipelineSettings(BaseSettings):
 
     verify_repair_attempts: int = Field(default=1, ge=0)
     epic_fail_fast: bool = True
+    epic_confirm: bool = False
 
 
 class CheckboxSettings(BaseSettings):

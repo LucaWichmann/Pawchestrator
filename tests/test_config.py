@@ -36,6 +36,7 @@ def test_runner_settings_defaults_match_low_token_profile() -> None:
     assert settings.pr.assign is True
     assert settings.pipeline.verify_repair_attempts == 1
     assert settings.pipeline.epic_fail_fast is True
+    assert settings.pipeline.epic_confirm is False
     assert settings.checkboxes.headings == [
         "Acceptance Criteria",
         "AC",
@@ -93,6 +94,7 @@ assign = false
 [pipeline]
 verify_repair_attempts = 2
 epic_fail_fast = false
+epic_confirm = true
 
 [checkboxes]
 headings = ["Done When", "Ship List"]
@@ -140,6 +142,7 @@ approval_policy = "never"
     assert settings.pr.assign is False
     assert settings.pipeline.verify_repair_attempts == 2
     assert settings.pipeline.epic_fail_fast is False
+    assert settings.pipeline.epic_confirm is True
     assert settings.checkboxes.headings == ["Done When", "Ship List"]
     assert settings.stages["scout"].claude.allowed_tools == ["Read"]
     assert settings.stages["scout"].claude.bypass_permissions is False
