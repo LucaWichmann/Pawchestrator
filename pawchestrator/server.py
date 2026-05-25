@@ -62,11 +62,12 @@ class PipelineStartResponse(BaseModel):
 class EpicSubRunResponse(BaseModel):
     issue_number: int
     title: str = ""
-    run_id: str
+    run_id: str = ""
 
 
 class EpicStartResponse(BaseModel):
     type: str = "epic"
+    run_id: str
     group_id: str
     sub_runs: list[EpicSubRunResponse]
 
@@ -197,29 +198,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
 
             group_id = str(uuid4())
+            parent_run_id = str(uuid4())
             await create_epic_run(
                 runtime_settings,
-                run_id=str(uuid4()),
+                run_id=parent_run_id,
                 owner=body.owner,
                 repo=body.repo,
                 issue_number=body.number,
                 group_id=group_id,
             )
-            result = await run_epic(
+            background_tasks.add_task(
+                _run_epic_background,
                 url,
                 runtime_settings,
                 repo_path=repo_path.resolve(),
                 group_id=group_id,
+                parent_run_id=parent_run_id,
             )
             return EpicStartResponse(
-                group_id=result.group_id,
+                run_id=parent_run_id,
+                group_id=group_id,
                 sub_runs=[
                     EpicSubRunResponse(
-                        issue_number=sub_run.issue_number,
-                        title=getattr(sub_run, "title", ""),
-                        run_id=sub_run.run_id,
+                        issue_number=int(sub_issue["number"]),
+                        title=str(sub_issue.get("title") or ""),
                     )
-                    for sub_run in result.sub_runs
+                    for sub_issue in sub_issues
                 ],
             )
 
@@ -281,6 +285,26 @@ async def _run_pipeline_background(
     except Exception as error:
         await mark_run_failed(settings, run_id=run_id)
         print(f"[run {run_id}] failed: {error}")
+
+
+async def _run_epic_background(
+    issue_url_value: str,
+    settings: Settings,
+    *,
+    repo_path,
+    group_id: str,
+    parent_run_id: str,
+) -> None:
+    try:
+        await run_epic(
+            issue_url_value,
+            settings,
+            repo_path=repo_path,
+            group_id=group_id,
+            parent_run_id=parent_run_id,
+        )
+    except Exception as error:
+        print(f"[epic {parent_run_id}] failed: {error}")
 
 
 async def _run_grill_background(

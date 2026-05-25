@@ -138,6 +138,7 @@ class PipelineSettings(BaseSettings):
     verify_repair_attempts: int = Field(default=1, ge=0)
     epic_fail_fast: bool = True
     epic_confirm: bool = False
+    epic_branch_mode: Literal["epic", "epic-with-sub-issues"] = "epic"
 
 
 class CheckboxSettings(BaseSettings):

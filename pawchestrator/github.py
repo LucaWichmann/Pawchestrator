@@ -232,6 +232,23 @@ class GitHubIssueClient:
 
         return payload.get("body") or ""
 
+    async def fetch_issue_title(self, reference: IssueReference) -> str:
+        async with httpx.AsyncClient(
+            base_url=self._api_base,
+            headers=self._headers(),
+            transport=self._transport,
+        ) as client:
+            response = await client.get(
+                f"/repos/{reference.owner}/{reference.repo}/issues/{reference.number}",
+            )
+            self._raise_for_status(response)
+            payload = response.json()
+
+        if not isinstance(payload, dict):
+            raise GitHubError("GitHub issue response was not an object")
+
+        return str(payload.get("title") or "")
+
     async def fetch_sub_issues(self, reference: IssueReference) -> list[dict]:
         async with httpx.AsyncClient(
             base_url=self._api_base,

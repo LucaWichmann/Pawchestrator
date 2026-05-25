@@ -82,7 +82,12 @@ def test_issue_status_returns_epic_run_with_pipeline_shaped_sub_runs(
     assert response.status_code == 200
     assert payload["pipeline"] is None
     assert payload["epic_confirm"] is True
+    assert payload["epic"]["run_id"] == "epic-parent"
     assert payload["epic"]["group_id"] == "epic-group"
+    assert payload["epic"]["status"] == "epic_complete"
+    assert payload["epic"]["mode"] == "epic-with-sub-issues"
+    assert payload["epic"]["branch"] == "paw/epic-42-parent"
+    assert payload["epic"]["pr_url"] == "https://github.com/owner/repo/pull/42"
     assert payload["epic"]["epic_confirm"] is True
     assert [run["issue_number"] for run in payload["epic"]["sub_runs"]] == [43, 44]
 
@@ -429,12 +434,26 @@ def _insert_epic_run(settings: Settings) -> None:
                 """
                 INSERT INTO workflow_runs (
                   id, owner, repo, issue_number, group_id, workflow_type, status,
-                  current_stage, created_at, updated_at
+                  current_stage, pr_url, epic_branch_mode, created_at, updated_at
                 )
                 VALUES (
                   'epic-parent', 'owner', 'repo', 42, 'epic-group', 'epic',
-                  'running', NULL, '2026-05-24T10:00:00Z',
+                  'epic_complete', 'epic', 'https://github.com/owner/repo/pull/42',
+                  'epic-with-sub-issues', '2026-05-24T10:00:00Z',
                   '2026-05-24T10:00:04Z'
+                )
+                """
+            )
+            await db.execute(
+                """
+                INSERT INTO worktrees (
+                  id, run_id, owner, repo, issue_number, branch, path,
+                  created_at, updated_at
+                )
+                VALUES (
+                  'epic-worktree', 'epic-parent', 'owner', 'repo', 42,
+                  'paw/epic-42-parent', '/tmp/epic-42',
+                  '2026-05-24T10:00:00Z', '2026-05-24T10:00:01Z'
                 )
                 """
             )

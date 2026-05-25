@@ -329,6 +329,51 @@ def test_ensure_issue_worktree_uses_existing_branch(
     ]
 
 
+def test_ensure_issue_worktree_accepts_custom_branch_path_and_base(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str]] = []
+    custom_path = tmp_path / "worktrees" / "owner" / "repo" / "epic-42"
+
+    async def fake_run_git(args: list[str], cwd: Path) -> tuple[str, str, int]:
+        calls.append(args)
+        if args == ["rev-parse", "--verify", "refs/heads/paw/epic-42-parent"]:
+            return "ok", "", 0
+        if args == ["rev-parse", "--verify", "refs/heads/paw/child-43"]:
+            return "", "missing", 1
+        if args[:3] == ["worktree", "add", "-b"]:
+            return "", "", 0
+        raise AssertionError(f"unexpected git call: {args}")
+
+    monkeypatch.setattr("pawchestrator.implement._run_git", fake_run_git)
+
+    info = asyncio.run(
+        ensure_issue_worktree(
+            Settings(app_dir=tmp_path),
+            snapshot=_snapshot(),
+            source_repo_path=tmp_path / "source",
+            branch_override="paw/child-43",
+            path_override=custom_path,
+            base_branch="paw/epic-42-parent",
+        )
+    )
+
+    assert info.path == custom_path
+    assert info.branch == "paw/child-43"
+    assert calls == [
+        ["rev-parse", "--verify", "refs/heads/paw/epic-42-parent"],
+        ["rev-parse", "--verify", "refs/heads/paw/child-43"],
+        [
+            "worktree",
+            "add",
+            "-b",
+            "paw/child-43",
+            str(custom_path),
+            "paw/epic-42-parent",
+        ],
+    ]
+
+
 def test_ensure_issue_worktree_updates_main_when_source_not_on_main(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

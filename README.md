@@ -71,7 +71,7 @@ flowchart TD
 | `pawchestrator serve` | Start the local FastAPI backend | Binds to `127.0.0.1:38472` and exposes `/health`, `/pair`, `/issue/start`, and `/runs/{run_id}`. |
 | `pawchestrator doctor` | Check the local environment | Reports required and optional dependencies, plus local port, SQLite, and repo registry checks. |
 | `pawchestrator issue snapshot <issue-url>` | Capture a GitHub issue snapshot | Writes a structured issue artifact for later stages. |
-| `pawchestrator issue start <issue-url> [--repo-path ...]` | Run the full issue-to-PR pipeline | Executes snapshot -> scout -> plan -> implement -> verify -> pr. |
+| `pawchestrator issue start <issue-url> [--repo-path ...]` | Run the full issue-to-PR pipeline | Executes snapshot -> scout -> plan -> implement -> verify -> pr. If the issue has GitHub sub-issues, runs the epic workflow instead. |
 | `pawchestrator run scout <run-id>` | Re-run scouting for an existing run | Useful when you want to inspect or recover a specific stage. |
 | `pawchestrator run plan <run-id>` | Re-run planning for an existing run | Reads the scout artifact and writes the implementation plan. |
 | `pawchestrator run implement <run-id>` | Re-run implementation for an existing run | Uses the run worktree and writes file edits plus a report. |
@@ -169,6 +169,12 @@ previous_response_not_found_attempts = 3
 enabled = true
 directory = ".codegraph"
 sync_policy = "safe-lazy"
+
+[pipeline]
+verify_repair_attempts = 1
+epic_fail_fast = true
+epic_confirm = false
+epic_branch_mode = "epic"
 ```
 
 Notes:
@@ -179,6 +185,24 @@ Notes:
 - `execution = "auto"` on Codex tries native first and may fall back to WSL on known Windows sandbox failures.
 - `previous_response_not_found_attempts` caps Codex recovery attempts, including the original attempt.
 - Pawchestrator tries to preserve local CodeGraph databases even when `.codegraph/` is ignored by git. Before implementation it seeds the issue worktree from the source repo index with a SQLite-safe copy; it syncs back only when git proves the run branch has already merged into `main`.
+
+### Epic workflow
+
+Pawchestrator treats an issue as an epic when GitHub's `GET /repos/{owner}/{repo}/issues/{number}/sub_issues` endpoint returns one or more sub-issues. Only direct sub-issues are expanded; sub-issues of sub-issues are not.
+
+Configure epic branch behavior in `~/.pawchestrator/config.toml`:
+
+```toml
+[pipeline]
+epic_branch_mode = "epic"
+```
+
+| Mode | Branches | PRs |
+|---|---|---|
+| `"epic"` | One shared `paw/epic-{number}-{slug}` branch/worktree for all sub-issues. | One final PR from the epic branch to `main` after all sub-issues finish. Draft state follows `[pr] draft`. |
+| `"epic-with-sub-issues"` | One epic branch plus one issue branch/worktree per sub-issue. | A draft epic PR to `main` is opened first, then each sub-issue opens a PR into the epic branch. Child PR draft state follows `[pr] draft`. |
+
+In `"epic-with-sub-issues"` mode, Pawchestrator does not watch for child PR merges or mark the epic PR ready. Humans merge child PRs into the epic branch, then mark or merge the epic PR when the epic is complete.
 
 ### Local state
 

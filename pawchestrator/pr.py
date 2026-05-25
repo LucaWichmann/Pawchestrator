@@ -38,11 +38,61 @@ class PrDraftResult:
     draft: dict[str, Any]
 
 
+async def create_worktree_pr(
+    *,
+    settings: Settings,
+    run_id: str,
+    worktree_path: Path,
+    branch: str,
+    base_branch: str,
+    title: str,
+    body: str,
+    draft: bool,
+    issue_number: int,
+    allow_empty_commit: bool,
+    assignees: list[str] | None = None,
+) -> PrDraftResult:
+    artifact_path = _pr_draft_path(settings, run_id)
+    await _ensure_branch_has_pr_commits(
+        worktree_path,
+        issue_number=issue_number,
+        allow_empty_commit=allow_empty_commit,
+        base_branch=base_branch,
+    )
+    await _run_git_checked(["push", "-u", "origin", branch], worktree_path)
+    pr_url = await _create_or_find_pr(
+        title=title,
+        body=body,
+        base=base_branch,
+        branch=branch,
+        cwd=worktree_path,
+        draft=draft,
+        assignees=assignees or [],
+    )
+    draft_payload = build_pr_draft(
+        pr_url=pr_url,
+        branch=branch,
+        base=base_branch,
+        title=title,
+    )
+    _write_report(artifact_path, draft_payload)
+    return PrDraftResult(
+        run_id=run_id,
+        artifact_path=artifact_path,
+        pr_url=pr_url,
+        branch=branch,
+        title=title,
+        draft=draft_payload,
+    )
+
+
 async def run_pr(
     run_id: str,
     settings: Settings,
     *,
     allow_empty_commit: bool = False,
+    base_branch: str = DEFAULT_BASE_BRANCH,
+    draft_override: bool | None = None,
 ) -> PrDraftResult:
     state = await get_run_state(settings, run_id)
     if state is None:
@@ -77,27 +127,21 @@ async def run_pr(
             run_id=run_id,
         )
 
-        await _ensure_branch_has_pr_commits(
-            worktree_path,
-            issue_number=issue_number,
-            allow_empty_commit=allow_empty_commit,
-        )
-        await _run_git_checked(["push", "-u", "origin", branch], worktree_path)
-        pr_url = await _create_or_find_pr(
+        pr_result = await create_worktree_pr(
+            settings=settings,
+            run_id=run_id,
+            worktree_path=worktree_path,
+            branch=branch,
+            base_branch=base_branch,
             title=title,
             body=body,
-            base=DEFAULT_BASE_BRANCH,
-            branch=branch,
-            cwd=worktree_path,
-            draft=settings.pr.draft,
+            draft=settings.pr.draft if draft_override is None else draft_override,
+            issue_number=issue_number,
+            allow_empty_commit=allow_empty_commit,
             assignees=assignees,
         )
-        draft = build_pr_draft(
-            pr_url=pr_url,
-            branch=branch,
-            base=DEFAULT_BASE_BRANCH,
-            title=title,
-        )
+        pr_url = pr_result.pr_url
+        draft = pr_result.draft
         _write_report(artifact_path, draft)
         await complete_pr_run(
             settings,
@@ -277,9 +321,10 @@ async def _ensure_branch_has_pr_commits(
     *,
     issue_number: int,
     allow_empty_commit: bool,
+    base_branch: str,
 ) -> None:
     commit_count = (await _run_git_checked(
-        ["rev-list", "--count", f"{DEFAULT_BASE_BRANCH}..HEAD"],
+        ["rev-list", "--count", f"{base_branch}..HEAD"],
         cwd,
     )).strip()
     if commit_count != "0":
@@ -287,7 +332,7 @@ async def _ensure_branch_has_pr_commits(
 
     if not allow_empty_commit:
         raise RuntimeError(
-            f"branch has no commits relative to {DEFAULT_BASE_BRANCH}; cannot create PR"
+            f"branch has no commits relative to {base_branch}; cannot create PR"
         )
 
     await _run_git_checked(

@@ -351,6 +351,33 @@ def test_fail_stale_runs_marks_grill_failed(tmp_path: Path) -> None:
     assert stages["grill"] == ("failed", STALE_RUN_ERROR)
 
 
+def test_fail_stale_runs_marks_epic_parent_failed(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    asyncio.run(
+        create_epic_run(
+            settings,
+            run_id="epic-parent",
+            owner="owner",
+            repo="repo",
+            issue_number=42,
+            group_id="epic-group",
+        )
+    )
+    _set_run_state(
+        tmp_path,
+        "epic-parent",
+        status="epic_running",
+        current_stage="epic",
+    )
+
+    cleaned = asyncio.run(fail_stale_runs_on_startup(settings))
+
+    assert cleaned == 1
+    run, stages = _fetch_run_and_stages(tmp_path, "epic-parent")
+    assert run == ("epic_failed", "epic", None)
+    assert stages == {}
+
+
 def test_github_comment_id_helpers_store_and_fetch_id(tmp_path: Path) -> None:
     settings = Settings(app_dir=tmp_path)
     asyncio.run(

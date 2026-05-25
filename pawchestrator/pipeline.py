@@ -18,6 +18,7 @@ from pawchestrator.db import (
     lookup_repo_path,
     mark_run_completed,
     mark_run_failed,
+    skip_pr_stage,
     store_github_comment_id,
 )
 from pawchestrator.github import (
@@ -57,6 +58,11 @@ async def run_pipeline(
     group_id: str | None = None,
     repo_path: Path | None = None,
     allow_empty_commit: bool = False,
+    create_pr: bool = True,
+    worktree_branch: str | None = None,
+    worktree_path: Path | None = None,
+    base_branch: str = "main",
+    pr_base_branch: str = "main",
     progress: ProgressFn = print,
 ) -> PipelineResult:
     reference = parse_issue_url(issue_url)
@@ -100,24 +106,28 @@ async def run_pipeline(
         repair_attempt: int | None = None,
         allow_dirty_existing_worktree: bool = False,
     ):
-        return await run_implement(
-            active_run_id,
-            settings,
-            repo_path=resolved_repo_path,
-            repair_context=repair_context,
-            repair_attempt=repair_attempt,
-            allow_dirty_existing_worktree=allow_dirty_existing_worktree,
-        )
+        implement_kwargs: dict[str, Any] = {
+            "repo_path": resolved_repo_path,
+            "repair_context": repair_context,
+            "repair_attempt": repair_attempt,
+            "allow_dirty_existing_worktree": allow_dirty_existing_worktree,
+        }
+        if worktree_branch is not None:
+            implement_kwargs["worktree_branch"] = worktree_branch
+        if worktree_path is not None:
+            implement_kwargs["worktree_path"] = worktree_path
+        if base_branch != "main":
+            implement_kwargs["base_branch"] = base_branch
+        return await run_implement(active_run_id, settings, **implement_kwargs)
 
     async def verify_stage() -> VerificationResult:
         return await run_verify(active_run_id, settings)
 
     async def pr_stage() -> PrDraftResult:
-        return await run_pr(
-            active_run_id,
-            settings,
-            allow_empty_commit=allow_empty_commit,
-        )
+        pr_kwargs: dict[str, Any] = {"allow_empty_commit": allow_empty_commit}
+        if pr_base_branch != "main":
+            pr_kwargs["base_branch"] = pr_base_branch
+        return await run_pr(active_run_id, settings, **pr_kwargs)
 
     pr_url = ""
     try:
@@ -169,20 +179,32 @@ async def run_pipeline(
             raise VerificationFailedError(
                 f"verification did not pass: {_verification_status(verification)}"
             )
-        pr = await _run_stage("pr", pr_stage, progress)
-        pr_url = pr.pr_url
-        _print_done(progress, "pr", pr_url)
-        await _edit_run_comment(settings, active_run_id, comment_client)
+        if create_pr:
+            pr = await _run_stage("pr", pr_stage, progress)
+            pr_url = pr.pr_url
+            _print_done(progress, "pr", pr_url)
+            await _edit_run_comment(settings, active_run_id, comment_client)
     except Exception:
         await mark_run_failed(settings, run_id=active_run_id)
         await _edit_run_comment(settings, active_run_id, comment_client)
         await _swap_stage_label(settings, active_run_id, comment_client, "failed")
         raise
 
-    await mark_run_completed(settings, run_id=active_run_id)
+    if not create_pr:
+        await skip_pr_stage(
+            settings,
+            run_id=active_run_id,
+            reason="PR creation handled by epic workflow.",
+        )
+    await mark_run_completed(
+        settings,
+        run_id=active_run_id,
+        current_stage="pr" if create_pr else "verify",
+    )
     await _edit_run_comment(settings, active_run_id, comment_client)
     await _swap_stage_label(settings, active_run_id, comment_client, "pr-ready")
-    progress(pr_url)
+    if pr_url:
+        progress(pr_url)
     return PipelineResult(run_id=active_run_id, pr_url=pr_url)
 
 

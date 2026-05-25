@@ -69,6 +69,9 @@ async def run_implement(
     repair_context: dict[str, Any] | None = None,
     repair_attempt: int | None = None,
     allow_dirty_existing_worktree: bool = False,
+    worktree_branch: str | None = None,
+    worktree_path: Path | None = None,
+    base_branch: str = DEFAULT_BASE_BRANCH,
 ) -> ImplementationResult:
     state = await get_run_state(settings, run_id)
     if state is None:
@@ -94,12 +97,18 @@ async def run_implement(
 
         snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
         implementation_plan = json.loads(plan_path.read_text(encoding="utf-8"))
-        worktree_info = await ensure_issue_worktree(
-            settings,
-            snapshot=snapshot,
-            source_repo_path=source_repo_path,
-            allow_dirty_existing_worktree=allow_dirty_existing_worktree,
-        )
+        worktree_kwargs: dict[str, Any] = {
+            "snapshot": snapshot,
+            "source_repo_path": source_repo_path,
+            "allow_dirty_existing_worktree": allow_dirty_existing_worktree,
+        }
+        if worktree_branch is not None:
+            worktree_kwargs["branch_override"] = worktree_branch
+        if worktree_path is not None:
+            worktree_kwargs["path_override"] = worktree_path
+        if base_branch != DEFAULT_BASE_BRANCH:
+            worktree_kwargs["base_branch"] = base_branch
+        worktree_info = await ensure_issue_worktree(settings, **worktree_kwargs)
         await upsert_worktree_record(
             settings,
             run_id=run_id,
@@ -277,25 +286,29 @@ async def ensure_issue_worktree(
     snapshot: dict[str, Any],
     source_repo_path: Path,
     allow_dirty_existing_worktree: bool = False,
+    branch_override: str | None = None,
+    path_override: Path | None = None,
+    base_branch: str = DEFAULT_BASE_BRANCH,
 ) -> WorktreeInfo:
     owner = str(snapshot.get("owner") or "")
     repo = str(snapshot.get("repo") or "")
     number = int(snapshot.get("number") or 0)
     title = str(snapshot.get("title") or "")
-    branch = f"paw/issue-{number}-{slugify(title)}"
-    path = settings.app_dir / "worktrees" / owner / repo / f"issue-{number}"
+    branch = branch_override or f"paw/issue-{number}-{slugify(title)}"
+    path = path_override or settings.app_dir / "worktrees" / owner / repo / f"issue-{number}"
+    resolved_base_branch = base_branch or DEFAULT_BASE_BRANCH
 
     if path.exists():
         if (path / ".git").exists():
             if allow_dirty_existing_worktree:
                 return WorktreeInfo(path=path, branch=branch, reused=True)
-            await _refresh_main_branch(source_repo_path)
+            await _prepare_base_branch(source_repo_path, resolved_base_branch)
             await _ensure_clean_worktree(path, "issue worktree")
-            await _run_git_checked(["merge", "--ff-only", DEFAULT_BASE_BRANCH], path)
+            await _run_git_checked(["merge", "--ff-only", resolved_base_branch], path)
             return WorktreeInfo(path=path, branch=branch, reused=True)
         raise RuntimeError(f"worktree path exists but is not a git worktree: {path}")
 
-    await _refresh_main_branch(source_repo_path)
+    await _prepare_base_branch(source_repo_path, resolved_base_branch)
 
     path.parent.mkdir(parents=True, exist_ok=True)
     branch_exists = await _git_branch_exists(source_repo_path, branch)
@@ -303,10 +316,18 @@ async def ensure_issue_worktree(
         await _run_git_checked(["worktree", "add", str(path), branch], source_repo_path)
     else:
         await _run_git_checked(
-            ["worktree", "add", "-b", branch, str(path), DEFAULT_BASE_BRANCH],
+            ["worktree", "add", "-b", branch, str(path), resolved_base_branch],
             source_repo_path,
         )
     return WorktreeInfo(path=path, branch=branch, reused=False)
+
+
+async def _prepare_base_branch(source_repo_path: Path, base_branch: str) -> None:
+    if base_branch == DEFAULT_BASE_BRANCH:
+        await _refresh_main_branch(source_repo_path)
+        return
+    if not await _git_branch_exists(source_repo_path, base_branch):
+        raise RuntimeError(f"base branch not found: {base_branch}")
 
 
 def build_implement_prompt(

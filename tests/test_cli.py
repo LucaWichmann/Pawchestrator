@@ -68,6 +68,10 @@ def test_issue_start_command_runs_pipeline(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cli, "load_settings", lambda: Settings(app_dir=tmp_path))
     calls = {}
 
+    class FakeClient:
+        async def fetch_sub_issues(self, _reference):
+            return []
+
     async def fake_run_pipeline(issue_url, settings, *, repo_path=None):
         calls["issue_url"] = issue_url
         calls["settings"] = settings
@@ -79,6 +83,8 @@ def test_issue_start_command_runs_pipeline(tmp_path, monkeypatch) -> None:
 
         return Result()
 
+    monkeypatch.setattr(cli, "get_gh_token", lambda: "token")
+    monkeypatch.setattr(cli, "GitHubIssueClient", lambda _token: FakeClient())
     monkeypatch.setattr(cli, "run_pipeline", fake_run_pipeline)
 
     result = CliRunner().invoke(

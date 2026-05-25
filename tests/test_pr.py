@@ -172,6 +172,44 @@ def test_run_pr_includes_draft_flag_when_configured(
     assert calls[2][:4] == ["gh", "pr", "create", "--draft"]
 
 
+def test_run_pr_accepts_custom_base_branch_and_draft_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = Settings(app_dir=tmp_path, pr=PrSettings(draft=False))
+    run_id = "run-123"
+    worktree_path = tmp_path / "worktree"
+    worktree_path.mkdir()
+    asyncio.run(_insert_verify_run(settings, run_id, worktree_path=worktree_path))
+    _write_artifacts(settings, run_id)
+    calls: list[list[str]] = []
+
+    async def fake_run_process(cmd: list[str], cwd: Path) -> tuple[str, str, int]:
+        calls.append(cmd)
+        if cmd[:3] == ["git", "rev-list", "--count"]:
+            return "1\n", "", 0
+        if cmd[:2] == ["git", "push"]:
+            return "pushed", "", 0
+        if cmd[:3] == ["gh", "pr", "create"]:
+            return "https://github.com/owner/repo/pull/99\n", "", 0
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr("pawchestrator.pr._run_process", fake_run_process)
+
+    result = asyncio.run(
+        run_pr(
+            run_id,
+            settings,
+            base_branch="paw/epic-42-parent",
+            draft_override=True,
+        )
+    )
+
+    assert result.draft["base"] == "paw/epic-42-parent"
+    assert calls[0] == ["git", "rev-list", "--count", "paw/epic-42-parent..HEAD"]
+    assert calls[2][:4] == ["gh", "pr", "create", "--draft"]
+    assert _flag_values(calls[2], "--base") == ["paw/epic-42-parent"]
+
+
 def test_run_pr_create_includes_multiple_assignees_and_reviewers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

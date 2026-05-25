@@ -9,6 +9,7 @@ import socket
 import subprocess
 from pathlib import Path
 from typing import Annotated
+from uuid import uuid4
 
 import typer
 import uvicorn
@@ -17,6 +18,7 @@ from pawchestrator.checkbox import check_checkbox
 from pawchestrator.codegraph import sync_back_if_merged
 from pawchestrator.config import DEFAULT_PORT, LOCAL_HOST, load_settings
 from pawchestrator.db import (
+    create_epic_run,
     get_run_state,
     get_worktree_record,
     insert_repo_registration,
@@ -34,8 +36,10 @@ from pawchestrator.grill import run_grill
 from pawchestrator.github import (
     GitHubIssueClient,
     get_gh_token,
+    parse_issue_url,
     parse_issue_shorthand,
 )
+from pawchestrator.epic import run_epic
 from pawchestrator.implement import run_implement
 from pawchestrator.issues import snapshot_issue
 from pawchestrator.pipeline import run_pipeline
@@ -148,10 +152,16 @@ def issue_start(
 
     settings = load_settings()
     try:
-        result = asyncio.run(run_pipeline(github_issue_url, settings, repo_path=repo_path))
+        result = asyncio.run(_start_issue_from_cli(github_issue_url, settings, repo_path))
     except Exception as error:
         typer.secho(f"Pipeline failed: {error}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from error
+
+    if getattr(result, "group_id", None):
+        typer.echo(f"Epic group ID: {result.group_id}")
+        for sub_run in result.sub_runs:
+            typer.echo(f"Sub-issue #{sub_run.issue_number}: {sub_run.run_id}")
+        return
 
     typer.echo(f"Run ID: {result.run_id}")
     typer.echo(f"Draft PR: {result.pr_url}")
@@ -175,6 +185,46 @@ def issue_grill(github_issue_url: str) -> None:
     typer.echo(f"Body updated: {result.report.body_updated}")
     typer.echo(f"Comment posted: {result.report.comment_posted}")
     typer.echo(f"Report: {result.artifact_path}")
+
+
+async def _start_issue_from_cli(
+    github_issue_url: str,
+    settings,
+    repo_path: Path | None,
+):
+    reference = parse_issue_url(github_issue_url)
+    client = GitHubIssueClient(get_gh_token())
+    sub_issues = await client.fetch_sub_issues(reference)
+    if not sub_issues:
+        return await run_pipeline(github_issue_url, settings, repo_path=repo_path)
+
+    resolved_repo_path = repo_path
+    if resolved_repo_path is None:
+        resolved_repo_path = await lookup_repo_path(
+            settings,
+            owner=reference.owner,
+            repo=reference.repo,
+        )
+    if resolved_repo_path is None:
+        raise ValueError("Repo not registered - run `pawchestrator repo add <path>` first")
+
+    group_id = str(uuid4())
+    parent_run_id = str(uuid4())
+    await create_epic_run(
+        settings,
+        run_id=parent_run_id,
+        owner=reference.owner,
+        repo=reference.repo,
+        issue_number=reference.number,
+        group_id=group_id,
+    )
+    return await run_epic(
+        github_issue_url,
+        settings,
+        repo_path=resolved_repo_path.resolve(),
+        group_id=group_id,
+        parent_run_id=parent_run_id,
+    )
 
 
 @checkbox_app.command("check")

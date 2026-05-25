@@ -12,7 +12,14 @@ import aiosqlite
 from pawchestrator.config import Settings, ensure_app_dir
 
 PIPELINE_STAGES = ("snapshot", "scout", "plan", "implement", "verify", "pr")
-TERMINAL_RUN_STATUSES = ("completed", "failed", "grill_complete", "grill_failed")
+TERMINAL_RUN_STATUSES = (
+    "completed",
+    "failed",
+    "grill_complete",
+    "grill_failed",
+    "epic_complete",
+    "epic_failed",
+)
 STALE_RUN_ERROR = "Run aborted: Pawchestrator stopped before this run finished."
 
 SCHEMA_SQL = """
@@ -26,6 +33,7 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
   status TEXT NOT NULL DEFAULT 'pending',
   current_stage TEXT,
   pr_url TEXT,
+  epic_branch_mode TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -92,6 +100,7 @@ async def init_db(settings: Settings) -> Path:
             db,
             "workflow_type TEXT NOT NULL DEFAULT 'pipeline'",
         )
+        await _add_column_if_missing(db, "epic_branch_mode TEXT")
         await db.commit()
     return settings.database_path
 
@@ -190,19 +199,83 @@ async def create_epic_run(
     repo: str,
     issue_number: int,
     group_id: str,
+    epic_branch_mode: str | None = None,
 ) -> None:
     await init_db(settings)
     now = utc_now_iso()
+    mode = epic_branch_mode or settings.pipeline.epic_branch_mode
     async with aiosqlite.connect(settings.database_path) as db:
         await db.execute(
             """
             INSERT INTO workflow_runs (
               id, owner, repo, issue_number, group_id, workflow_type, status, current_stage,
-              created_at, updated_at
+              epic_branch_mode, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, 'epic', 'pending', NULL, ?, ?)
+            VALUES (?, ?, ?, ?, ?, 'epic', 'pending', NULL, ?, ?, ?)
             """,
-            (run_id, owner, repo, issue_number, group_id, now, now),
+            (run_id, owner, repo, issue_number, group_id, mode, now, now),
+        )
+        await db.commit()
+
+
+async def start_epic_run(settings: Settings, *, run_id: str) -> None:
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET status = 'epic_running', current_stage = 'epic', updated_at = ?
+            WHERE id = ?
+            """,
+            (now, run_id),
+        )
+        await db.commit()
+
+
+async def complete_epic_run(
+    settings: Settings,
+    *,
+    run_id: str,
+    pr_url: str | None,
+) -> None:
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET status = 'epic_complete', current_stage = 'epic',
+                pr_url = COALESCE(?, pr_url), updated_at = ?
+            WHERE id = ?
+            """,
+            (pr_url, now, run_id),
+        )
+        await db.commit()
+
+
+async def set_run_pr_url(settings: Settings, *, run_id: str, pr_url: str) -> None:
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET pr_url = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (pr_url, now, run_id),
+        )
+        await db.commit()
+
+
+async def fail_epic_run(settings: Settings, *, run_id: str) -> None:
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET status = 'epic_failed', current_stage = 'epic', updated_at = ?
+            WHERE id = ?
+            """,
+            (now, run_id),
         )
         await db.commit()
 
@@ -1034,16 +1107,35 @@ async def fail_pr_run(
         await db.commit()
 
 
-async def mark_run_completed(settings: Settings, *, run_id: str) -> None:
+async def mark_run_completed(
+    settings: Settings,
+    *,
+    run_id: str,
+    current_stage: str = "pr",
+) -> None:
     now = utc_now_iso()
     async with aiosqlite.connect(settings.database_path) as db:
         await db.execute(
             """
             UPDATE workflow_runs
-            SET status = 'completed', current_stage = 'pr', updated_at = ?
+            SET status = 'completed', current_stage = ?, updated_at = ?
             WHERE id = ?
             """,
-            (now, run_id),
+            (current_stage, now, run_id),
+        )
+        await db.commit()
+
+
+async def skip_pr_stage(settings: Settings, *, run_id: str, reason: str) -> None:
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_stages
+            SET status = 'skipped', error = ?, completed_at = ?
+            WHERE run_id = ? AND stage_name = 'pr' AND status = 'pending'
+            """,
+            (reason, now, run_id),
         )
         await db.commit()
 
@@ -1068,12 +1160,13 @@ async def fail_stale_runs_on_startup(settings: Settings) -> int:
     cleaned = 0
     async with aiosqlite.connect(settings.database_path) as db:
         db.row_factory = aiosqlite.Row
+        terminal_placeholders = ", ".join("?" for _ in TERMINAL_RUN_STATUSES)
         cursor = await db.execute(
-            """
+            f"""
             SELECT id, workflow_type, status, current_stage, pr_url
             FROM workflow_runs
-            WHERE status NOT IN (?, ?, ?, ?)
-              AND group_id IS NULL
+            WHERE status NOT IN ({terminal_placeholders})
+              AND (group_id IS NULL OR workflow_type = 'epic')
             ORDER BY created_at, id
             """,
             TERMINAL_RUN_STATUSES,
@@ -1088,6 +1181,20 @@ async def fail_stale_runs_on_startup(settings: Settings) -> int:
                     UPDATE workflow_runs
                     SET status = 'completed',
                         current_stage = 'pr',
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (now, run_id),
+                )
+                cleaned += 1
+                continue
+
+            if run["workflow_type"] == "epic":
+                await db.execute(
+                    """
+                    UPDATE workflow_runs
+                    SET status = 'epic_failed',
+                        current_stage = 'epic',
                         updated_at = ?
                     WHERE id = ?
                     """,
@@ -1126,7 +1233,7 @@ async def get_run_state(settings: Settings, run_id: str) -> dict[str, object] | 
         run_cursor = await db.execute(
             """
             SELECT id, owner, repo, issue_number, workflow_type, status,
-                   current_stage, pr_url, created_at, updated_at
+                   current_stage, pr_url, epic_branch_mode, created_at, updated_at
             FROM workflow_runs
             WHERE id = ?
             """,
@@ -1231,7 +1338,7 @@ async def get_latest_epic_run_by_issue(
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
             """
-            SELECT id, group_id
+            SELECT id, group_id, status, pr_url, epic_branch_mode
             FROM workflow_runs
             WHERE owner = ?
               AND repo = ?
@@ -1247,7 +1354,9 @@ async def get_latest_epic_run_by_issue(
     if row is None or row["group_id"] is None:
         return None
 
+    parent_run_id = str(row["id"])
     group_id = str(row["group_id"])
+    parent_worktree = await get_worktree_record(settings, run_id=parent_run_id)
     sub_runs = []
     for grouped_run in await get_runs_by_group_id(settings, group_id):
         if grouped_run.get("workflow_type") != "pipeline":
@@ -1261,7 +1370,12 @@ async def get_latest_epic_run_by_issue(
         sub_runs.append(run)
 
     return {
+        "run_id": parent_run_id,
         "group_id": group_id,
+        "status": str(row["status"]),
+        "mode": str(row["epic_branch_mode"] or settings.pipeline.epic_branch_mode),
+        "branch": None if parent_worktree is None else str(parent_worktree["branch"]),
+        "pr_url": row["pr_url"],
         "epic_confirm": settings.pipeline.epic_confirm,
         "sub_runs": sub_runs,
     }

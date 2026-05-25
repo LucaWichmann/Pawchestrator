@@ -30,7 +30,14 @@
   const FIRE = "\uD83D\uDD25";
   const WARNING = "\u26A0";
   const OFFLINE_MESSAGE = "Pawchestrator not running \u2014 start with `pawchestrator serve`";
-  const RUN_DONE = new Set(["completed", "failed", "grill_complete", "grill_failed"]);
+  const RUN_DONE = new Set([
+    "completed",
+    "failed",
+    "grill_complete",
+    "grill_failed",
+    "epic_complete",
+    "epic_failed",
+  ]);
   const PIPELINE_ACTIVE = new Set([
     "snapshot_running",
     "snapshot_complete",
@@ -699,6 +706,12 @@
   }
 
   function epicStatus(epic) {
+    if (epic?.status === "epic_complete") {
+      return "completed";
+    }
+    if (epic?.status === "epic_failed") {
+      return "failed";
+    }
     const runs = epicSubRuns(epic);
     if (runs.some((run) => run.status === "failed" || /_failed$/.test(run.status || ""))) {
       return "failed";
@@ -715,8 +728,9 @@
     }
     return {
       workflow_type: "epic",
-      status: epicStatus(epic),
+      status: epic.status || epicStatus(epic),
       current_stage: "epic",
+      pr_url: epic.pr_url,
     };
   }
 
@@ -731,6 +745,13 @@
     const title = document.createElement("div");
     title.className = "pawchestrator-epic-title";
     title.textContent = `Epic: ${epicStatus(epic)}`;
+    if (epic.pr_url) {
+      title.append(document.createTextNode(" \u00B7 "));
+      const link = document.createElement("a");
+      link.href = epic.pr_url;
+      link.textContent = "PR";
+      title.append(link);
+    }
     section.append(title);
 
     const list = document.createElement("div");
@@ -996,6 +1017,7 @@
     const anyActive = Boolean(
       (status.pipeline && !RUN_DONE.has(status.pipeline.status)) ||
       (status.grill && !RUN_DONE.has(status.grill.status)) ||
+      (status.epic && !RUN_DONE.has(status.epic.status || epicStatus(status.epic))) ||
       epicSubRuns(status.epic).some((run) => !RUN_DONE.has(run.status))
     );
     const shouldDisable = !issueOpen || anyActive;
@@ -1083,7 +1105,12 @@
 
   function epicFromStartResponse(response) {
     return {
+      run_id: response.run_id,
       group_id: response.group_id,
+      status: "epic_running",
+      mode: response.mode,
+      branch: response.branch,
+      pr_url: response.pr_url,
       sub_runs: (response.sub_runs || []).map((run) => ({
         issue_number: run.issue_number,
         run_id: run.run_id,
