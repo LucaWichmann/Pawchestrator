@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import aiosqlite
 from fastapi.testclient import TestClient
@@ -58,6 +59,8 @@ def test_issue_start_returns_run_id_and_schedules_pipeline(
     settings = Settings(app_dir=tmp_path)
     _seed_token(settings)
     calls = []
+    sub_issue_client = _FakeSubIssueClient([])
+    _patch_sub_issue_client(monkeypatch, sub_issue_client)
 
     async def fake_run_pipeline(
         issue_url: str,
@@ -80,7 +83,8 @@ def test_issue_start_returns_run_id_and_schedules_pipeline(
         state_response = client.get(f"/runs/{run_id}", headers=_token_headers())
 
     assert response.status_code == 200
-    assert response.json() == {"run_id": run_id}
+    assert response.json() == {"type": "pipeline", "run_id": run_id}
+    assert sub_issue_client.fetched is True
     assert calls == [
         ("https://github.com/owner/repo/issues/42", tmp_path, run_id, False),
     ]
@@ -98,12 +102,76 @@ def test_issue_start_returns_run_id_and_schedules_pipeline(
     assert {stage["status"] for stage in payload["stages"]} == {"pending"}
 
 
+def test_issue_start_routes_epic_when_sub_issues_exist(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _seed_token(settings)
+    client = _FakeSubIssueClient(
+        [
+            {
+                "number": 43,
+                "title": "First child",
+                "url": "https://github.com/owner/repo/issues/43",
+            }
+        ],
+        settings=settings,
+    )
+    calls = []
+    _patch_sub_issue_client(monkeypatch, client)
+    _insert_repo_registration(settings, tmp_path)
+
+    async def fake_run_epic(
+        issue_url: str,
+        runtime_settings: Settings,
+        *,
+        repo_path: Path,
+        group_id: str,
+    ):
+        calls.append((issue_url, runtime_settings.app_dir, repo_path, group_id))
+        return SimpleNamespace(
+            group_id=group_id,
+            sub_runs=[SimpleNamespace(issue_number=43, run_id="run-43")],
+        )
+
+    async def fail_run_pipeline(*_args, **_kwargs):
+        raise AssertionError("pipeline should not be scheduled for epics")
+
+    monkeypatch.setattr("pawchestrator.server.run_epic", fake_run_epic)
+    monkeypatch.setattr("pawchestrator.server.run_pipeline", fail_run_pipeline)
+
+    with TestClient(create_app(settings)) as client_app:
+        response = client_app.post(
+            "/issue/start",
+            json={"owner": "owner", "repo": "repo", "number": 42},
+            headers=_token_headers(),
+        )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["type"] == "epic"
+    assert payload["group_id"]
+    assert payload["sub_runs"] == [{"issue_number": 43, "run_id": "run-43"}]
+    assert client.fetched is True
+    assert client.run_count_at_fetch == 0
+    assert calls == [
+        (
+            "https://github.com/owner/repo/issues/42",
+            tmp_path,
+            tmp_path.resolve(),
+            payload["group_id"],
+        )
+    ]
+
+
 def test_issue_start_background_failure_does_not_raise(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     settings = Settings(app_dir=tmp_path)
     _seed_token(settings)
+    _patch_sub_issue_client(monkeypatch, _FakeSubIssueClient([]))
 
     async def fake_run_pipeline(
         issue_url: str,
@@ -238,6 +306,30 @@ def test_protected_routes_accept_stored_pairing_token(tmp_path: Path) -> None:
     assert response.status_code == 200
 
 
+def test_issue_status_returns_epic_confirm_setting(tmp_path: Path, monkeypatch) -> None:
+    from pawchestrator.config import PipelineSettings
+
+    settings = Settings(
+        app_dir=tmp_path,
+        pipeline=PipelineSettings(epic_confirm=True),
+    )
+    _seed_token(settings)
+
+    async def fake_runner_health(_settings: Settings):
+        return {"claude": {"available": True}}
+
+    monkeypatch.setattr("pawchestrator.server.get_runner_health", fake_runner_health)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.get(
+            "/issue/owner/repo/42/status",
+            headers=_token_headers(),
+        )
+
+    assert response.status_code == 200
+    assert response.json()["epic_confirm"] is True
+
+
 def test_pair_rejects_wrong_origin(tmp_path: Path) -> None:
     settings = Settings(app_dir=tmp_path)
 
@@ -335,6 +427,48 @@ def _insert_run_state(settings: Settings) -> None:
 
 def _seed_token(settings: Settings, token: str = "known-token") -> None:
     save_sessions(settings, {"tokens": [token]})
+
+
+class _FakeSubIssueClient:
+    def __init__(
+        self,
+        sub_issues: list[dict[str, object]],
+        *,
+        settings: Settings | None = None,
+    ) -> None:
+        self.sub_issues = sub_issues
+        self.settings = settings
+        self.fetched = False
+        self.run_count_at_fetch: int | None = None
+
+    async def fetch_sub_issues(self, _reference):
+        self.fetched = True
+        if self.settings is not None:
+            async with aiosqlite.connect(self.settings.database_path) as db:
+                cursor = await db.execute("SELECT COUNT(*) FROM workflow_runs")
+                row = await cursor.fetchone()
+            self.run_count_at_fetch = int(row[0])
+        return self.sub_issues
+
+
+def _patch_sub_issue_client(monkeypatch, client: _FakeSubIssueClient) -> None:
+    monkeypatch.setattr("pawchestrator.server.get_gh_token", lambda: "token")
+    monkeypatch.setattr("pawchestrator.server.GitHubIssueClient", lambda _token: client)
+
+
+def _insert_repo_registration(settings: Settings, local_path: Path) -> None:
+    import asyncio
+
+    from pawchestrator.db import insert_repo_registration
+
+    asyncio.run(
+        insert_repo_registration(
+            settings,
+            owner="owner",
+            repo="repo",
+            local_path=local_path,
+        )
+    )
 
 
 def _token_headers(token: str = "known-token") -> dict[str, str]:
