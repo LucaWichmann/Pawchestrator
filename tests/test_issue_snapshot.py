@@ -11,10 +11,17 @@ from pawchestrator.github import IssueReference
 
 
 class FakeGitHubIssueClient:
+    checkbox_headings: list[str] | None = None
+
     def __init__(self, token: str) -> None:
         assert token == "fake-token"
 
-    async def fetch_snapshot(self, reference: IssueReference) -> dict[str, object]:
+    async def fetch_snapshot(
+        self,
+        reference: IssueReference,
+        checkbox_headings: list[str],
+    ) -> dict[str, object]:
+        FakeGitHubIssueClient.checkbox_headings = checkbox_headings
         return {
             "schema": "pawchestrator.issue_snapshot.v1",
             "owner": reference.owner,
@@ -22,6 +29,7 @@ class FakeGitHubIssueClient:
             "number": reference.number,
             "title": "Add handler memoization",
             "body": "Issue body",
+            "checkboxes": [],
             "labels": ["enhancement"],
             "assignees": ["octo"],
             "comments": [],
@@ -57,6 +65,16 @@ def test_issue_snapshot_command_writes_artifact_and_records_run(
     assert snapshot["owner"] == "owner"
     assert snapshot["repo"] == "repo"
     assert snapshot["number"] == 42
+    assert snapshot["checkboxes"] == []
+    assert FakeGitHubIssueClient.checkbox_headings == [
+        "Acceptance Criteria",
+        "AC",
+        "Definition of Gone",
+        "DoD",
+        "Checklist",
+        "Requirements",
+        "Tasks",
+    ]
 
     with sqlite3.connect(tmp_path / "database.sqlite") as db:
         run = db.execute(
