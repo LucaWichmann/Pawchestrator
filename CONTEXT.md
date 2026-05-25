@@ -30,6 +30,10 @@ Local agent orchestration triggered from GitHub issues, right from inside your b
 
 **GrillReport** — Artifact produced by the Grill action. Contains `suggested_criteria` (inferred from codebase), `unanswerable_questions` (posted to GitHub if non-empty), `body_updated` (bool), `comment_posted` (bool), `comment_id` (int or null).
 
+**CheckboxCriterion** — A single `- [ ]` item parsed from the issue body that falls under a configured acceptance-criteria heading. Identified by a scoped integer index (0-based, counting only in-scope checkboxes, ignoring all others). Stored in `IssueSnapshot.checkboxes` as `{index, text}`. The implement agent checks criteria off by calling `pawchestrator checkbox check <owner>/<repo>/<number> <index>` via Bash during implementation; Pawchestrator immediately PATCHes the GitHub issue body. If the agent never calls the tool, checkboxes remain unchecked — this is intentional and honest (unchecked = agent did not confirm).
+
+**CheckboxHeadings** — The configured list of markdown heading texts under which `- [ ]` items are treated as CheckboxCriteria. Case-insensitive. Defaults: `Acceptance Criteria`, `AC`, `Definition of Done`, `DoD`, `Checklist`, `Requirements`, `Tasks`. Configurable via `[checkboxes] headings = [...]` in `config.toml`.
+
 ---
 
 ## MVP 0 pipeline (hardcoded, no YAML engine)
@@ -37,10 +41,11 @@ Local agent orchestration triggered from GitHub issues, right from inside your b
 ```
 Tampermonkey button click on GitHub issue
   → POST /issue/start {owner, repo, number}
-  → Snapshot    GitHub API              → IssueSnapshot artifact
+  → Snapshot    GitHub API              → IssueSnapshot artifact (includes CheckboxCriteria)
   → Scout       ClaudeRunner            → ScoutReport artifact
   → Plan        ClaudeRunner            → ImplementationPlan artifact
   → Implement   CodexRunner             → ImplementationReport + file edits
+                                           (agent calls `pawchestrator checkbox check` per criterion)
   → Verify      ShellRunner             → VerificationReport artifact
   → PR          gh pr create             → PR URL + assignment
 ```
