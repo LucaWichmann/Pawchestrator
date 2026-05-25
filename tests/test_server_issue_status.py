@@ -32,6 +32,7 @@ def test_issue_status_returns_null_runs_when_no_run_exists(
         "epic_confirm": False,
         "pipeline": None,
         "grill": None,
+        "epic": None,
     }
 
 
@@ -58,6 +59,55 @@ def test_issue_status_returns_active_pipeline_run(
     assert payload["pipeline"]["workflow_type"] == "pipeline"
     assert payload["pipeline"]["stages"][0]["stage_name"] == "plan"
     assert payload["pipeline"]["warnings"] == []
+    assert payload["epic"] is None
+
+
+def test_issue_status_returns_epic_run_with_pipeline_shaped_sub_runs(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    settings.pipeline.epic_confirm = True
+    _seed_token(settings)
+    _stub_runner_health(monkeypatch)
+    _insert_epic_run(settings)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.get(
+            "/issue/owner/repo/42/status",
+            headers=_token_headers(),
+        )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["pipeline"] is None
+    assert payload["epic_confirm"] is True
+    assert payload["epic"]["group_id"] == "epic-group"
+    assert payload["epic"]["epic_confirm"] is True
+    assert [run["issue_number"] for run in payload["epic"]["sub_runs"]] == [43, 44]
+
+    first_sub_run = payload["epic"]["sub_runs"][0]
+    assert first_sub_run["run_id"] == "epic-child-1"
+    assert first_sub_run["status"] == "plan_running"
+    assert first_sub_run["current_stage"] == "plan"
+    assert first_sub_run["workflow_type"] == "pipeline"
+    assert first_sub_run["stages"][0]["stage_name"] == "plan"
+    assert first_sub_run["warnings"] == [
+        {
+            "id": "epic-warning-1",
+            "run_id": "epic-child-1",
+            "stage_name": "verify",
+            "code": "tests_skipped",
+            "message": "Tests were skipped",
+            "created_at": "2026-05-24T10:00:03Z",
+        }
+    ]
+    assert first_sub_run["pr_url"] is None
+
+    second_sub_run = payload["epic"]["sub_runs"][1]
+    assert second_sub_run["run_id"] == "epic-child-2"
+    assert second_sub_run["status"] == "completed"
+    assert second_sub_run["pr_url"] == "https://github.com/owner/repo/pull/44"
 
 
 def test_issue_status_marks_stale_pipeline_failed_on_startup(
@@ -363,6 +413,93 @@ def _insert_grill_run(settings: Settings) -> None:
                 )
                 """,
                 (str(report_path),),
+            )
+            await db.commit()
+
+    asyncio.run(insert())
+
+
+def _insert_epic_run(settings: Settings) -> None:
+    import asyncio
+
+    async def insert() -> None:
+        await init_db(settings)
+        async with aiosqlite.connect(settings.database_path) as db:
+            await db.execute(
+                """
+                INSERT INTO workflow_runs (
+                  id, owner, repo, issue_number, group_id, workflow_type, status,
+                  current_stage, created_at, updated_at
+                )
+                VALUES (
+                  'epic-parent', 'owner', 'repo', 42, 'epic-group', 'epic',
+                  'running', NULL, '2026-05-24T10:00:00Z',
+                  '2026-05-24T10:00:04Z'
+                )
+                """
+            )
+            await db.executemany(
+                """
+                INSERT INTO workflow_runs (
+                  id, owner, repo, issue_number, group_id, workflow_type, status,
+                  current_stage, pr_url, created_at, updated_at
+                )
+                VALUES (?, 'owner', 'repo', ?, 'epic-group', 'pipeline', ?, ?,
+                        ?, ?, ?)
+                """,
+                [
+                    (
+                        "epic-child-1",
+                        43,
+                        "plan_running",
+                        "plan",
+                        None,
+                        "2026-05-24T10:00:01Z",
+                        "2026-05-24T10:00:02Z",
+                    ),
+                    (
+                        "epic-child-2",
+                        44,
+                        "completed",
+                        "pr",
+                        "https://github.com/owner/repo/pull/44",
+                        "2026-05-24T10:00:02Z",
+                        "2026-05-24T10:00:03Z",
+                    ),
+                ],
+            )
+            await db.execute(
+                """
+                INSERT INTO workflow_stages (
+                  id, run_id, stage_name, status, started_at
+                )
+                VALUES (
+                  'epic-stage-1', 'epic-child-1', 'plan', 'running',
+                  '2026-05-24T10:00:01Z'
+                )
+                """
+            )
+            await db.execute(
+                """
+                INSERT INTO workflow_stages (
+                  id, run_id, stage_name, status, completed_at
+                )
+                VALUES (
+                  'epic-stage-2', 'epic-child-2', 'pr', 'complete',
+                  '2026-05-24T10:00:03Z'
+                )
+                """
+            )
+            await db.execute(
+                """
+                INSERT INTO run_warnings (
+                  id, run_id, stage_name, code, message, created_at
+                )
+                VALUES (
+                  'epic-warning-1', 'epic-child-1', 'verify', 'tests_skipped',
+                  'Tests were skipped', '2026-05-24T10:00:03Z'
+                )
+                """
             )
             await db.commit()
 
