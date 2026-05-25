@@ -5,16 +5,19 @@ from uuid import UUID
 
 from pawchestrator.config import Settings
 from pawchestrator.db import (
+    TERMINAL_RUN_STATUSES,
     create_epic_run,
     create_pipeline_run,
     create_grill_run,
     fail_stale_runs_on_startup,
     get_github_comment_id,
+    get_latest_grill_run_by_issue,
     get_runs_by_group_id,
     get_run_warnings,
     init_db,
     insert_run_warning,
     list_tables,
+    set_grill_waiting,
     STALE_RUN_ERROR,
     store_github_comment_id,
     upsert_worktree_record,
@@ -328,6 +331,94 @@ def test_fail_stale_runs_leaves_terminal_runs_unchanged(tmp_path: Path) -> None:
     assert cleaned == 0
     run, _ = _fetch_run_and_stages(tmp_path, "run-123")
     assert run == ("completed", "pr", None)
+
+
+def test_grill_waiting_is_not_terminal() -> None:
+    assert "grill_waiting" not in TERMINAL_RUN_STATUSES
+
+
+def test_set_grill_waiting_transitions_run(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    asyncio.run(
+        create_grill_run(
+            settings,
+            run_id="run-123",
+            owner="owner",
+            repo="repo",
+            issue_number=42,
+        )
+    )
+
+    asyncio.run(set_grill_waiting(settings, run_id="run-123"))
+
+    run, _ = _fetch_run_and_stages(tmp_path, "run-123")
+    assert run == ("grill_waiting", "grill", None)
+
+
+def test_fail_stale_runs_skips_grill_waiting(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    asyncio.run(
+        create_grill_run(
+            settings,
+            run_id="run-123",
+            owner="owner",
+            repo="repo",
+            issue_number=42,
+        )
+    )
+    asyncio.run(set_grill_waiting(settings, run_id="run-123"))
+
+    cleaned = asyncio.run(fail_stale_runs_on_startup(settings))
+
+    assert cleaned == 0
+    run, stages = _fetch_run_and_stages(tmp_path, "run-123")
+    assert run == ("grill_waiting", "grill", None)
+    assert stages == {}
+
+
+def test_grill_waiting_survives_repeated_startup_cleanup(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    asyncio.run(
+        create_grill_run(
+            settings,
+            run_id="run-123",
+            owner="owner",
+            repo="repo",
+            issue_number=42,
+        )
+    )
+    asyncio.run(set_grill_waiting(settings, run_id="run-123"))
+
+    first_cleaned = asyncio.run(fail_stale_runs_on_startup(settings))
+    second_cleaned = asyncio.run(fail_stale_runs_on_startup(settings))
+
+    assert first_cleaned == 0
+    assert second_cleaned == 0
+    run, _ = _fetch_run_and_stages(tmp_path, "run-123")
+    assert run == ("grill_waiting", "grill", None)
+
+
+def test_get_latest_grill_run_by_issue_returns_grill_waiting(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    asyncio.run(
+        create_grill_run(
+            settings,
+            run_id="run-123",
+            owner="owner",
+            repo="repo",
+            issue_number=42,
+        )
+    )
+    asyncio.run(set_grill_waiting(settings, run_id="run-123"))
+
+    run = asyncio.run(
+        get_latest_grill_run_by_issue(settings, "owner", "repo", 42)
+    )
+
+    assert run is not None
+    assert run["run_id"] == "run-123"
+    assert run["status"] == "grill_waiting"
+    assert run["workflow_type"] == "grill"
 
 
 def test_fail_stale_runs_marks_grill_failed(tmp_path: Path) -> None:
