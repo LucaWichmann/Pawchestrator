@@ -246,16 +246,21 @@ def checkbox_check(
         reference = parse_issue_shorthand(issue_ref)
         token = get_gh_token()
         client = GitHubIssueClient(token)
-        changed = asyncio.run(
-            check_checkbox(
-                client,
-                reference,
-                index,
-                settings.checkboxes.headings,
-                run_id=run_id,
-                db_path=settings.database_path,
+        if run_id is None:
+            changed = asyncio.run(
+                check_checkbox(client, reference, index, settings.checkboxes.headings)
             )
-        )
+        else:
+            changed = asyncio.run(
+                check_checkbox(
+                    client,
+                    reference,
+                    index,
+                    settings.checkboxes.headings,
+                    run_id=run_id,
+                    db_path=settings.database_path,
+                )
+            )
     except Exception as error:
         typer.secho(f"Checkbox check failed: {error}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from error
