@@ -6,6 +6,7 @@ import pytest
 
 from pawchestrator.github import (
     PAWCHESTRATOR_LABELS,
+    GitHubError,
     GitHubIssueClient,
     ensure_pawchestrator_labels,
     format_run_comment,
@@ -256,6 +257,86 @@ def test_github_issue_client_fetch_admin_collaborators_raises_on_http_error() ->
 
     with pytest.raises(RuntimeError, match="GitHub API error 403: forbidden"):
         asyncio.run(client.fetch_admin_collaborators("owner", "repo"))
+
+
+def test_github_issue_client_fetches_sub_issues() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.method == "GET"
+        assert request.url.path == "/repos/owner/repo/issues/42/sub_issues"
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "number": 43,
+                    "title": "First child",
+                    "html_url": "https://github.com/owner/repo/issues/43",
+                },
+                {
+                    "number": 44,
+                    "title": "Second child",
+                    "html_url": "https://github.com/owner/repo/issues/44",
+                },
+            ],
+        )
+
+    reference = parse_issue_shorthand("owner/repo/42")
+    client = GitHubIssueClient(
+        "token",
+        api_base="https://api.github.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    sub_issues = asyncio.run(client.fetch_sub_issues(reference))
+
+    assert sub_issues == [
+        {
+            "number": 43,
+            "title": "First child",
+            "url": "https://github.com/owner/repo/issues/43",
+        },
+        {
+            "number": 44,
+            "title": "Second child",
+            "url": "https://github.com/owner/repo/issues/44",
+        },
+    ]
+    assert len(requests) == 1
+
+
+def test_github_issue_client_fetch_sub_issues_returns_empty_list() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/repos/owner/repo/issues/42/sub_issues"
+        return httpx.Response(200, json=[])
+
+    reference = parse_issue_shorthand("owner/repo/42")
+    client = GitHubIssueClient(
+        "token",
+        api_base="https://api.github.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert asyncio.run(client.fetch_sub_issues(reference)) == []
+
+
+def test_github_issue_client_fetch_sub_issues_raises_on_http_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/repos/owner/repo/issues/42/sub_issues"
+        return httpx.Response(403, json={"message": "forbidden"})
+
+    reference = parse_issue_shorthand("owner/repo/42")
+    client = GitHubIssueClient(
+        "token",
+        api_base="https://api.github.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(GitHubError, match="GitHub API error 403: forbidden"):
+        asyncio.run(client.fetch_sub_issues(reference))
 
 
 def test_github_issue_client_edits_comment() -> None:
