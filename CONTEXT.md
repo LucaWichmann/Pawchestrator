@@ -26,9 +26,11 @@ Local agent orchestration triggered from GitHub issues, right from inside your b
 
 **RunWarning** — A non-fatal diagnostic event emitted by a Stage during a Run. Stored in the `run_warnings` table (1:n to `workflow_runs`). Surfaced in the GitHub issue comment alongside run state. Distinct from Stage errors: a warning does not fail the Stage; an error does.
 
-**Grill** — A standalone read-only analysis action triggered from the GitHub issue page. Explores the local codebase, infers acceptance criteria from issue context + code, appends a `## Pawchestrator Suggested Criteria` section to the issue body, and posts a comment only if there are questions it cannot answer from codebase context. Does not create a worktree, does not run Codex, does not modify local files. Produces a `GrillReport` artifact. Reuses the run infrastructure with `workflow_type = "grill"` to keep state tracking consistent without coupling to pipeline logic.
+**Grill** — A standalone read-only analysis action triggered from the GitHub issue page. Explores the local codebase, infers acceptance criteria from issue context + code, appends a `## Pawchestrator Suggested Criteria` section to the issue body, and posts a questions comment if there are questions it cannot answer from codebase context. Does not create a worktree, does not run Codex, does not modify local files. Produces a `GrillReport` artifact. Reuses the run infrastructure with `workflow_type = "grill"` to keep state tracking consistent without coupling to pipeline logic.
 
-**GrillReport** — Artifact produced by the Grill action. Contains `suggested_criteria` (inferred from codebase), `unanswerable_questions` (posted to GitHub if non-empty), `body_updated` (bool), `comment_posted` (bool), `comment_id` (int or null).
+Grill is multi-round: if questions are posted, the run transitions to `grill_waiting` and pauses. The user replies to the questions comment on GitHub; the Tampermonkey panel detects the reply (via DOM `MutationObserver` on `#issuecomment-{comment_id}`) and re-triggers `POST /issue/grill`. The endpoint auto-detects the `grill_waiting` run and resumes it: fetches reply comments (filtered by `in_reply_to_id`), re-runs the grill agent with previous questions + reply bodies as context, posts a new questions comment if unresolved questions remain (loop), or transitions to `grill_complete` if satisfied. One `GrillReport` artifact per run, overwritten each round with the latest state. See ADR 0008.
+
+**GrillReport** — Artifact produced by the Grill action. Contains `suggested_criteria` (inferred from codebase), `unanswerable_questions` (posted to GitHub if non-empty), `body_updated` (bool), `comment_posted` (bool), `comment_id` (int or null — always the most recent questions comment for this run).
 
 **CheckboxCriterion** — A single `- [ ]` item parsed from the issue body that falls under a configured acceptance-criteria heading. Identified by a scoped integer index (0-based, counting only in-scope checkboxes, ignoring all others). Stored in `IssueSnapshot.checkboxes` as `{index, text}`. The implement agent checks criteria off by calling `pawchestrator checkbox check <owner>/<repo>/<number> <index>` via Bash during implementation; Pawchestrator fetches the latest issue body and PATCHes the updated Markdown without ETag optimistic locking. If the agent never calls the tool, checkboxes remain unchecked — this is intentional and honest (unchecked = agent did not confirm).
 
@@ -161,6 +163,10 @@ run_warnings    (id, run_id, stage_name, code, message, created_at)
 
 `workflow_type` distinguishes run kinds: `"pipeline"` (default, snapshot→PR) and `"grill"` (standalone analysis, no worktree). Pipeline code must assert `workflow_type != "grill"` before creating worktrees or invoking Codex.
 
+Grill run statuses: `pending` → `grill_running` → `grill_waiting` (questions posted, paused for reply) → `grill_running` (resumed) → `grill_complete` | `grill_failed`. `grill_waiting` is excluded from `fail_stale_runs_on_startup` — it survives server restarts. Terminal statuses: `grill_complete`, `grill_failed` (plus pipeline terminals).
+
+`IssueSnapshot.comments` includes `in_reply_to_id: int | null` per comment entry (populated from GitHub API). Used by re-grill context builder to filter reply comments to the questions comment.
+
 **Artifact files on disk:**
 ```
 ~/.pawchestrator/runs/{run_id}/
@@ -218,7 +224,7 @@ MVP 1: GitHub OAuth device flow, PAT support.
 - The comment ID is stored in SQLite (`workflow_runs.github_comment_id`) so subsequent stage transitions can edit it.
 - Internal artifacts stay local. GitHub comments show only factual run state.
 
-**Grill comment carve-out:** Grill is the only action that writes LLM-generated text to GitHub. This is intentional — the questions are the product, not a summary. A grill comment is posted only when there are unanswerable questions (questions ClaudeRunner could not resolve from codebase context). Zero unanswerable questions = zero comments. The comment is posted once and never edited. See ADR 0002.
+**Grill comment carve-out:** Grill is the only action that writes LLM-generated text to GitHub. This is intentional — the questions are the product, not a summary. A grill comment is posted only when there are unanswerable questions. Zero unanswerable questions = zero comments. One new comment is posted per round (never edited); `comment_id` in the run always points to the most recent questions comment. See ADR 0002, ADR 0008.
 
 **Label strategy — pipeline runs:**
 - Apply `pawchestrator:running` when a run starts, replace with stage label (`pawchestrator:scouting`, `pawchestrator:planning`, etc.) as stages progress.

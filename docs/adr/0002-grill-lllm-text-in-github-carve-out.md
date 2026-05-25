@@ -23,7 +23,7 @@ Grill is the only Pawchestrator action permitted to write LLM-generated text to 
 
 It may not:
 - Edit or replace existing issue body sections written by humans.
-- Post more than one comment per grill run.
+- Edit an existing questions comment (new comment per round instead).
 - Post a comment if there are zero unanswerable questions.
 
 All other Pawchestrator actions (run comments, labels, PR bodies from pipeline runs) remain template-only.
@@ -32,5 +32,6 @@ All other Pawchestrator actions (run comments, labels, PR bodies from pipeline r
 
 - CONTEXT.md comment policy updated with explicit grill carve-out.
 - `## Pawchestrator Suggested Criteria` heading is idempotent — grill checks for it before appending. Running grill twice on the same issue is safe.
-- The grill comment is posted once and never edited (no comment_id tracking needed for grill).
+- Grill posts one comment per round; `workflow_runs.github_comment_id` always tracks the most recent questions comment for re-grill reply detection.
+- Multi-round continuation design is in ADR 0008.
 - Future actions that want to write LLM text to GitHub must justify a new carve-out explicitly.
