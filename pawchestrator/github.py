@@ -236,6 +236,31 @@ class GitHubIssueClient:
 
         return payload.get("body") or "", etag
 
+    async def fetch_sub_issues(self, reference: IssueReference) -> list[dict]:
+        async with httpx.AsyncClient(
+            base_url=self._api_base,
+            headers=self._headers(),
+            transport=self._transport,
+        ) as client:
+            response = await client.get(
+                f"/repos/{reference.owner}/{reference.repo}/issues/{reference.number}/sub_issues",
+            )
+            self._raise_for_status(response)
+            payload = response.json()
+
+        if not isinstance(payload, list):
+            raise GitHubError("GitHub sub-issues response was not a list")
+
+        return [
+            {
+                "number": item.get("number"),
+                "title": item.get("title") or "",
+                "url": item.get("html_url") or item.get("url") or "",
+            }
+            for item in payload
+            if isinstance(item, dict)
+        ]
+
     async def patch_issue_body_with_etag(
         self,
         reference: IssueReference,
