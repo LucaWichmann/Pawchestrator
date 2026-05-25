@@ -346,6 +346,93 @@ def test_run_grill_uses_dedupe_runner_to_skip_paraphrased_criteria(
     assert result.report.suggested_criteria == ["Log when the fallback deduper is used."]
 
 
+def test_publish_report_marks_body_unchanged_when_all_criteria_are_semantic_duplicates(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    client = FakeGitHubClient()
+    dedupe_runner = FakeRunner(
+        {
+            "schema": "pawchestrator.criteria_dedupe.v1",
+            "unique_suggested_criteria": [],
+        }
+    )
+
+    report = asyncio.run(
+        grill_module._publish_report(
+            client,  # type: ignore[arg-type]
+            {
+                "owner": "owner",
+                "repo": "repo",
+                "number": 42,
+                "body": (
+                    "## Acceptance Criteria\n\n"
+                    "- [ ] Avoid adding duplicate acceptance criteria when phrased differently.\n"
+                ),
+            },
+            {
+                "schema": "pawchestrator.grill_report.v1",
+                "status": "success",
+                "suggested_criteria": [
+                    "Do not append paraphrased acceptance criteria more than once.",
+                ],
+                "unanswerable_questions": [],
+            },
+            settings=settings,
+            run_id="run-123",
+            repo_path=repo_path,
+            dedupe_runner=dedupe_runner,
+        )
+    )
+
+    assert dedupe_runner.task is not None
+    assert client.patched_body is None
+    assert report.body_updated is False
+    assert report.suggested_criteria == []
+
+
+def test_publish_report_treats_checked_existing_criteria_as_duplicates(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    client = FakeGitHubClient()
+
+    report = asyncio.run(
+        grill_module._publish_report(
+            client,  # type: ignore[arg-type]
+            {
+                "owner": "owner",
+                "repo": "repo",
+                "number": 42,
+                "body": (
+                    "## Pawchestrator Suggested Criteria\n\n"
+                    "- [x] Preserve completed criteria across grill rounds.\n"
+                ),
+            },
+            {
+                "schema": "pawchestrator.grill_report.v1",
+                "status": "success",
+                "suggested_criteria": [
+                    "  preserve completed criteria across grill rounds.  ",
+                ],
+                "unanswerable_questions": [],
+            },
+            settings=settings,
+            run_id="run-123",
+            repo_path=repo_path,
+            dedupe_runner=FakeRunner(),
+        )
+    )
+
+    assert client.patched_body is None
+    assert report.body_updated is False
+    assert report.suggested_criteria == []
+
+
 def test_run_grill_degrades_without_registered_repo(tmp_path: Path) -> None:
     settings = Settings(app_dir=tmp_path)
     run_id = "run-123"
