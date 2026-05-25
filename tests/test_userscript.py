@@ -234,6 +234,15 @@ def test_userscript_epic_confirm_gate_and_pending_start_render() -> None:
 
     assert "const status = await fetchIssueStatus(issue)" in source
     assert "if (status.epic_confirm && !confirmEpicStart(status.epic))" in source
+    assert "if (status.grill?.status === GRILL_WAITING_STATUS)" in source
+    assert (
+        "Grill is still waiting for answers on this issue. "
+        "Are you sure you want to start agentic work?"
+    ) in source
+    assert "showConfirmDialog(PIPELINE_GRILL_WAITING_CONFIRM_MESSAGE" in source
+    assert 'title: "Start agentic work?"' in source
+    assert 'confirmLabel: "Yes"' in source
+    assert 'cancelLabel: "No"' in source
     assert "function confirmEpicStart(epic)" in source
     assert "window.confirm" in source
     assert 'response?.type === "epic"' in source

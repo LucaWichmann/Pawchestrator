@@ -36,6 +36,8 @@
   const REGRILL_LABEL = `${FIRE} Re-grill`;
   const REGRILL_CONFIRM_MESSAGE =
     "Grill is still waiting for answers on this issue. Are you sure you want to re-grill?";
+  const PIPELINE_GRILL_WAITING_CONFIRM_MESSAGE =
+    "Grill is still waiting for answers on this issue. Are you sure you want to start agentic work?";
   const RUN_DONE = new Set([
     "completed",
     "failed",
@@ -1364,6 +1366,19 @@
           button.disabled = false;
         }
         return;
+      }
+      if (status.grill?.status === GRILL_WAITING_STATUS) {
+        const confirmed = await showConfirmDialog(PIPELINE_GRILL_WAITING_CONFIRM_MESSAGE, {
+          title: "Start agentic work?",
+          confirmLabel: "Yes",
+          cancelLabel: "No",
+        });
+        if (!confirmed) {
+          if (button) {
+            button.disabled = false;
+          }
+          return;
+        }
       }
       setPanelSummary("[snapshot] starting...");
       panelExpandedByUser = true;
