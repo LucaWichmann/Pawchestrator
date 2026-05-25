@@ -59,8 +59,8 @@ def test_issue_start_returns_run_id_and_schedules_pipeline(
     settings = Settings(app_dir=tmp_path)
     _seed_token(settings)
     calls = []
-    client = _FakeSubIssueClient([])
-    _patch_sub_issue_client(monkeypatch, client)
+    sub_issue_client = _FakeSubIssueClient([])
+    _patch_sub_issue_client(monkeypatch, sub_issue_client)
 
     async def fake_run_pipeline(
         issue_url: str,
@@ -84,7 +84,7 @@ def test_issue_start_returns_run_id_and_schedules_pipeline(
 
     assert response.status_code == 200
     assert response.json() == {"type": "pipeline", "run_id": run_id}
-    assert client.fetched is True
+    assert sub_issue_client.fetched is True
     assert calls == [
         ("https://github.com/owner/repo/issues/42", tmp_path, run_id, False),
     ]

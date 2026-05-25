@@ -29,6 +29,7 @@ def test_issue_status_returns_null_runs_when_no_run_exists(
         "backend_connected": True,
         "repo_registered": False,
         "runners": _healthy_runners(),
+        "epic_confirm": False,
         "pipeline": None,
         "grill": None,
     }
