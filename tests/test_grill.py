@@ -13,7 +13,9 @@ from pawchestrator.db import init_db
 from pawchestrator.grill import (
     GrillReport,
     append_suggested_criteria,
+    build_dedupe_prompt,
     build_grill_prompt,
+    dedupe_criteria,
     run_grill,
 )
 from pawchestrator.runners import (
@@ -87,6 +89,20 @@ def test_build_grill_prompt_includes_read_only_instructions() -> None:
     assert "unanswerable_questions" in prompt
 
 
+def test_build_dedupe_prompt_is_compact_json() -> None:
+    prompt = build_dedupe_prompt(
+        ["Expose a grill endpoint."],
+        ["Add POST /issue/grill."],
+    )
+
+    payload = json.loads(prompt)
+
+    assert "\n" not in prompt
+    assert payload["existing_criteria"] == ["Expose a grill endpoint."]
+    assert payload["proposed_criteria"] == ["Add POST /issue/grill."]
+    assert "unique_suggested_criteria" in payload["output_schema"]
+
+
 def test_build_grill_prompt_includes_issue_comments() -> None:
     prompt = build_grill_prompt(
         {
@@ -131,6 +147,52 @@ def test_append_suggested_criteria_skips_exact_duplicates() -> None:
 
     assert updated is False
     assert updated_body == body
+
+
+def test_dedupe_criteria_filters_normalized_duplicates_before_runner(
+    tmp_path: Path,
+) -> None:
+    runner = FakeRunner(
+        {
+            "schema": "pawchestrator.criteria_dedupe.v1",
+            "unique_suggested_criteria": ["New criterion"],
+        }
+    )
+
+    result = asyncio.run(
+        dedupe_criteria(
+            Settings(app_dir=tmp_path),
+            run_id="run-123",
+            cwd=tmp_path,
+            existing_criteria=["Existing criterion"],
+            proposed_criteria=["  existing   criterion  ", "New criterion"],
+            runner=runner,
+        )
+    )
+
+    assert result == ["New criterion"]
+    assert runner.task is not None
+    prompt_payload = json.loads(runner.task.prompt)
+    assert prompt_payload["proposed_criteria"] == ["New criterion"]
+    assert runner.task.stage_name == "criteria_dedupe"
+
+
+def test_dedupe_criteria_falls_back_on_invalid_json(tmp_path: Path, caplog) -> None:
+    runner = FakeRunner({"schema": "pawchestrator.criteria_dedupe.v1"})
+
+    result = asyncio.run(
+        dedupe_criteria(
+            Settings(app_dir=tmp_path),
+            run_id="run-123",
+            cwd=tmp_path,
+            existing_criteria=["Existing criterion"],
+            proposed_criteria=["New criterion"],
+            runner=runner,
+        )
+    )
+
+    assert result == ["New criterion"]
+    assert "criteria dedupe runner failed; using normalized dedupe" in caplog.text
 
 
 def test_append_suggested_criteria_inserts_before_following_section() -> None:
@@ -220,6 +282,68 @@ def test_run_grill_posts_comment_and_applies_label_for_questions(tmp_path: Path)
     assert fake_client.removed_labels == []
     assert result.report.comment_posted is True
     assert result.report.comment_id == 123
+
+
+def test_run_grill_uses_dedupe_runner_to_skip_paraphrased_criteria(
+    tmp_path: Path, monkeypatch
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    run_id = "run-123"
+    asyncio.run(_insert_run(settings, run_id))
+    _write_snapshot(
+        settings,
+        run_id,
+        body="- [ ] The issue should not append paraphrased criteria twice.",
+    )
+    grill_runner = FakeRunner(
+        {
+            "schema": "pawchestrator.grill_report.v1",
+            "status": "success",
+            "suggested_criteria": [
+                "Avoid adding duplicate acceptance criteria when phrased differently.",
+                "Log when the fallback deduper is used.",
+            ],
+            "unanswerable_questions": [],
+        }
+    )
+    dedupe_runner = FakeRunner(
+        {
+            "schema": "pawchestrator.criteria_dedupe.v1",
+            "unique_suggested_criteria": [
+                "Log when the fallback deduper is used.",
+            ],
+        }
+    )
+    fake_client = FakeGitHubClient()
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+
+    def fake_resolve_runner(
+        resolved_settings: Settings, stage_name: str, default: str
+    ) -> Runner:
+        assert resolved_settings == settings
+        assert default == "claude"
+        assert stage_name == "criteria_dedupe"
+        return dedupe_runner
+
+    monkeypatch.setattr(grill_module, "resolve_runner", fake_resolve_runner)
+
+    result = asyncio.run(
+        run_grill(
+            "https://github.com/owner/repo/issues/42",
+            settings,
+            run_id=run_id,
+            repo_path=repo_path,
+            runner=grill_runner,
+            github_client=fake_client,  # type: ignore[arg-type]
+        )
+    )
+
+    assert dedupe_runner.task is not None
+    assert fake_client.patched_body is not None
+    assert "Avoid adding duplicate acceptance criteria" not in fake_client.patched_body
+    assert "- [ ] Log when the fallback deduper is used." in fake_client.patched_body
+    assert result.report.suggested_criteria == ["Log when the fallback deduper is used."]
 
 
 def test_run_grill_degrades_without_registered_repo(tmp_path: Path) -> None:
