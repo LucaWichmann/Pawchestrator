@@ -982,7 +982,7 @@
         }
       });
       document.addEventListener("keydown", onKeydown);
-      document.body.append(overlay);
+      document.documentElement.append(overlay);
       noButton.focus();
     });
   }
@@ -1191,7 +1191,7 @@
     renderPipeline(body, status.pipeline);
     renderEpicSection(body, status.epic);
     renderGrillSection(body, status.grill);
-    if (status.grill?.status === GRILL_WAITING_STATUS) {
+    if (status.grill?.status === "grill_waiting") {
       attachGrillReplyObserver(status.grill);
     } else {
       disconnectGrillReplyObserver();
