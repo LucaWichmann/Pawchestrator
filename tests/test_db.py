@@ -5,6 +5,7 @@ from uuid import UUID
 
 from pawchestrator.config import Settings
 from pawchestrator.db import (
+    create_epic_run,
     create_pipeline_run,
     create_grill_run,
     fail_stale_runs_on_startup,
@@ -180,6 +181,36 @@ def test_create_pipeline_run_inserts_all_pending_stages(tmp_path: Path) -> None:
         ("verify", "pending"),
         ("pr", "pending"),
     ]
+
+
+def test_create_epic_run_inserts_parent_without_stages(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+
+    asyncio.run(
+        create_epic_run(
+            settings,
+            run_id="epic-parent",
+            owner="owner",
+            repo="repo",
+            issue_number=42,
+            group_id="epic-group",
+        )
+    )
+
+    with sqlite3.connect(tmp_path / "database.sqlite") as db:
+        run = db.execute(
+            """
+            SELECT status, current_stage, group_id, workflow_type
+            FROM workflow_runs
+            WHERE id = 'epic-parent'
+            """
+        ).fetchone()
+        stages = db.execute(
+            "SELECT COUNT(*) FROM workflow_stages WHERE run_id = 'epic-parent'"
+        ).fetchone()
+
+    assert run == ("pending", None, "epic-group", "epic")
+    assert stages == (0,)
 
 
 def test_fail_stale_runs_marks_pending_pipeline_failed(tmp_path: Path) -> None:

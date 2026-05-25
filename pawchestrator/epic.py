@@ -16,6 +16,7 @@ ProgressFn = Callable[[str], None]
 @dataclass(frozen=True)
 class SubRunResult:
     issue_number: int
+    title: str
     run_id: str
     pr_url: str
 
@@ -62,6 +63,7 @@ async def run_epic(
         sub_runs.append(
             SubRunResult(
                 issue_number=issue_number,
+                title=str(sub_issue.get("title") or ""),
                 run_id=pipeline_result.run_id,
                 pr_url=pipeline_result.pr_url,
             )
