@@ -136,6 +136,26 @@ def test_userscript_renders_grill_status_outcome_and_failures() -> None:
     assert "error.textContent = summarizeError(grill)" in source
 
 
+def test_userscript_observes_questions_comment_reply_form() -> None:
+    source = _read_userscript()
+
+    assert "function attachGrillReplyObserver(grill)" in source
+    assert "document.getElementById(commentElementId(commentId))" in source
+    assert "observer.observe(commentElement, { childList: true, subtree: true })" in source
+    assert 'status.grill?.status === "grill_waiting"' in source
+    assert "attachGrillReplyObserver(status.grill)" in source
+    assert "disconnectGrillReplyObserver()" in source
+    assert '"Answer Questions"' in source
+    assert (
+        '"Replying to Pawchestrator questions \\u2014 submitting will continue the grilling session."'
+        in source
+    )
+    assert 'submit.title = GRILL_REPLY_TOOLTIP' in source
+    assert 'await requestJson("/issue/grill"' in source
+    assert "if (state.formSeen && !state.posted)" in source
+    assert "findGrillReplyForm(state.commentElement)" in source
+
+
 def test_userscript_renders_pipeline_warnings_and_completed_pr_link_only() -> None:
     source = _read_userscript()
 

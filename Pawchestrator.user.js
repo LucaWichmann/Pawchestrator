@@ -55,12 +55,15 @@
     "completed",
   ]);
   const STAGE_DONE = new Set(["complete", "completed", "skipped"]);
+  const GRILL_REPLY_TOOLTIP =
+    "Replying to Pawchestrator questions \u2014 submitting will continue the grilling session.";
 
   let activePoll = null;
   let activePathname = window.location.pathname;
   let panelExpandedByUser = null;
   let lastPipelineExpansionKey = null;
   let reinjectTimer = null;
+  let grillReplyObserverState = null;
 
   GM_addStyle(`
     #${START_ID},
@@ -826,6 +829,136 @@
     return Boolean(grill && !RUN_DONE.has(grill.status));
   }
 
+  function commentElementId(commentId) {
+    return `issuecomment-${commentId}`;
+  }
+
+  function findGrillReplyForm(commentElement) {
+    if (!commentElement) {
+      return null;
+    }
+    return Array.from(commentElement.querySelectorAll("form")).find((form) =>
+      form.querySelector("textarea, [contenteditable='true']") && findGrillReplySubmit(form)
+    ) || null;
+  }
+
+  function buttonText(button) {
+    return (button?.textContent || "").replace(/\s+/g, " ").trim();
+  }
+
+  function setButtonText(button, text) {
+    const label = button.querySelector("[data-component='text'], .Button-label, span");
+    if (label) {
+      label.textContent = text;
+    } else {
+      button.textContent = text;
+    }
+  }
+
+  function findGrillReplySubmit(form) {
+    return Array.from(form.querySelectorAll("button, input[type='submit']")).find((button) => {
+      if (button.disabled) {
+        return false;
+      }
+      const type = (button.getAttribute("type") || "submit").toLowerCase();
+      if (type !== "submit") {
+        return false;
+      }
+      return (
+        buttonText(button) === "Comment" ||
+        buttonText(button) === "Answer Questions" ||
+        button.value === "Comment" ||
+        button.value === "Answer Questions"
+      );
+    }) || null;
+  }
+
+  function decorateGrillReplyForm(form) {
+    const submit = findGrillReplySubmit(form);
+    if (!submit) {
+      return;
+    }
+    if (submit.tagName === "INPUT") {
+      submit.value = "Answer Questions";
+    } else {
+      setButtonText(submit, "Answer Questions");
+    }
+    submit.title = GRILL_REPLY_TOOLTIP;
+    submit.setAttribute("aria-label", GRILL_REPLY_TOOLTIP);
+  }
+
+  async function continueGrillFromReply() {
+    const issue = parseIssueReference();
+    await requestJson("/issue/grill", {
+      method: "POST",
+      label: "Grill reply request",
+      statusSetter: setPanelSummary,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(issue),
+    });
+    startIssueStatusPolling();
+  }
+
+  function disconnectGrillReplyObserver() {
+    if (grillReplyObserverState?.observer) {
+      grillReplyObserverState.observer.disconnect();
+    }
+    grillReplyObserverState = null;
+  }
+
+  function evaluateGrillReplyForm() {
+    const state = grillReplyObserverState;
+    if (!state || !document.contains(state.commentElement)) {
+      return;
+    }
+
+    const form = findGrillReplyForm(state.commentElement);
+    if (form) {
+      state.formSeen = true;
+      decorateGrillReplyForm(form);
+      return;
+    }
+
+    if (state.formSeen && !state.posted) {
+      state.posted = true;
+      continueGrillFromReply().catch((error) => setPanelSummary(error.message));
+    }
+  }
+
+  function attachGrillReplyObserver(grill) {
+    const commentId = grill?.github_comment_id;
+    if (!commentId) {
+      disconnectGrillReplyObserver();
+      return;
+    }
+
+    const commentElement = document.getElementById(commentElementId(commentId));
+    if (!commentElement) {
+      disconnectGrillReplyObserver();
+      return;
+    }
+
+    if (
+      grillReplyObserverState?.commentId === String(commentId) &&
+      grillReplyObserverState.commentElement === commentElement
+    ) {
+      evaluateGrillReplyForm();
+      return;
+    }
+
+    disconnectGrillReplyObserver();
+    const observer = new MutationObserver(evaluateGrillReplyForm);
+    grillReplyObserverState = {
+      commentId: String(commentId),
+      commentElement,
+      observer,
+      formSeen: false,
+      posted: false,
+    };
+    observer.observe(commentElement, { childList: true, subtree: true });
+    evaluateGrillReplyForm();
+  }
+
   function renderGrillDetail(parent, label, value) {
     const item = document.createElement("div");
     item.textContent = `${label}: ${value}`;
@@ -924,9 +1057,15 @@
     renderPipeline(body, status.pipeline);
     renderEpicSection(body, status.epic);
     renderGrillSection(body, status.grill);
+    if (status.grill?.status === "grill_waiting") {
+      attachGrillReplyObserver(status.grill);
+    } else {
+      disconnectGrillReplyObserver();
+    }
   }
 
   function renderOffline() {
+    disconnectGrillReplyObserver();
     setPanelSummary(OFFLINE_MESSAGE);
     setPanelStatus("offline");
     const panel = document.getElementById(PANEL_ID);
@@ -1259,6 +1398,7 @@
   function removeInjectedControls() {
     document.getElementById(PANEL_ID)?.remove();
     lastPipelineExpansionKey = null;
+    disconnectGrillReplyObserver();
     stopIssueStatusPolling();
   }
 
