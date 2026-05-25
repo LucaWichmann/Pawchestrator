@@ -212,10 +212,10 @@ class GitHubIssueClient:
             "fetched_at": utc_now_iso(),
         }
 
-    async def fetch_issue_body_with_etag(
+    async def fetch_issue_body(
         self,
         reference: IssueReference,
-    ) -> tuple[str, str]:
+    ) -> str:
         async with httpx.AsyncClient(
             base_url=self._api_base,
             headers=self._headers(),
@@ -230,11 +230,7 @@ class GitHubIssueClient:
         if not isinstance(payload, dict):
             raise GitHubError("GitHub issue response was not an object")
 
-        etag = response.headers.get("ETag")
-        if not etag:
-            raise GitHubError("GitHub issue response did not include an ETag")
-
-        return payload.get("body") or "", etag
+        return payload.get("body") or ""
 
     async def fetch_sub_issues(self, reference: IssueReference) -> list[dict]:
         async with httpx.AsyncClient(
@@ -260,25 +256,6 @@ class GitHubIssueClient:
             for item in payload
             if isinstance(item, dict)
         ]
-
-    async def patch_issue_body_with_etag(
-        self,
-        reference: IssueReference,
-        body: str,
-        etag: str,
-    ) -> None:
-        headers = self._headers()
-        headers["If-Match"] = etag
-        async with httpx.AsyncClient(
-            base_url=self._api_base,
-            headers=headers,
-            transport=self._transport,
-        ) as client:
-            response = await client.patch(
-                f"/repos/{reference.owner}/{reference.repo}/issues/{reference.number}",
-                json={"body": body},
-            )
-            self._raise_for_status(response)
 
     async def post_comment(
         self,

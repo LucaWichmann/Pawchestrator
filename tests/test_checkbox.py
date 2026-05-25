@@ -38,7 +38,7 @@ def test_check_checkbox_in_body_rejects_body_without_in_scope_headings() -> None
         check_checkbox_in_body(body, 0)
 
 
-def test_check_checkbox_retries_once_on_etag_conflict() -> None:
+def test_check_checkbox_patches_issue_body_without_if_match() -> None:
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -46,7 +46,6 @@ def test_check_checkbox_retries_once_on_etag_conflict() -> None:
         if request.method == "GET":
             return httpx.Response(
                 200,
-                headers={"ETag": f'"v{len(requests)}"'},
                 json={"body": "## Acceptance Criteria\n\n- [ ] First\n"},
             )
 
@@ -55,11 +54,7 @@ def test_check_checkbox_retries_once_on_etag_conflict() -> None:
         assert json.loads(request.read()) == {
             "body": "## Acceptance Criteria\n\n- [x] First\n"
         }
-        if len([item for item in requests if item.method == "PATCH"]) == 1:
-            assert request.headers["If-Match"] == '"v1"'
-            return httpx.Response(412, json={"message": "precondition failed"})
-
-        assert request.headers["If-Match"] == '"v3"'
+        assert "If-Match" not in request.headers
         return httpx.Response(200, json={"number": 42})
 
     client = GitHubIssueClient(
@@ -73,7 +68,7 @@ def test_check_checkbox_retries_once_on_etag_conflict() -> None:
     )
 
     assert changed is True
-    assert [request.method for request in requests] == ["GET", "PATCH", "GET", "PATCH"]
+    assert [request.method for request in requests] == ["GET", "PATCH"]
 
 
 def test_check_checkbox_noops_without_patch_when_already_checked() -> None:
@@ -84,7 +79,6 @@ def test_check_checkbox_noops_without_patch_when_already_checked() -> None:
         assert request.method == "GET"
         return httpx.Response(
             200,
-            headers={"ETag": '"v1"'},
             json={"body": "## Acceptance Criteria\n\n- [x] First\n"},
         )
 
@@ -102,15 +96,14 @@ def test_check_checkbox_noops_without_patch_when_already_checked() -> None:
     assert [request.method for request in requests] == ["GET"]
 
 
-def test_check_checkbox_fails_when_second_etag_patch_conflicts() -> None:
+def test_check_checkbox_propagates_patch_failure() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.method == "GET":
             return httpx.Response(
                 200,
-                headers={"ETag": '"v1"'},
                 json={"body": "## Acceptance Criteria\n\n- [ ] First\n"},
             )
-        return httpx.Response(412, json={"message": "precondition failed"})
+        return httpx.Response(403, json={"message": "forbidden"})
 
     client = GitHubIssueClient(
         "token",
@@ -118,5 +111,5 @@ def test_check_checkbox_fails_when_second_etag_patch_conflicts() -> None:
         transport=httpx.MockTransport(handler),
     )
 
-    with pytest.raises(RuntimeError, match="GitHub API error 412"):
+    with pytest.raises(RuntimeError, match="GitHub API error 403: forbidden"):
         asyncio.run(check_checkbox(client, parse_issue_shorthand("owner/repo/42"), 0))

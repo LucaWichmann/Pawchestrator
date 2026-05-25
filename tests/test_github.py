@@ -259,6 +259,45 @@ def test_github_issue_client_fetch_admin_collaborators_raises_on_http_error() ->
         asyncio.run(client.fetch_admin_collaborators("owner", "repo"))
 
 
+def test_github_issue_client_fetches_issue_body() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.method == "GET"
+        assert request.url.path == "/repos/owner/repo/issues/42"
+        return httpx.Response(200, json={"body": "Issue body"})
+
+    reference = parse_issue_shorthand("owner/repo/42")
+    client = GitHubIssueClient(
+        "token",
+        api_base="https://api.github.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    body = asyncio.run(client.fetch_issue_body(reference))
+
+    assert body == "Issue body"
+    assert len(requests) == 1
+
+
+def test_github_issue_client_fetch_issue_body_rejects_non_object_response() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/repos/owner/repo/issues/42"
+        return httpx.Response(200, json=[])
+
+    reference = parse_issue_shorthand("owner/repo/42")
+    client = GitHubIssueClient(
+        "token",
+        api_base="https://api.github.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(GitHubError, match="GitHub issue response was not an object"):
+        asyncio.run(client.fetch_issue_body(reference))
+
+
 def test_github_issue_client_fetches_sub_issues() -> None:
     requests: list[httpx.Request] = []
 

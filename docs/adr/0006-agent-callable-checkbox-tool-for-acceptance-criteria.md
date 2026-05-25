@@ -19,7 +19,7 @@ An MCP tool (C1) was also considered for ClaudeRunner but rejected: it would pol
 
 ## Decision
 
-Use a Bash CLI command (`pawchestrator checkbox check <owner>/<repo>/<number> <index>`) that the implement agent calls per criterion as it works. Pawchestrator immediately PATCHes the GitHub issue body on each call, with ETag-based retry to handle concurrent edits.
+Use a Bash CLI command (`pawchestrator checkbox check <owner>/<repo>/<number> <index>`) that the implement agent calls per criterion as it works. Pawchestrator fetches the latest issue body and PATCHes the updated Markdown without ETag optimistic locking, because GitHub does not support conditional requests for the issue body PATCH endpoint.
 
 **Scope:** Only checkboxes under configured headings (CheckboxHeadings) are in scope. All others are ignored. Default headings: `Acceptance Criteria`, `AC`, `Definition of Done`, `DoD`, `Checklist`, `Requirements`, `Tasks` (case-insensitive). Configurable via `[checkboxes] headings = [...]` in `config.toml`.
 
@@ -35,6 +35,7 @@ Use a Bash CLI command (`pawchestrator checkbox check <owner>/<repo>/<number> <i
 
 - Implement prompt grows by one line per in-scope checkbox. No cap — input tokens are cheap.
 - Checkboxes are checked off live as the agent works, visible in real-time on GitHub.
+- Concurrent issue body edits are last-writer-wins for checkbox updates.
 - If an issue has no matching headings, the feature is a no-op — no changes, no warnings.
 - Unchecked boxes after a PR are an honest signal, not a bug.
 - CodexRunner and ClaudeRunner both benefit equally via Bash access.

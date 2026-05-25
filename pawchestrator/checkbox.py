@@ -10,7 +10,6 @@ from pawchestrator.config import DEFAULT_CHECKBOX_HEADINGS
 from pawchestrator.github import (
     CHECKED_CHECKBOX_RE,
     HEADING_RE,
-    GitHubError,
     GitHubIssueClient,
     IssueReference,
 )
@@ -41,22 +40,18 @@ async def check_checkbox(
     if index < 0:
         raise CheckboxError("checkbox index must be non-negative")
 
-    last_error: GitHubError | None = None
-    for attempt in range(2):
-        body, etag = await client.fetch_issue_body_with_etag(reference)
-        updated_body = check_checkbox_in_body(body, index, headings)
-        if updated_body == body:
-            return False
+    body = await client.fetch_issue_body(reference)
+    updated_body = check_checkbox_in_body(body, index, headings)
+    if updated_body == body:
+        return False
 
-        try:
-            await client.patch_issue_body_with_etag(reference, updated_body, etag)
-            return True
-        except GitHubError as error:
-            last_error = error
-            if "GitHub API error 412:" not in str(error) or attempt == 1:
-                raise
-
-    raise CheckboxError(f"checkbox update failed after retry: {last_error}")
+    await client.patch_issue_body(
+        reference.owner,
+        reference.repo,
+        reference.number,
+        updated_body,
+    )
+    return True
 
 
 def check_checkbox_in_body(
