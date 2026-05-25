@@ -186,6 +186,34 @@ Notes:
 - `previous_response_not_found_attempts` caps Codex recovery attempts, including the original attempt.
 - Pawchestrator tries to preserve local CodeGraph databases even when `.codegraph/` is ignored by git. Before implementation it seeds the issue worktree from the source repo index with a SQLite-safe copy; it syncs back only when git proves the run branch has already merged into `main`.
 
+### Criteria dedupe
+
+Grill runs a `criteria_dedupe` utility stage before publishing suggested criteria to GitHub. It removes semantic duplicates from newly inferred criteria so the `## Pawchestrator Suggested Criteria` section does not repeat existing acceptance criteria or paraphrased suggestions. The stage affects only criteria publishing to the issue body; it does not change the `GrillReport` artifact shape.
+
+By default, Claude uses Haiku for this utility stage:
+
+```toml
+[stages.criteria_dedupe]
+runner = "claude"
+
+[stages.criteria_dedupe.claude]
+model = "haiku"
+effort = "low"
+```
+
+Codex can also run the stage with GPT-5.4-Mini and low reasoning:
+
+```toml
+[stages.criteria_dedupe]
+runner = "codex"
+
+[stages.criteria_dedupe.codex]
+model = "gpt-5.4-mini"
+reasoning_effort = "low"
+```
+
+If the configured utility LLM is unavailable, exits nonzero, or returns invalid JSON, Pawchestrator logs a warning and falls back to deterministic normalized dedupe. That fallback catches exact normalized duplicates but does not try to detect paraphrases.
+
 ### Epic workflow
 
 Pawchestrator treats an issue as an epic when GitHub's `GET /repos/{owner}/{repo}/issues/{number}/sub_issues` endpoint returns one or more sub-issues. Only direct sub-issues are expanded; sub-issues of sub-issues are not.

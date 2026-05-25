@@ -32,6 +32,10 @@ Grill is multi-round: if questions are posted, the run transitions to `grill_wai
 
 **GrillReport** — Artifact produced by the Grill action. Contains `suggested_criteria` (inferred from codebase), `unanswerable_questions` (posted to GitHub if non-empty), `body_updated` (bool), `comment_posted` (bool), `comment_id` (int or null — always the most recent questions comment for this run).
 
+**CriteriaDedupe** — Utility stage used by Grill before it updates the GitHub issue body. It compares existing acceptance criteria and newly inferred `suggested_criteria`, then returns only suggestions that are genuinely new. Its output is used for criteria publishing only; it does not alter the `GrillReport` schema or artifact shape.
+
+**SemanticCriteriaDedupe** — The LLM-backed CriteriaDedupe behavior. In Grill terminology, it treats paraphrases and same-requirement restatements as duplicates even when the markdown text differs. If the configured utility LLM is unavailable, fails, or returns invalid JSON, Grill falls back to deterministic normalized dedupe, which removes exact normalized duplicates but does not reason about paraphrases.
+
 **CheckboxCriterion** — A single `- [ ]` item parsed from the issue body that falls under a configured acceptance-criteria heading. Identified by a scoped integer index (0-based, counting only in-scope checkboxes, ignoring all others). Stored in `IssueSnapshot.checkboxes` as `{index, text}`. The implement agent checks criteria off by calling `pawchestrator checkbox check <owner>/<repo>/<number> <index>` via Bash during implementation; Pawchestrator fetches the latest issue body and PATCHes the updated Markdown without ETag optimistic locking. If the agent never calls the tool, checkboxes remain unchecked — this is intentional and honest (unchecked = agent did not confirm).
 
 **CheckboxHeadings** — The configured list of markdown heading texts under which `- [ ]` items are treated as CheckboxCriteria. Case-insensitive. Defaults: `Acceptance Criteria`, `AC`, `Definition of Done`, `DoD`, `Checklist`, `Requirements`, `Tasks`. Configurable via `[checkboxes] headings = [...]` in `config.toml`.
@@ -69,6 +73,7 @@ No human gates in MVP 0. No repair loop. No YAML workflow engine. No pairing sec
 | Snapshot | GitHub API     | httpx + gh auth token — not configurable |
 | Scout    | ClaudeRunner   | Read-only, JSON output               |
 | Grill    | ClaudeRunner   | Read-only enforced for Claude; codex has no tool allowlist |
+| CriteriaDedupe | ClaudeRunner | Grill utility stage; defaults to Claude Haiku, or Codex GPT-5.4-Mini low reasoning when assigned to codex |
 | Plan     | ClaudeRunner   | JSON output                          |
 | Implement| CodexRunner    | File edits via patch                 |
 | Verify   | ShellRunner    | Runs repo-configured build/test cmds — not configurable |
