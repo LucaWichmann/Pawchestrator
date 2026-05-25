@@ -13,6 +13,7 @@ from typing import Annotated
 import typer
 import uvicorn
 
+from pawchestrator.checkbox import check_checkbox
 from pawchestrator.codegraph import sync_back_if_merged
 from pawchestrator.config import DEFAULT_PORT, LOCAL_HOST, load_settings
 from pawchestrator.db import (
@@ -22,8 +23,19 @@ from pawchestrator.db import (
     list_repo_registrations,
     lookup_repo_path,
 )
+from pawchestrator.doctor import (
+    STATUS_FAIL,
+    STATUS_PASS,
+    STATUS_WARN,
+    has_required_failures,
+    run_checks,
+)
 from pawchestrator.grill import run_grill
-from pawchestrator.doctor import STATUS_FAIL, STATUS_PASS, STATUS_WARN, has_required_failures, run_checks
+from pawchestrator.github import (
+    GitHubIssueClient,
+    get_gh_token,
+    parse_issue_shorthand,
+)
 from pawchestrator.implement import run_implement
 from pawchestrator.issues import snapshot_issue
 from pawchestrator.pipeline import run_pipeline
@@ -34,11 +46,13 @@ from pawchestrator.verify import run_verify
 
 app = typer.Typer(add_completion=False, help="Local Pawchestrator backend tools.")
 issue_app = typer.Typer(add_completion=False, help="GitHub issue tools.")
+checkbox_app = typer.Typer(add_completion=False, help="GitHub issue checkbox tools.")
 run_app = typer.Typer(add_completion=False, help="Workflow run tools.")
 repo_app = typer.Typer(add_completion=False, help="Registered source repository tools.")
 sessions_app = typer.Typer(add_completion=False, help="Pairing session tools.")
 codegraph_app = typer.Typer(add_completion=False, help="CodeGraph index sync tools.")
 app.add_typer(issue_app, name="issue")
+app.add_typer(checkbox_app, name="checkbox")
 app.add_typer(run_app, name="run")
 app.add_typer(repo_app, name="repo")
 app.add_typer(sessions_app, name="sessions")
@@ -161,6 +175,31 @@ def issue_grill(github_issue_url: str) -> None:
     typer.echo(f"Body updated: {result.report.body_updated}")
     typer.echo(f"Comment posted: {result.report.comment_posted}")
     typer.echo(f"Report: {result.artifact_path}")
+
+
+@checkbox_app.command("check")
+def checkbox_check(issue_ref: str, index: int) -> None:
+    """Check one in-scope checkbox in a GitHub issue body."""
+
+    settings = load_settings()
+    try:
+        reference = parse_issue_shorthand(issue_ref)
+        token = get_gh_token()
+        client = GitHubIssueClient(token)
+        changed = asyncio.run(
+            check_checkbox(
+                client,
+                reference,
+                index,
+                settings.checkboxes.headings,
+            )
+        )
+    except Exception as error:
+        typer.secho(f"Checkbox check failed: {error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from error
+
+    status = "checked" if changed else "already checked"
+    typer.echo(f"Checkbox {index} {status}: {issue_ref}")
 
 
 @repo_app.command("add")
