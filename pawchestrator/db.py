@@ -1254,7 +1254,8 @@ async def get_run_state(settings: Settings, run_id: str) -> dict[str, object] | 
         run_cursor = await db.execute(
             """
             SELECT id, owner, repo, issue_number, workflow_type, status,
-                   current_stage, pr_url, epic_branch_mode, created_at, updated_at
+                   current_stage, pr_url, github_comment_id, epic_branch_mode,
+                   created_at, updated_at
             FROM workflow_runs
             WHERE id = ?
             """,
