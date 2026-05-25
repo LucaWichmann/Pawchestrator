@@ -256,7 +256,30 @@ async def _reconcile_checkbox_marks(
 ) -> None:
     try:
         active_client: Any = client or _LazyGitHubIssueClient()
-        await reconcile_checkbox_marks(settings, run_id, active_client)
+        _changed, warnings = await reconcile_checkbox_marks(
+            settings,
+            run_id,
+            active_client,
+        )
+        for warning in warnings:
+            issue = (
+                f"{warning['owner']}/{warning['repo']}/"
+                f"{warning['issue_number']}"
+            )
+            message = (
+                f"checkbox reconciliation after {stage_name} skipped stale mark "
+                f"{issue} index {warning['checkbox_index']}: stored text no "
+                "longer matches current checkbox text"
+            )
+            LOGGER.warning(message)
+            await insert_run_warning(
+                settings,
+                run_id=run_id,
+                stage_name=stage_name,
+                code="checkbox_reconciliation_stale_mark",
+                message=message,
+            )
+            progress(f"[{stage_name}] warning - {message}")
     except Exception as error:
         message = f"checkbox reconciliation after {stage_name} failed: {error}"
         LOGGER.warning(message)

@@ -231,9 +231,10 @@ def test_reconcile_checkbox_marks_noops_when_no_marks_exist(tmp_path: Path) -> N
         transport=httpx.MockTransport(handler),
     )
 
-    changed = asyncio.run(reconcile_checkbox_marks(settings, "run-1", client))
+    changed, warnings = asyncio.run(reconcile_checkbox_marks(settings, "run-1", client))
 
     assert changed is False
+    assert warnings == []
     assert requests == []
 
 
@@ -298,8 +299,71 @@ def test_reconcile_checkbox_marks_reapplies_all_stored_marks(
 
     current_body = partial_body
 
-    changed = asyncio.run(reconcile_checkbox_marks(settings, "run-1", client))
+    changed, warnings = asyncio.run(reconcile_checkbox_marks(settings, "run-1", client))
 
     assert changed is True
+    assert warnings == []
     assert current_body == complete_body
     assert patched_bodies[-1] == complete_body
+
+
+def test_reconcile_checkbox_marks_skips_stale_text_and_returns_warning(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    current_body = "## Acceptance Criteria\n\n- [ ] First\n- [ ] Second\n"
+    patched_bodies: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal current_body
+        if request.method == "GET":
+            return httpx.Response(200, json={"body": current_body})
+
+        assert request.method == "PATCH"
+        current_body = json.loads(request.read())["body"]
+        patched_bodies.append(current_body)
+        return httpx.Response(200, json={"number": 42})
+
+    client = GitHubIssueClient(
+        "token",
+        api_base="https://api.github.test",
+        transport=httpx.MockTransport(handler),
+    )
+    reference = parse_issue_shorthand("owner/repo/42")
+
+    asyncio.run(
+        check_checkbox(
+            client,
+            reference,
+            0,
+            run_id="run-1",
+            db_path=settings.database_path,
+        )
+    )
+    asyncio.run(
+        check_checkbox(
+            client,
+            reference,
+            1,
+            run_id="run-1",
+            db_path=settings.database_path,
+        )
+    )
+
+    current_body = "## Acceptance Criteria\n\n- [ ] Changed\n- [ ] Second\n"
+
+    changed, warnings = asyncio.run(reconcile_checkbox_marks(settings, "run-1", client))
+
+    assert changed is True
+    assert current_body == "## Acceptance Criteria\n\n- [ ] Changed\n- [x] Second\n"
+    assert patched_bodies[-1] == current_body
+    assert warnings == [
+        {
+            "owner": "owner",
+            "repo": "repo",
+            "issue_number": 42,
+            "checkbox_index": 0,
+            "stored_text": "First",
+            "current_text": "Changed",
+        }
+    ]

@@ -81,15 +81,16 @@ async def reconcile_checkbox_marks(
     settings: Settings,
     run_id: str,
     client: GitHubIssueClient,
-) -> bool:
+) -> tuple[bool, list[dict[str, object]]]:
     async with aiosqlite.connect(settings.database_path) as db:
         await db.executescript(SCHEMA_SQL)
         marks = await _get_checkbox_marks_for_run(db, run_id=run_id)
 
     if not marks:
-        return False
+        return False, []
 
     changed = False
+    warnings: list[dict[str, object]] = []
     for issue_marks in _group_marks_by_issue(marks):
         first_mark = issue_marks[0]
         reference = IssueReference(
@@ -103,17 +104,16 @@ async def reconcile_checkbox_marks(
             ),
         )
         body = await client.fetch_issue_body(reference)
-        changed = (
-            await _patch_until_stored_marks_checked(
-                client,
-                reference,
-                body,
-                issue_marks,
-                settings.checkboxes.headings,
-            )
-            or changed
+        issue_changed, issue_warnings = await _patch_until_stored_marks_checked(
+            client,
+            reference,
+            body,
+            issue_marks,
+            settings.checkboxes.headings,
         )
-    return changed
+        changed = issue_changed or changed
+        warnings.extend(issue_warnings)
+    return changed, warnings
 
 
 async def _check_run_scoped_checkbox(
@@ -156,7 +156,7 @@ async def _check_run_scoped_checkbox(
                 issue_number=reference.number,
             )
 
-            changed = await _patch_until_stored_marks_checked(
+            changed, _warnings = await _patch_until_stored_marks_checked(
                 client,
                 reference,
                 body,
@@ -176,12 +176,25 @@ async def _patch_until_stored_marks_checked(
     body: str,
     marks: Sequence[dict[str, object]],
     headings: Sequence[str],
-) -> bool:
+) -> tuple[bool, list[dict[str, object]]]:
     changed = False
     current_body = body
+    warnings: list[dict[str, object]] = []
 
     for _ in range(CHECKBOX_APPLY_ATTEMPTS):
-        updated_body = _apply_checkbox_marks(current_body, marks, headings)
+        active_marks, stale_warnings = _matching_checkbox_marks(
+            reference,
+            current_body,
+            marks,
+            headings,
+        )
+        warnings.extend(
+            warning for warning in stale_warnings if warning not in warnings
+        )
+        if not active_marks:
+            return changed, warnings
+
+        updated_body = _apply_checkbox_marks(current_body, active_marks, headings)
         if updated_body != current_body:
             await client.patch_issue_body(
                 reference.owner,
@@ -192,8 +205,21 @@ async def _patch_until_stored_marks_checked(
             changed = True
 
         verified_body = await client.fetch_issue_body(reference)
-        if _stored_marks_checked(verified_body, marks, headings):
-            return changed
+        active_marks, stale_warnings = _matching_checkbox_marks(
+            reference,
+            verified_body,
+            active_marks,
+            headings,
+        )
+        warnings.extend(
+            warning for warning in stale_warnings if warning not in warnings
+        )
+        if not active_marks or _stored_marks_checked(
+            verified_body,
+            active_marks,
+            headings,
+        ):
+            return changed, warnings
 
         current_body = verified_body
 
@@ -230,6 +256,41 @@ def _apply_checkbox_marks(
             headings,
         )
     return updated_body
+
+
+def _matching_checkbox_marks(
+    reference: IssueReference,
+    body: str,
+    marks: Sequence[dict[str, object]],
+    headings: Sequence[str],
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    checkboxes = find_scoped_checkboxes(body, headings)
+    active_marks: list[dict[str, object]] = []
+    warnings: list[dict[str, object]] = []
+
+    for mark in marks:
+        checkbox_index = int(mark["checkbox_index"])
+        stored_text = str(mark["checkbox_text"])
+        current_text = (
+            checkboxes[checkbox_index].text
+            if checkbox_index < len(checkboxes)
+            else None
+        )
+        if current_text != stored_text:
+            warnings.append(
+                {
+                    "owner": reference.owner,
+                    "repo": reference.repo,
+                    "issue_number": reference.number,
+                    "checkbox_index": checkbox_index,
+                    "stored_text": stored_text,
+                    "current_text": current_text,
+                }
+            )
+            continue
+        active_marks.append(mark)
+
+    return active_marks, warnings
 
 
 def _stored_marks_checked(
