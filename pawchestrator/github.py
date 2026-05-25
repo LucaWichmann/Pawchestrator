@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
 
 import httpx
 
+from pawchestrator.config import DEFAULT_CHECKBOX_HEADINGS
 from pawchestrator.db import utc_now_iso
 
 ISSUE_SNAPSHOT_SCHEMA = "pawchestrator.issue_snapshot.v1"
@@ -32,6 +35,9 @@ RUN_STAGE_LABELS = {
     "verify": "Verify",
     "pr": "PR",
 }
+HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$")
+UNCHECKED_CHECKBOX_RE = re.compile(r"^\s*[-*+]\s+\[\s\]\s+(?P<text>.+?)\s*$")
+CHECKED_CHECKBOX_RE = re.compile(r"^\s*[-*+]\s+\[[xX]\]\s+.+")
 
 
 class GitHubError(RuntimeError):
@@ -71,6 +77,36 @@ def parse_issue_url(issue_url: str) -> IssueReference:
     )
 
 
+def parse_checkboxes(
+    body: str,
+    headings: Sequence[str] = DEFAULT_CHECKBOX_HEADINGS,
+) -> list[dict[str, int | str]]:
+    allowed_headings = {heading.casefold() for heading in headings}
+    in_scope = False
+    checkboxes: list[dict[str, int | str]] = []
+
+    for line in body.splitlines():
+        heading_match = HEADING_RE.match(line)
+        if heading_match:
+            heading_text = heading_match.group(2).strip()
+            in_scope = heading_text.casefold() in allowed_headings
+            continue
+
+        if not in_scope or CHECKED_CHECKBOX_RE.match(line):
+            continue
+
+        checkbox_match = UNCHECKED_CHECKBOX_RE.match(line)
+        if checkbox_match:
+            checkboxes.append(
+                {
+                    "index": len(checkboxes),
+                    "text": checkbox_match.group("text"),
+                }
+            )
+
+    return checkboxes
+
+
 def get_gh_token() -> str:
     try:
         completed = subprocess.run(
@@ -104,7 +140,11 @@ class GitHubIssueClient:
         self._api_base = api_base.rstrip("/")
         self._transport = transport
 
-    async def fetch_snapshot(self, reference: IssueReference) -> dict[str, Any]:
+    async def fetch_snapshot(
+        self,
+        reference: IssueReference,
+        checkbox_headings: Sequence[str] = DEFAULT_CHECKBOX_HEADINGS,
+    ) -> dict[str, Any]:
         async with httpx.AsyncClient(
             base_url=self._api_base,
             headers=self._headers(),
@@ -119,13 +159,15 @@ class GitHubIssueClient:
                 f"/repos/{reference.owner}/{reference.repo}/issues/{reference.number}/comments",
             )
 
+        body = issue.get("body") or ""
         return {
             "schema": ISSUE_SNAPSHOT_SCHEMA,
             "owner": reference.owner,
             "repo": reference.repo,
             "number": reference.number,
             "title": issue.get("title") or "",
-            "body": issue.get("body") or "",
+            "body": body,
+            "checkboxes": parse_checkboxes(body, checkbox_headings),
             "labels": [
                 label.get("name", "")
                 for label in issue.get("labels", [])

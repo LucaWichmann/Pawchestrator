@@ -42,7 +42,10 @@ async def snapshot_issue(
 
     try:
         token = get_gh_token()
-        snapshot = await GitHubIssueClient(token).fetch_snapshot(reference)
+        snapshot = await GitHubIssueClient(token).fetch_snapshot(
+            reference,
+            settings.checkboxes.headings,
+        )
         artifact_path = _snapshot_artifact_path(settings, active_run_id)
         artifact_path.parent.mkdir(parents=True, exist_ok=True)
         artifact_path.write_text(

@@ -9,6 +9,7 @@ from pawchestrator.github import (
     GitHubIssueClient,
     ensure_pawchestrator_labels,
     format_run_comment,
+    parse_checkboxes,
     parse_issue_url,
 )
 
@@ -44,7 +45,7 @@ def test_github_issue_client_fetches_snapshot_and_paginated_comments() -> None:
                 200,
                 json={
                     "title": "Add memoization",
-                    "body": "Body",
+                    "body": "## Acceptance Criteria\n\n- [ ] First\n- [x] Done",
                     "labels": [{"name": "enhancement"}],
                     "assignees": [{"login": "octo"}],
                 },
@@ -88,6 +89,8 @@ def test_github_issue_client_fetches_snapshot_and_paginated_comments() -> None:
     assert snapshot["schema"] == "pawchestrator.issue_snapshot.v1"
     assert snapshot["labels"] == ["enhancement"]
     assert snapshot["assignees"] == ["octo"]
+    assert snapshot["body"] == "## Acceptance Criteria\n\n- [ ] First\n- [x] Done"
+    assert snapshot["checkboxes"] == [{"index": 0, "text": "First"}]
     assert snapshot["comments"] == [
         {
             "author": "alice",
@@ -101,6 +104,63 @@ def test_github_issue_client_fetches_snapshot_and_paginated_comments() -> None:
         },
     ]
     assert len(requests) == 3
+
+
+def test_parse_checkboxes_returns_empty_without_matching_heading() -> None:
+    body = "- [ ] Outside\n\n## Notes\n\n- [ ] Not criteria"
+
+    assert parse_checkboxes(body) == []
+
+
+def test_parse_checkboxes_includes_unchecked_under_matching_heading() -> None:
+    body = "## Acceptance Criteria\n\n- [ ] First\n- [ ] Second"
+
+    assert parse_checkboxes(body) == [
+        {"index": 0, "text": "First"},
+        {"index": 1, "text": "Second"},
+    ]
+
+
+def test_parse_checkboxes_ignores_wrong_heading() -> None:
+    body = "## Notes\n\n- [ ] Ignore\n\n## Tasks\n\n- [ ] Include"
+
+    assert parse_checkboxes(body) == [{"index": 0, "text": "Include"}]
+
+
+def test_parse_checkboxes_matches_heading_case_insensitively() -> None:
+    body = "## acceptance criteria\n\n- [ ] Lowercase heading"
+
+    assert parse_checkboxes(body) == [{"index": 0, "text": "Lowercase heading"}]
+
+
+def test_parse_checkboxes_uses_custom_headings() -> None:
+    body = "## Acceptance Criteria\n\n- [ ] Ignore\n\n## Done When\n\n- [ ] Include"
+
+    assert parse_checkboxes(body, ["Done When"]) == [
+        {"index": 0, "text": "Include"}
+    ]
+
+
+def test_parse_checkboxes_excludes_checked_boxes_and_scopes_indexes() -> None:
+    body = """## Acceptance Criteria
+
+- [ ] First
+- [x] Done
+- [X] Also done
+
+## Notes
+
+- [ ] Ignore
+
+## Tasks
+
+- [ ] Second
+"""
+
+    assert parse_checkboxes(body) == [
+        {"index": 0, "text": "First"},
+        {"index": 1, "text": "Second"},
+    ]
 
 
 def test_github_issue_client_posts_comment_and_returns_id() -> None:
