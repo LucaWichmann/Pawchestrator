@@ -619,6 +619,10 @@ def _effective_claude_config(
         updates["allowed_tools"] = override.claude.allowed_tools
     if override is not None and override.claude.bypass_permissions is not None:
         updates["bypass_permissions"] = override.claude.bypass_permissions
+    if stage_name == "criteria_dedupe" and (
+        override is None or override.claude.model is None
+    ):
+        updates["model"] = "haiku"
     if stage_name == "grill":
         updates["allowed_tools"] = ["Read", "Glob", "Grep"]
         updates["bypass_permissions"] = False
@@ -634,6 +638,10 @@ def _effective_codex_config(
 ) -> CodexRunnerSettings:
     override = stage_overrides.get(stage_name)
     if override is None:
+        if stage_name == "criteria_dedupe":
+            return config.model_copy(
+                update={"model": "gpt-5.4-mini", "reasoning_effort": "low"}
+            )
         return config
 
     updates: dict[str, object] = {}
@@ -655,6 +663,11 @@ def _effective_codex_config(
         updates["approval_policy"] = override.codex.approval_policy
     if override.codex.bypass_sandbox is not None:
         updates["bypass_sandbox"] = override.codex.bypass_sandbox
+    if stage_name == "criteria_dedupe":
+        if override.codex.model is None:
+            updates["model"] = "gpt-5.4-mini"
+        if override.codex.reasoning_effort is None:
+            updates["reasoning_effort"] = "low"
     return config.model_copy(update=updates)
 
 
