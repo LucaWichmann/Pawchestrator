@@ -149,4 +149,4 @@ Every stage writes its output to `~/.pawchestrator/runs/{run_id}/` so you can in
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=LucaWichmann/Pawchestrator&type=Date)](https://star-history.com/#LucaWichmann/Pawchestrator&Date)
+[![Star History Chart](https://api.star-history.com/chart?repos=LucaWichmann/Pawchestrator&type=date&legend=top-left)](https://www.star-history.com/?repos=LucaWichmann%2FPawchestrator&type=date&legend=top-left)
