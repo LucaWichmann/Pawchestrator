@@ -17,4 +17,5 @@ Return a JSON object matching this schema exactly:
 }
 
 Use your Read, Glob, Grep tools to explore the codebase before planning.
-Be terse. Return minimal valid JSON. Keep descriptions under 20 words per step.
+No prose. No progress updates. Emit valid JSON artifact only.
+Keep descriptions under 20 words per step.
