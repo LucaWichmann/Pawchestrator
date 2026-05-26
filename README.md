@@ -144,3 +144,15 @@ Every stage writes its output to `~/.pawchestrator/runs/{run_id}/` so you can in
 **Two runners, right tool for each job.** Claude handles read-heavy reasoning stages (scout, plan, grill). Codex handles write-heavy implementation. Each runner gets only the permissions it needs for its stage - scout runs read-only, implement runs with write access to the worktree. If Claude hits a usage limit mid-pipeline, Pawchestrator falls back to Codex automatically and flags it in the run comment.
 
 **Repo-local verification.** Build, test, and lint commands live in `.pawchestrator/verify.toml` committed to each repo. Verify runs those commands against the worktree before a PR is opened - not a post-hoc check, but a gate.
+
+---
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=LucaWichmann%2FPawchestrator&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=LucaWichmann/Pawchestrator&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=LucaWichmann/Pawchestrator&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=LucaWichmann/Pawchestrator&type=date&legend=top-left" />
+ </picture>
+</a>
