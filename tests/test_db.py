@@ -196,6 +196,8 @@ def test_create_pipeline_run_inserts_all_pending_stages(tmp_path: Path) -> None:
         ("implement", "pending"),
         ("verify", "pending"),
         ("pr", "pending"),
+        ("review", "pending"),
+        ("post", "pending"),
     ]
 
 
@@ -238,6 +240,10 @@ def test_review_and_repair_runs_use_pr_number(tmp_path: Path) -> None:
     assert review_state is not None
     assert review_state["issue_number"] is None
     assert review_state["pr_number"] == 7
+    assert [stage["stage_name"] for stage in review_state["stages"]] == [
+        "review",
+        "post",
+    ]
 
 
 def test_create_epic_run_inserts_parent_without_stages(tmp_path: Path) -> None:

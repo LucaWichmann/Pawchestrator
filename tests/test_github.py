@@ -10,6 +10,7 @@ from pawchestrator.github import (
     GitHubIssueClient,
     ensure_pawchestrator_labels,
     format_run_comment,
+    parse_diff_positions,
     parse_checkboxes,
     parse_issue_shorthand,
     parse_issue_url,
@@ -216,6 +217,69 @@ def test_github_issue_client_posts_comment_and_returns_id() -> None:
 
     assert comment_id == 99
     assert len(requests) == 1
+
+
+def test_github_issue_client_posts_pull_request_review_payload() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.method == "POST"
+        assert request.url.path == "/repos/owner/repo/pulls/42/reviews"
+        assert json.loads(request.read()) == {
+            "body": "Summary",
+            "event": "REQUEST_CHANGES",
+            "comments": [
+                {"path": "app.py", "position": 3, "body": "Fix this."}
+            ],
+        }
+        return httpx.Response(200, json={"id": 123})
+
+    client = GitHubIssueClient(
+        "token",
+        api_base="https://api.github.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    review_id = asyncio.run(
+        client.post_pr_review(
+            "owner",
+            "repo",
+            42,
+            body="Summary",
+            event="REQUEST_CHANGES",
+            comments=[{"path": "app.py", "position": 3, "body": "Fix this."}],
+        )
+    )
+
+    assert review_id == 123
+    assert len(requests) == 1
+
+
+def test_parse_diff_positions_maps_added_lines_to_github_positions() -> None:
+    diff = """diff --git a/app.py b/app.py
+index 1111111..2222222 100644
+--- a/app.py
++++ b/app.py
+@@ -1,3 +1,4 @@
+ one
++two
+ three
++four
+diff --git a/pkg/util.py b/pkg/util.py
+--- a/pkg/util.py
++++ b/pkg/util.py
+@@ -10,2 +10,2 @@
+-old
++new
+ context
+"""
+
+    assert parse_diff_positions(diff) == {
+        ("app.py", 2): 2,
+        ("app.py", 4): 4,
+        ("pkg/util.py", 10): 2,
+    }
 
 
 def test_github_issue_client_fetches_paginated_admin_collaborators() -> None:

@@ -71,7 +71,7 @@ def test_userscript_renders_panel_and_readiness_states() -> None:
 def test_userscript_renders_pipeline_timeline_section() -> None:
     source = _read_userscript()
 
-    assert 'const PIPELINE_STAGES = ["snapshot", "scout", "plan", "implement", "verify", "pr"]' in source
+    assert 'const PIPELINE_STAGES = ["snapshot", "scout", "plan", "implement", "verify", "pr", "review", "post"]' in source
     assert "function collapseStages(stages)" in source
     assert "function renderPipeline(parent, pipeline)" in source
     assert 'section.className = "pawchestrator-pipeline"' in source
