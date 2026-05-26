@@ -24,6 +24,7 @@
   const START_ID = "pawchestrator-start";
   const GRILL_ID = "pawchestrator-grill";
   const PR_REVIEW_ID = "pawchestrator-review";
+  const PR_REPAIR_ID = "pawchestrator-repair";
   const CREATE_ISSUES_ID = "pawchestrator-create-issues";
   const CONFIRM_OVERLAY_ID = "pawchestrator-confirm-overlay";
   const POLL_INTERVAL_MS = 3000;
@@ -90,11 +91,13 @@
   let grillReplyObserverState = null;
   let latestIssueStatus = null;
   let latestPrRun = null;
+  let latestPrReviewState = null;
 
   GM_addStyle(`
     #${START_ID},
     #${GRILL_ID},
     #${PR_REVIEW_ID},
+    #${PR_REPAIR_ID},
     #${CREATE_ISSUES_ID} {
       white-space: nowrap;
     }
@@ -102,6 +105,7 @@
     #${START_ID}:disabled,
     #${GRILL_ID}:disabled,
     #${PR_REVIEW_ID}:disabled,
+    #${PR_REPAIR_ID}:disabled,
     #${CREATE_ISSUES_ID}:disabled {
       cursor: not-allowed;
       opacity: 0.65;
@@ -1490,6 +1494,12 @@
     });
   }
 
+  async function fetchPrReviewState(pr = parsePrReference()) {
+    return requestJson(`/prs/${pr.owner}/${pr.repo}/${pr.pr_number}/review-state`, {
+      label: "PR review state request",
+    });
+  }
+
   function reviewHasSuggestedIssues(run) {
     const suggestedIssues = run?.review_report?.suggested_issues;
     return Array.isArray(suggestedIssues)
@@ -1509,6 +1519,9 @@
 
   function summarizePrRun(run) {
     if (!run) {
+      if (latestPrReviewState === "changes_requested") {
+        return "Changes requested";
+      }
       return "Ready for review";
     }
     if (run.workflow_type === "repair") {
@@ -1533,11 +1546,7 @@
     setPanelSummary(summarizePrRun(run));
     setPanelStatus(panelStatusForRun(run));
     setPanelExpanded(Boolean(run));
-
-    const reviewButton = document.getElementById(PR_REVIEW_ID);
-    if (reviewButton) {
-      reviewButton.toggleAttribute("disabled", isPrRunActive(run));
-    }
+    updatePrActionButtons(run);
 
     const body = document.getElementById(PR_PANEL_ID)?.querySelector(".pawchestrator-panel-body");
     if (!body) {
@@ -1580,6 +1589,7 @@
 
   function renderPrOffline() {
     latestPrRun = null;
+    latestPrReviewState = null;
     setPanelSummary(OFFLINE_MESSAGE);
     setPanelStatus("offline");
     const body = document.getElementById(PR_PANEL_ID)?.querySelector(".pawchestrator-panel-body");
@@ -1587,18 +1597,30 @@
       body.textContent = "";
     }
     document.getElementById(PR_REVIEW_ID)?.removeAttribute("disabled");
+    document.getElementById(PR_REPAIR_ID)?.remove();
+  }
+
+  function renderPrReviewState(reviewState) {
+    latestPrReviewState = reviewState;
+    updatePrActionButtons(latestPrRun);
+    if (!latestPrRun && reviewState === "changes_requested") {
+      setPanelSummary("Changes requested");
+    }
   }
 
   async function pollPrStatusOnce() {
+    const reviewStatePromise = fetchPrReviewState();
     const storedRunId = await GM_getValue(prRunKey());
     if (storedRunId) {
       const storedRun = await fetchPrRun(storedRunId);
       if (isPrRunActive(storedRun)) {
+        renderPrReviewState((await reviewStatePromise).state);
         renderPrStatus(storedRun);
         return true;
       }
 
-      const status = await fetchPrStatus();
+      const [status, reviewState] = await Promise.all([fetchPrStatus(), reviewStatePromise]);
+      renderPrReviewState(reviewState.state);
       const activeRun = [status.repair, status.review].filter(Boolean).find(isPrRunActive);
       const run = activeRun || storedRun;
       if (activeRun?.id && activeRun.id !== storedRunId) {
@@ -1608,7 +1630,8 @@
       return isPrRunActive(run);
     }
 
-    const status = await fetchPrStatus();
+    const [status, reviewState] = await Promise.all([fetchPrStatus(), reviewStatePromise]);
+    renderPrReviewState(reviewState.state);
     const run = [status.repair, status.review].filter(Boolean).find(isPrRunActive)
       || status.review
       || status.repair
@@ -1852,6 +1875,45 @@
     }
   }
 
+  async function startRepair() {
+    const button = document.getElementById(PR_REPAIR_ID);
+    if (button) {
+      button.disabled = true;
+    }
+
+    try {
+      const pr = parsePrReference();
+      await getOrAcquireToken(setPanelSummary);
+      setPanelSummary("[repair] starting...");
+      panelExpandedByUser = true;
+      setPanelExpanded(true);
+      const response = await requestJson("/runs/repair/start", {
+        method: "POST",
+        label: "Repair start request",
+        statusSetter: setPanelSummary,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(pr),
+      });
+      await GM_setValue(prRunKey(), response.run_id);
+      renderPrStatus({
+        run_id: response.run_id,
+        workflow_type: "repair",
+        status: "repair_running",
+        current_stage: "repair",
+        stages: REPAIR_STAGES.map((stage_name) => ({
+          stage_name,
+          status: stage_name === "repair" ? "running" : "pending",
+        })),
+      });
+      startPrStatusPolling();
+    } catch (error) {
+      setPanelSummary(error.message);
+      if (button) {
+        button.disabled = false;
+      }
+    }
+  }
+
   async function createIssues() {
     const runId = latestPrRun?.id || latestPrRun?.run_id || await GM_getValue(prRunKey());
     const button = document.getElementById(CREATE_ISSUES_ID);
@@ -1913,6 +1975,38 @@
 
   function createReviewButton() {
     return createButton(PR_REVIEW_ID, "pawchestrator-review-button", `${PAW} Review with Pawchestrator`, startReview);
+  }
+
+  function createRepairButton() {
+    return createButton(PR_REPAIR_ID, "pawchestrator-repair-button", `${PAW} Work on Request Changes`, startRepair);
+  }
+
+  function updatePrActionButtons(run = latestPrRun) {
+    const active = isPrRunActive(run);
+    const reviewButton = document.getElementById(PR_REVIEW_ID);
+    if (reviewButton) {
+      reviewButton.toggleAttribute("disabled", active);
+    }
+
+    let repairButton = document.getElementById(PR_REPAIR_ID);
+    if (latestPrReviewState !== "changes_requested") {
+      repairButton?.remove();
+      return;
+    }
+
+    if (!repairButton) {
+      repairButton = createRepairButton();
+      const bar = document.getElementById(PR_PANEL_ID)?.querySelector(".pawchestrator-panel-bar");
+      const review = document.getElementById(PR_REVIEW_ID);
+      if (bar) {
+        if (review?.nextSibling) {
+          bar.insertBefore(repairButton, review.nextSibling);
+        } else {
+          bar.append(repairButton);
+        }
+      }
+    }
+    repairButton.toggleAttribute("disabled", active);
   }
 
   function grillButtonLabel(grill) {
