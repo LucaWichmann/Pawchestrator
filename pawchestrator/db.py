@@ -22,6 +22,7 @@ PIPELINE_STAGES = (
 REVIEW_STAGES = (
     "review",
     "post",
+    "issues",
 )
 TERMINAL_RUN_STATUSES = (
     "completed",
@@ -32,6 +33,9 @@ TERMINAL_RUN_STATUSES = (
     "epic_failed",
     "post_complete",
     "post_failed",
+    "issues_complete",
+    "issues_failed",
+    "issues_skipped",
     "review_failed",
 )
 STALE_RUN_ERROR = "Run aborted: Pawchestrator stopped before this run finished."
@@ -427,6 +431,147 @@ async def fail_review_post_run(
             WHERE id = ?
             """,
             (error, now, stage_id),
+        )
+        await db.commit()
+
+
+async def start_review_issues_run(settings: Settings, *, run_id: str) -> str:
+    await init_db(settings)
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET workflow_type = 'review',
+                status = 'issues_running',
+                current_stage = 'issues',
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (now, run_id),
+        )
+        stage_id = await _start_stage_row(
+            db,
+            run_id=run_id,
+            stage_name="issues",
+            now=now,
+        )
+        await db.commit()
+    return stage_id
+
+
+async def complete_review_issues_run(
+    settings: Settings,
+    *,
+    run_id: str,
+    stage_id: str,
+    artifact_path: Path,
+) -> None:
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET workflow_type = 'review',
+                status = 'issues_complete',
+                current_stage = 'issues',
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (now, run_id),
+        )
+        await db.execute(
+            """
+            UPDATE workflow_stages
+            SET status = 'complete', completed_at = ?
+            WHERE id = ?
+            """,
+            (now, stage_id),
+        )
+        await db.execute(
+            """
+            INSERT INTO artifacts (id, run_id, artifact_type, file_path, created_at)
+            VALUES (?, ?, 'created_issues_report', ?, ?)
+            """,
+            (str(uuid4()), run_id, str(artifact_path), now),
+        )
+        await db.commit()
+
+
+async def skip_review_issues_run(
+    settings: Settings,
+    *,
+    run_id: str,
+    stage_id: str,
+    artifact_path: Path,
+    reason: str,
+) -> None:
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET workflow_type = 'review',
+                status = 'issues_skipped',
+                current_stage = 'issues',
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (now, run_id),
+        )
+        await db.execute(
+            """
+            UPDATE workflow_stages
+            SET status = 'skipped', error = ?, completed_at = ?
+            WHERE id = ?
+            """,
+            (reason, now, stage_id),
+        )
+        await db.execute(
+            """
+            INSERT INTO artifacts (id, run_id, artifact_type, file_path, created_at)
+            VALUES (?, ?, 'created_issues_report', ?, ?)
+            """,
+            (str(uuid4()), run_id, str(artifact_path), now),
+        )
+        await db.commit()
+
+
+async def fail_review_issues_run(
+    settings: Settings,
+    *,
+    run_id: str,
+    stage_id: str,
+    artifact_path: Path,
+    error: str,
+) -> None:
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET workflow_type = 'review',
+                status = 'issues_failed',
+                current_stage = 'issues',
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (now, run_id),
+        )
+        await db.execute(
+            """
+            UPDATE workflow_stages
+            SET status = 'failed', error = ?, completed_at = ?
+            WHERE id = ?
+            """,
+            (error, now, stage_id),
+        )
+        await db.execute(
+            """
+            INSERT INTO artifacts (id, run_id, artifact_type, file_path, created_at)
+            VALUES (?, ?, 'created_issues_report', ?, ?)
+            """,
+            (str(uuid4()), run_id, str(artifact_path), now),
         )
         await db.commit()
 
@@ -1603,6 +1748,7 @@ async def get_run_state(settings: Settings, run_id: str) -> dict[str, object] | 
                 WHEN 'pr' THEN 6
                 WHEN 'review' THEN 7
                 WHEN 'post' THEN 8
+                WHEN 'issues' THEN 9
                 ELSE 99
               END,
               started_at,
@@ -1625,6 +1771,7 @@ async def get_run_state(settings: Settings, run_id: str) -> dict[str, object] | 
     payload = dict(run)
     payload["stages"] = [dict(stage) for stage in stages]
     payload["artifacts"] = [dict(artifact) for artifact in artifacts]
+    payload["created_issue_urls"] = _created_issue_urls(payload)
     return payload
 
 
@@ -1765,6 +1912,16 @@ def _read_latest_artifact(
     except (OSError, json.JSONDecodeError):
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def _created_issue_urls(run: dict[str, object]) -> list[str]:
+    report = _read_latest_artifact(run, "created_issues_report")
+    if report is None:
+        return []
+    urls = report.get("created_issue_urls")
+    if not isinstance(urls, list):
+        return []
+    return [url for url in urls if isinstance(url, str)]
 
 
 async def _stale_failure_stage(
