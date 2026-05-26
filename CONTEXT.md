@@ -22,9 +22,9 @@ Local agent orchestration triggered from GitHub issues, right from inside your b
 
 **Gate** — A human approval checkpoint before a dangerous action (push, PR creation). Auto-approved in MVP 0; explicit in MVP 1.
 
-**Skill** — A reusable instruction pack for a specific agent task (Scout, Plan, Implement, etc.). Inline strings in MVP 0; loaded from files in MVP 1.
+**Skill** — A reusable instruction pack for a specific agent task (Scout, Plan, Implement, etc.). Loaded from bundled `Skill.md` files under `pawchestrator/skills/`; user overrides from `<app_dir>/skills/` take precedence. Each skill file contains the full prompt including terseness instructions — there is no separate runner-level system prompt for terseness.
 
-**Doctor** — CLI command that checks all required and optional dependencies and reports their status.
+**Doctor** — CLI command that checks all required and optional dependencies and reports their status. Includes an optional check that `pawchestrator` itself is on PATH — relevant for agents running inside worktrees that invoke the CLI directly. See ADR 0014.
 
 **RunWarning** — A non-fatal diagnostic event emitted by a Stage during a Run. Stored in the `run_warnings` table (1:n to `workflow_runs`). Surfaced in the GitHub issue comment alongside run state. Distinct from Stage errors: a warning does not fail the Stage; an error does.
 
