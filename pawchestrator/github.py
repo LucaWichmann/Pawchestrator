@@ -466,6 +466,14 @@ class GitHubIssueClient:
         event: str,
         comments: Sequence[dict[str, Any]],
     ) -> int | None:
+        review_payload: dict[str, Any] = {
+            "body": body,
+            "event": event,
+        }
+        review_comments = list(comments)
+        if review_comments:
+            review_payload["comments"] = review_comments
+
         async with httpx.AsyncClient(
             base_url=self._api_base,
             headers=self._headers(),
@@ -473,11 +481,7 @@ class GitHubIssueClient:
         ) as client:
             response = await client.post(
                 f"/repos/{owner}/{repo}/pulls/{number}/reviews",
-                json={
-                    "body": body,
-                    "event": event,
-                    "comments": list(comments),
-                },
+                json=review_payload,
             )
             self._raise_for_status(response)
             payload = response.json()
@@ -659,10 +663,38 @@ class GitHubIssueClient:
         if response.is_success:
             return
         try:
-            message = response.json().get("message", response.text)
+            payload = response.json()
         except ValueError:
             message = response.text
+        else:
+            if isinstance(payload, dict):
+                message = str(payload.get("message", response.text))
+                errors = payload.get("errors")
+                if errors:
+                    message = f"{message}: {_format_github_errors(errors)}"
+            else:
+                message = response.text
         raise GitHubError(f"GitHub API error {response.status_code}: {message}")
+
+
+def _format_github_errors(errors: Any) -> str:
+    if isinstance(errors, list):
+        return "; ".join(_format_github_error(error) for error in errors)
+    return str(errors)
+
+
+def _format_github_error(error: Any) -> str:
+    if not isinstance(error, dict):
+        return str(error)
+    message = error.get("message")
+    if isinstance(message, str) and message:
+        return message
+    parts = [
+        str(error[key])
+        for key in ("resource", "field", "code")
+        if key in error and error[key] is not None
+    ]
+    return " ".join(parts) if parts else str(error)
 
 
 async def ensure_pawchestrator_labels(

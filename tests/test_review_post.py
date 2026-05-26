@@ -115,6 +115,60 @@ def test_review_run_status_includes_pending_post_stage(tmp_path: Path) -> None:
     ]
 
 
+def test_run_review_post_submits_approve_review_without_inline_comments(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    run_id = "run-123"
+    asyncio.run(
+        create_review_run(
+            settings,
+            run_id=run_id,
+            owner="owner",
+            repo="repo",
+            pr_number=42,
+        )
+    )
+    report_path = review_report_path(settings, run_id)
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema": "pawchestrator.review_report.v1",
+                "inline_comments": [],
+                "summary": "Clean change.",
+                "verdict": "APPROVE",
+                "suggested_issues": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    client = FakeReviewClient()
+
+    result = asyncio.run(
+        run_review_post(
+            run_id,
+            settings,
+            client=client,  # type: ignore[arg-type]
+            diff_text="",
+        )
+    )
+
+    assert result.submitted_comments == 0
+    assert result.skipped_comments == 0
+    assert result.review_id == 99
+    assert client.payloads == [
+        {
+            "owner": "owner",
+            "repo": "repo",
+            "number": 42,
+            "body": "Clean change.",
+            "event": "APPROVE",
+            "comments": [],
+        }
+    ]
+
+
 def test_run_review_post_marks_stage_failed_on_submission_error(tmp_path: Path) -> None:
     settings = Settings(app_dir=tmp_path)
     run_id = "run-123"

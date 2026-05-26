@@ -256,6 +256,40 @@ def test_github_issue_client_posts_pull_request_review_payload() -> None:
     assert len(requests) == 1
 
 
+def test_github_issue_client_omits_empty_pull_request_review_comments() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.method == "POST"
+        assert request.url.path == "/repos/owner/repo/pulls/42/reviews"
+        assert json.loads(request.read()) == {
+            "body": "Clean change.",
+            "event": "APPROVE",
+        }
+        return httpx.Response(200, json={"id": 124})
+
+    client = GitHubIssueClient(
+        "token",
+        api_base="https://api.github.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    review_id = asyncio.run(
+        client.post_pr_review(
+            "owner",
+            "repo",
+            42,
+            body="Clean change.",
+            event="APPROVE",
+            comments=[],
+        )
+    )
+
+    assert review_id == 124
+    assert len(requests) == 1
+
+
 def test_github_issue_client_creates_issue_and_returns_html_url() -> None:
     requests: list[httpx.Request] = []
 
@@ -353,6 +387,50 @@ def test_github_issue_client_fetch_admin_collaborators_raises_on_http_error() ->
 
     with pytest.raises(RuntimeError, match="GitHub API error 403: forbidden"):
         asyncio.run(client.fetch_admin_collaborators("owner", "repo"))
+
+
+def test_github_issue_client_includes_validation_details_in_http_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/repos/owner/repo/pulls/42/reviews"
+        return httpx.Response(
+            422,
+            json={
+                "message": "Validation Failed",
+                "errors": [
+                    {
+                        "resource": "PullRequestReview",
+                        "field": "comments",
+                        "code": "invalid",
+                    },
+                    {"message": "Comment is not on a diff line"},
+                ],
+            },
+        )
+
+    client = GitHubIssueClient(
+        "token",
+        api_base="https://api.github.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(
+        GitHubError,
+        match=(
+            r"GitHub API error 422: Validation Failed: "
+            r"PullRequestReview comments invalid; Comment is not on a diff line"
+        ),
+    ):
+        asyncio.run(
+            client.post_pr_review(
+                "owner",
+                "repo",
+                42,
+                body="Summary",
+                event="COMMENT",
+                comments=[],
+            )
+        )
 
 
 def test_github_issue_client_fetches_issue_body() -> None:
