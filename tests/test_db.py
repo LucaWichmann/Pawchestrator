@@ -196,8 +196,6 @@ def test_create_pipeline_run_inserts_all_pending_stages(tmp_path: Path) -> None:
         ("implement", "pending"),
         ("verify", "pending"),
         ("pr", "pending"),
-        ("review", "pending"),
-        ("post", "pending"),
     ]
 
 

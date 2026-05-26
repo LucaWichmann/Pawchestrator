@@ -18,6 +18,8 @@ PIPELINE_STAGES = (
     "implement",
     "verify",
     "pr",
+)
+REVIEW_STAGES = (
     "review",
     "post",
 )
@@ -501,7 +503,7 @@ async def _create_pr_workflow_run(
             (run_id, owner, repo, pr_number, workflow_type, now, now),
         )
         if workflow_type == "review":
-            for stage_name in ("review", "post"):
+            for stage_name in REVIEW_STAGES:
                 await db.execute(
                     """
                     INSERT INTO workflow_stages (id, run_id, stage_name, status)
@@ -1793,7 +1795,7 @@ async def _stale_failure_stage(
 
 def _valid_pipeline_stage(stage_name: object) -> str | None:
     stage = str(stage_name or "")
-    return stage if stage in PIPELINE_STAGES else None
+    return stage if stage in PIPELINE_STAGES or stage in REVIEW_STAGES else None
 
 
 def _next_pipeline_stage(stage_name: str | None) -> str | None:
@@ -1815,7 +1817,7 @@ async def _first_pending_pipeline_stage(
         FROM workflow_stages
         WHERE run_id = ?
           AND status = 'pending'
-          AND stage_name IN (?, ?, ?, ?, ?, ?, ?, ?)
+          AND stage_name IN (?, ?, ?, ?, ?, ?)
         ORDER BY
           CASE stage_name
             WHEN 'snapshot' THEN 1
@@ -1824,8 +1826,6 @@ async def _first_pending_pipeline_stage(
             WHEN 'implement' THEN 4
             WHEN 'verify' THEN 5
             WHEN 'pr' THEN 6
-            WHEN 'review' THEN 7
-            WHEN 'post' THEN 8
             ELSE 99
           END,
           id

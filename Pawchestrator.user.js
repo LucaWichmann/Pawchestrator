@@ -26,7 +26,7 @@
   const POLL_INTERVAL_MS = 3000;
   const REINJECT_DEBOUNCE_MS = 100;
   const TOKEN_KEY = "pawchestrator_token";
-  const PIPELINE_STAGES = ["snapshot", "scout", "plan", "implement", "verify", "pr", "review", "post"];
+  const PIPELINE_STAGES = ["snapshot", "scout", "plan", "implement", "verify", "pr"];
   const PAW = "\uD83D\uDC3E";
   const FIRE = "\uD83D\uDD25";
   const WARNING = "\u26A0";
