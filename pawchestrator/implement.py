@@ -365,10 +365,10 @@ Issue body:
 {snapshot.get("body", "")}
 
 IssueSnapshot JSON:
-{json.dumps(snapshot, indent=2, sort_keys=True)}
+{_prompt_json(snapshot)}
 
 Implementation plan:
-{json.dumps(prompt_plan, indent=2, sort_keys=True)}
+{_prompt_json(prompt_plan)}
 {repair_section}
 {checkbox_section}
 
@@ -416,8 +416,12 @@ def _prompt_repair_context(
 Verification failed after implementation. Repair attempt: {attempt}
 
 Use this verification feedback to repair the existing worktree changes:
-{json.dumps(repair_context, indent=2, sort_keys=True)}
+{_prompt_json(repair_context)}
 """
+
+
+def _prompt_json(value: dict[str, Any]) -> str:
+    return json.dumps(value, sort_keys=True)
 
 
 def _prompt_implementation_plan(implementation_plan: dict[str, Any]) -> dict[str, Any]:

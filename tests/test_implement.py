@@ -134,7 +134,7 @@ def test_build_implement_prompt_compresses_plan_for_prompt_only(tmp_path: Path) 
     assert ("x" * 150) in prompt
     assert ("x" * 151) not in prompt
     assert '"description": "Edit code."' in prompt
-    assert '"files_to_modify": [' in prompt
+    assert '"files_to_modify": ["pawchestrator/implement.py"]' in prompt
     assert '"notes"' not in prompt
     assert plan["approach_summary"] == approach_summary
     assert "notes" in plan["steps"][0]
