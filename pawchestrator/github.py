@@ -34,6 +34,8 @@ RUN_STAGE_LABELS = {
     "implement": "Implement",
     "verify": "Verify",
     "pr": "PR",
+    "review": "Review",
+    "post": "Post",
 }
 HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$")
 UNCHECKED_CHECKBOX_RE = re.compile(r"^\s*[-*+]\s+\[\s\]\s+(?P<text>.+?)\s*$")
@@ -320,6 +322,36 @@ class GitHubIssueClient:
             raise GitHubError("GitHub comment response did not include an id")
         return int(payload["id"])
 
+    async def post_pr_review(
+        self,
+        owner: str,
+        repo: str,
+        number: int,
+        *,
+        body: str,
+        event: str,
+        comments: Sequence[dict[str, Any]],
+    ) -> int | None:
+        async with httpx.AsyncClient(
+            base_url=self._api_base,
+            headers=self._headers(),
+            transport=self._transport,
+        ) as client:
+            response = await client.post(
+                f"/repos/{owner}/{repo}/pulls/{number}/reviews",
+                json={
+                    "body": body,
+                    "event": event,
+                    "comments": list(comments),
+                },
+            )
+            self._raise_for_status(response)
+            payload = response.json()
+        if not isinstance(payload, dict):
+            raise GitHubError("GitHub review response was not an object")
+        review_id = payload.get("id")
+        return int(review_id) if review_id is not None else None
+
     async def fetch_admin_collaborators(self, owner: str, repo: str) -> list[str]:
         async with httpx.AsyncClient(
             base_url=self._api_base,
@@ -556,3 +588,57 @@ def _error_from_state(run_state: dict[str, Any]) -> str | None:
         if isinstance(stage, dict) and stage.get("status") == "failed" and stage.get("error"):
             return str(stage["error"])
     return None
+
+
+def parse_diff_positions(diff_text: str) -> dict[tuple[str, int], int]:
+    positions: dict[tuple[str, int], int] = {}
+    current_file: str | None = None
+    new_line: int | None = None
+    position = 0
+
+    for line in diff_text.splitlines():
+        if line.startswith("diff --git "):
+            current_file = None
+            new_line = None
+            position = 0
+            continue
+
+        if line.startswith("+++ "):
+            path = line[4:].strip()
+            if path == "/dev/null":
+                current_file = None
+            elif path.startswith("b/"):
+                current_file = path[2:]
+            else:
+                current_file = path
+            continue
+
+        if current_file is None:
+            continue
+
+        if line.startswith("@@ "):
+            hunk_match = re.search(r"\+(\d+)(?:,\d+)?", line)
+            if hunk_match is None:
+                new_line = None
+                continue
+            new_line = int(hunk_match.group(1))
+            continue
+
+        if new_line is None:
+            continue
+
+        if line.startswith("\\"):
+            continue
+
+        marker = line[:1]
+        if marker not in {" ", "+", "-"}:
+            continue
+
+        position += 1
+        if marker == "+":
+            positions[(current_file, new_line)] = position
+            new_line += 1
+        elif marker == " ":
+            new_line += 1
+
+    return positions

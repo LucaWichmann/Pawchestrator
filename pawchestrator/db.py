@@ -11,7 +11,16 @@ import aiosqlite
 
 from pawchestrator.config import Settings, ensure_app_dir
 
-PIPELINE_STAGES = ("snapshot", "scout", "plan", "implement", "verify", "pr")
+PIPELINE_STAGES = (
+    "snapshot",
+    "scout",
+    "plan",
+    "implement",
+    "verify",
+    "pr",
+    "review",
+    "post",
+)
 TERMINAL_RUN_STATUSES = (
     "completed",
     "failed",
@@ -19,7 +28,8 @@ TERMINAL_RUN_STATUSES = (
     "grill_failed",
     "epic_complete",
     "epic_failed",
-    "review_complete",
+    "post_complete",
+    "post_failed",
     "review_failed",
 )
 STALE_RUN_ERROR = "Run aborted: Pawchestrator stopped before this run finished."
@@ -333,6 +343,92 @@ async def complete_review_run(
         await db.commit()
 
 
+async def start_review_post_run(settings: Settings, *, run_id: str) -> str:
+    await init_db(settings)
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET workflow_type = 'review',
+                status = 'post_running',
+                current_stage = 'post',
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (now, run_id),
+        )
+        stage_id = await _start_stage_row(
+            db,
+            run_id=run_id,
+            stage_name="post",
+            now=now,
+        )
+        await db.commit()
+    return stage_id
+
+
+async def complete_review_post_run(
+    settings: Settings,
+    *,
+    run_id: str,
+    stage_id: str,
+) -> None:
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET workflow_type = 'review',
+                status = 'post_complete',
+                current_stage = 'post',
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (now, run_id),
+        )
+        await db.execute(
+            """
+            UPDATE workflow_stages
+            SET status = 'complete', completed_at = ?
+            WHERE id = ?
+            """,
+            (now, stage_id),
+        )
+        await db.commit()
+
+
+async def fail_review_post_run(
+    settings: Settings,
+    *,
+    run_id: str,
+    stage_id: str,
+    error: str,
+) -> None:
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET workflow_type = 'review',
+                status = 'post_failed',
+                current_stage = 'post',
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (now, run_id),
+        )
+        await db.execute(
+            """
+            UPDATE workflow_stages
+            SET status = 'failed', error = ?, completed_at = ?
+            WHERE id = ?
+            """,
+            (error, now, stage_id),
+        )
+        await db.commit()
+
+
 async def fail_review_run(
     settings: Settings,
     *,
@@ -404,6 +500,15 @@ async def _create_pr_workflow_run(
             """,
             (run_id, owner, repo, pr_number, workflow_type, now, now),
         )
+        if workflow_type == "review":
+            for stage_name in ("review", "post"):
+                await db.execute(
+                    """
+                    INSERT INTO workflow_stages (id, run_id, stage_name, status)
+                    VALUES (?, ?, ?, 'pending')
+                    """,
+                    (str(uuid4()), run_id, stage_name),
+                )
         await db.commit()
 
 
@@ -1494,6 +1599,8 @@ async def get_run_state(settings: Settings, run_id: str) -> dict[str, object] | 
                 WHEN 'implement' THEN 4
                 WHEN 'verify' THEN 5
                 WHEN 'pr' THEN 6
+                WHEN 'review' THEN 7
+                WHEN 'post' THEN 8
                 ELSE 99
               END,
               started_at,
@@ -1708,7 +1815,7 @@ async def _first_pending_pipeline_stage(
         FROM workflow_stages
         WHERE run_id = ?
           AND status = 'pending'
-          AND stage_name IN (?, ?, ?, ?, ?, ?)
+          AND stage_name IN (?, ?, ?, ?, ?, ?, ?, ?)
         ORDER BY
           CASE stage_name
             WHEN 'snapshot' THEN 1
@@ -1717,6 +1824,8 @@ async def _first_pending_pipeline_stage(
             WHEN 'implement' THEN 4
             WHEN 'verify' THEN 5
             WHEN 'pr' THEN 6
+            WHEN 'review' THEN 7
+            WHEN 'post' THEN 8
             ELSE 99
           END,
           id
