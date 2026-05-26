@@ -26,9 +26,14 @@ from pawchestrator.github import (
 from pawchestrator.issues import snapshot_issue
 from pawchestrator.runners import (
     Runner,
+    RunnerResult,
     RunnerTask,
     resolve_runner,
     runner_tool_mismatch_warning,
+)
+from pawchestrator.stage_fallback import (
+    run_task_with_usage_limit_fallback,
+    usage_limit_fallback_runner,
 )
 
 GRILL_REPORT_SCHEMA = "pawchestrator.grill_report.v1"
@@ -209,26 +214,30 @@ async def dedupe_criteria(
         return []
 
     active_runner = runner or resolve_runner(settings, "criteria_dedupe", "claude")
-    healthy, message = await active_runner.check_health()
-    if not healthy:
-        LOGGER.warning(
-            "criteria dedupe runner unavailable; using normalized dedupe: %s",
-            message,
-        )
-        return fallback_unique
+    fallback_runner = usage_limit_fallback_runner(
+        settings,
+        "criteria_dedupe",
+        active_runner,
+    )
+    task = RunnerTask(
+        prompt=build_dedupe_prompt(existing_criteria, llm_candidates),
+        cwd=cwd.resolve(),
+        run_id=run_id,
+        stage_name="criteria_dedupe",
+    )
 
     try:
-        result = await active_runner.run_task(
-            RunnerTask(
-                prompt=build_dedupe_prompt(existing_criteria, llm_candidates),
-                cwd=cwd.resolve(),
-                run_id=run_id,
-                stage_name="criteria_dedupe",
-            )
+        result = await run_task_with_usage_limit_fallback(
+            settings=settings,
+            run_id=run_id,
+            stage_name="criteria_dedupe",
+            active_runner=active_runner,
+            fallback_runner=fallback_runner,
+            task=task,
+            log_path=_criteria_dedupe_log_path(settings, run_id),
+            write_attempt_log=_write_grill_attempt_log,
+            logger=LOGGER,
         )
-        if result.exit_code != 0:
-            detail = result.stderr.strip() or result.stdout.strip() or "runner failed"
-            raise ValueError(detail)
         return _normalize_dedupe_payload(result.artifact, fallback_unique)
     except Exception as error:
         LOGGER.warning(
@@ -407,27 +416,25 @@ async def _build_report_payload(
             ],
         }
 
-    # ClaudeRunner enforces grill read-only tools in runner config resolution.
-    # CodexRunner has no tool allowlist equivalent, so assigning codex to grill
-    # intentionally removes that read-only guarantee.
     active_runner = runner or resolve_runner(settings, "grill", "claude")
     _log_tool_mismatch(active_runner)
-    healthy, message = await active_runner.check_health()
-    if not healthy:
-        raise RuntimeError(message)
-
-    result = await active_runner.run_task(
-        RunnerTask(
+    fallback_runner = usage_limit_fallback_runner(settings, "grill", active_runner)
+    result = await run_task_with_usage_limit_fallback(
+        settings=settings,
+        run_id=run_id,
+        stage_name="grill",
+        active_runner=active_runner,
+        fallback_runner=fallback_runner,
+        task=RunnerTask(
             prompt=build_grill_prompt(snapshot),
             cwd=local_repo_path.resolve(),
             run_id=run_id,
             stage_name="grill",
-        )
+        ),
+        log_path=log_path,
+        write_attempt_log=_write_grill_attempt_log,
+        logger=LOGGER,
     )
-    _write_grill_log(log_path, result.stdout, result.stderr)
-    if result.exit_code != 0:
-        detail = result.stderr.strip() or result.stdout.strip() or "Claude runner failed"
-        raise RuntimeError(detail)
     return normalize_grill_payload(result.artifact)
 
 
@@ -534,9 +541,32 @@ def _grill_log_path(settings: Settings, run_id: str) -> Path:
     return settings.app_dir / "runs" / run_id / "stdout" / "grill.log"
 
 
+def _criteria_dedupe_log_path(settings: Settings, run_id: str) -> Path:
+    return settings.app_dir / "runs" / run_id / "stdout" / "criteria_dedupe.log"
+
+
 def _write_grill_log(log_path: Path, stdout: str, stderr: str) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_path.write_text(
         f"[stdout]\n{stdout}\n[stderr]\n{stderr}\n",
         encoding="utf-8",
     )
+
+
+def _write_grill_attempt_log(
+    log_path: Path,
+    runner_id: str,
+    result: RunnerResult,
+    *,
+    append: bool,
+) -> None:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    chunk = (
+        f"[{runner_id} stdout]\n{result.stdout}\n"
+        f"[{runner_id} stderr]\n{result.stderr}\n"
+    )
+    if append:
+        with log_path.open("a", encoding="utf-8") as log_file:
+            log_file.write(chunk)
+        return
+    log_path.write_text(chunk, encoding="utf-8")

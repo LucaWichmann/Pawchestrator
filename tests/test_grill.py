@@ -4,12 +4,13 @@ from pathlib import Path
 from typing import Any
 
 import aiosqlite
+import pytest
 from typer.testing import CliRunner
 
 from pawchestrator import cli
 from pawchestrator import grill as grill_module
 from pawchestrator.config import ClaudeRunnerSettings, Settings, StageSettings
-from pawchestrator.db import init_db
+from pawchestrator.db import get_run_warnings, init_db
 from pawchestrator.grill import (
     GrillReport,
     append_suggested_criteria,
@@ -195,6 +196,246 @@ def test_dedupe_criteria_falls_back_on_invalid_json(tmp_path: Path, caplog) -> N
     assert "criteria dedupe runner failed; using normalized dedupe" in caplog.text
 
 
+def test_dedupe_criteria_falls_back_to_codex_for_claude_usage_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = Settings(
+        app_dir=tmp_path,
+        stages={
+            "criteria_dedupe": StageSettings(
+                codex={"sandbox": "danger-full-access", "bypass_sandbox": True}
+            )
+        },
+    )
+    run_id = "run-123"
+    asyncio.run(_insert_run(settings, run_id))
+    seen: dict[str, object] = {}
+
+    async def fake_check_health(self: Runner) -> tuple[bool, str]:
+        return True, "ok"
+
+    async def fake_claude_run_task(
+        self: ClaudeRunner,
+        task: RunnerTask,
+    ) -> RunnerResult:
+        return RunnerResult(
+            exit_code=1,
+            stdout=json.dumps(
+                {
+                    "is_error": True,
+                    "api_error_status": 429,
+                    "error": "Claude usage limit reached for this session.",
+                }
+            ),
+            stderr="",
+            artifact=None,
+        )
+
+    async def fake_codex_run_task(
+        self: CodexRunner,
+        task: RunnerTask,
+    ) -> RunnerResult:
+        seen["task"] = task
+        seen["sandbox"] = self.stage_overrides["criteria_dedupe"].codex.sandbox
+        seen["bypass_sandbox"] = self.stage_overrides[
+            "criteria_dedupe"
+        ].codex.bypass_sandbox
+        return RunnerResult(
+            exit_code=0,
+            stdout="{}",
+            stderr="",
+            artifact={
+                "schema": "pawchestrator.criteria_dedupe.v1",
+                "unique_suggested_criteria": ["Keep this"],
+            },
+        )
+
+    monkeypatch.setattr(ClaudeRunner, "check_health", fake_check_health)
+    monkeypatch.setattr(CodexRunner, "check_health", fake_check_health)
+    monkeypatch.setattr(ClaudeRunner, "run_task", fake_claude_run_task)
+    monkeypatch.setattr(CodexRunner, "run_task", fake_codex_run_task)
+
+    result = asyncio.run(
+        dedupe_criteria(
+            settings,
+            run_id=run_id,
+            cwd=tmp_path,
+            existing_criteria=["Existing"],
+            proposed_criteria=["Keep this", "Drop this"],
+        )
+    )
+
+    assert result == ["Keep this"]
+    assert isinstance(seen["task"], RunnerTask)
+    assert seen["sandbox"] == "read-only"
+    assert seen["bypass_sandbox"] is False
+    log = (
+        tmp_path / "runs" / run_id / "stdout" / "criteria_dedupe.log"
+    ).read_text(encoding="utf-8")
+    assert "[claude stdout]" in log
+    assert "[codex stdout]" in log
+    warnings = asyncio.run(get_run_warnings(settings, run_id))
+    assert [warning["code"] for warning in warnings] == [
+        "criteria_dedupe_usage_limit_fallback"
+    ]
+    assert warnings[0]["message"] == (
+        "Claude usage limit exhausted; using Codex for criteria_dedupe."
+    )
+
+
+def test_dedupe_criteria_respects_disabled_usage_limit_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = Settings(
+        app_dir=tmp_path,
+        stages={
+            "criteria_dedupe": StageSettings(usage_limit_fallback_runner="none")
+        },
+    )
+    run_id = "run-123"
+    asyncio.run(_insert_run(settings, run_id))
+
+    async def fake_check_health(self: Runner) -> tuple[bool, str]:
+        return True, "ok"
+
+    async def fake_claude_run_task(
+        self: ClaudeRunner,
+        task: RunnerTask,
+    ) -> RunnerResult:
+        return RunnerResult(
+            exit_code=1,
+            stdout=json.dumps(
+                {
+                    "is_error": True,
+                    "api_error_status": 429,
+                    "error": "Claude usage limit reached for this session.",
+                }
+            ),
+            stderr="",
+            artifact=None,
+        )
+
+    async def fake_codex_run_task(
+        self: CodexRunner,
+        task: RunnerTask,
+    ) -> RunnerResult:
+        raise AssertionError("codex should not run")
+
+    monkeypatch.setattr(ClaudeRunner, "check_health", fake_check_health)
+    monkeypatch.setattr(CodexRunner, "check_health", fake_check_health)
+    monkeypatch.setattr(ClaudeRunner, "run_task", fake_claude_run_task)
+    monkeypatch.setattr(CodexRunner, "run_task", fake_codex_run_task)
+
+    result = asyncio.run(
+        dedupe_criteria(
+            settings,
+            run_id=run_id,
+            cwd=tmp_path,
+            existing_criteria=[],
+            proposed_criteria=["Keep this"],
+        )
+    )
+
+    assert result == ["Keep this"]
+    assert asyncio.run(get_run_warnings(settings, run_id)) == []
+
+
+def test_dedupe_criteria_codex_primary_does_not_self_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = Settings(
+        app_dir=tmp_path,
+        stages={"criteria_dedupe": StageSettings(runner="codex")},
+    )
+    run_id = "run-123"
+    asyncio.run(_insert_run(settings, run_id))
+
+    async def fake_check_health(self: CodexRunner) -> tuple[bool, str]:
+        return True, "ok"
+
+    async def fake_codex_run_task(
+        self: CodexRunner,
+        task: RunnerTask,
+    ) -> RunnerResult:
+        return RunnerResult(exit_code=1, stdout="", stderr="codex failed", artifact=None)
+
+    monkeypatch.setattr(CodexRunner, "check_health", fake_check_health)
+    monkeypatch.setattr(CodexRunner, "run_task", fake_codex_run_task)
+
+    result = asyncio.run(
+        dedupe_criteria(
+            settings,
+            run_id=run_id,
+            cwd=tmp_path,
+            existing_criteria=[],
+            proposed_criteria=["Keep this"],
+        )
+    )
+
+    assert result == ["Keep this"]
+    assert asyncio.run(get_run_warnings(settings, run_id)) == []
+
+
+def test_dedupe_criteria_uses_normalized_fallback_after_codex_fallback_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    run_id = "run-123"
+    asyncio.run(_insert_run(settings, run_id))
+
+    async def fake_check_health(self: Runner) -> tuple[bool, str]:
+        return True, "ok"
+
+    async def fake_claude_run_task(
+        self: ClaudeRunner,
+        task: RunnerTask,
+    ) -> RunnerResult:
+        return RunnerResult(
+            exit_code=1,
+            stdout=json.dumps(
+                {
+                    "is_error": True,
+                    "api_error_status": 429,
+                    "error": "Claude usage limit reached for this session.",
+                }
+            ),
+            stderr="",
+            artifact=None,
+        )
+
+    async def fake_codex_run_task(
+        self: CodexRunner,
+        task: RunnerTask,
+    ) -> RunnerResult:
+        return RunnerResult(exit_code=1, stdout="", stderr="codex failed", artifact=None)
+
+    monkeypatch.setattr(ClaudeRunner, "check_health", fake_check_health)
+    monkeypatch.setattr(CodexRunner, "check_health", fake_check_health)
+    monkeypatch.setattr(ClaudeRunner, "run_task", fake_claude_run_task)
+    monkeypatch.setattr(CodexRunner, "run_task", fake_codex_run_task)
+
+    result = asyncio.run(
+        dedupe_criteria(
+            settings,
+            run_id=run_id,
+            cwd=tmp_path,
+            existing_criteria=["Existing"],
+            proposed_criteria=[" existing ", "Keep this"],
+        )
+    )
+
+    assert result == ["Keep this"]
+    log = (
+        tmp_path / "runs" / run_id / "stdout" / "criteria_dedupe.log"
+    ).read_text(encoding="utf-8")
+    assert "[claude stdout]" in log
+    assert "[codex stderr]" in log
+    warnings = asyncio.run(get_run_warnings(settings, run_id))
+    assert [warning["code"] for warning in warnings] == [
+        "criteria_dedupe_usage_limit_fallback"
+    ]
+
+
 def test_append_suggested_criteria_inserts_before_following_section() -> None:
     body = (
         "Original\n\n"
@@ -344,6 +585,188 @@ def test_run_grill_uses_dedupe_runner_to_skip_paraphrased_criteria(
     assert "Avoid adding duplicate acceptance criteria" not in fake_client.patched_body
     assert "- [ ] Log when the fallback deduper is used." in fake_client.patched_body
     assert result.report.suggested_criteria == ["Log when the fallback deduper is used."]
+
+
+def test_run_grill_falls_back_to_codex_for_claude_usage_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = Settings(
+        app_dir=tmp_path,
+        stages={
+            "grill": StageSettings(
+                codex={"sandbox": "danger-full-access", "bypass_sandbox": True}
+            )
+        },
+    )
+    run_id = "run-123"
+    asyncio.run(_insert_run(settings, run_id))
+    _write_snapshot(settings, run_id)
+    fake_client = FakeGitHubClient()
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    seen: dict[str, object] = {}
+
+    async def fake_check_health(self: Runner) -> tuple[bool, str]:
+        return True, "ok"
+
+    async def fake_claude_run_task(
+        self: ClaudeRunner,
+        task: RunnerTask,
+    ) -> RunnerResult:
+        return RunnerResult(
+            exit_code=1,
+            stdout=json.dumps(
+                {
+                    "is_error": True,
+                    "api_error_status": 429,
+                    "error": "Claude usage limit reached for this session.",
+                }
+            ),
+            stderr="",
+            artifact=None,
+        )
+
+    async def fake_codex_run_task(
+        self: CodexRunner,
+        task: RunnerTask,
+    ) -> RunnerResult:
+        seen["task"] = task
+        seen["sandbox"] = self.stage_overrides["grill"].codex.sandbox
+        seen["bypass_sandbox"] = self.stage_overrides["grill"].codex.bypass_sandbox
+        return RunnerResult(
+            exit_code=0,
+            stdout="{}",
+            stderr="",
+            artifact={
+                "schema": "pawchestrator.grill_report.v1",
+                "status": "success",
+                "suggested_criteria": [],
+                "unanswerable_questions": [],
+            },
+        )
+
+    monkeypatch.setattr(ClaudeRunner, "check_health", fake_check_health)
+    monkeypatch.setattr(CodexRunner, "check_health", fake_check_health)
+    monkeypatch.setattr(ClaudeRunner, "run_task", fake_claude_run_task)
+    monkeypatch.setattr(CodexRunner, "run_task", fake_codex_run_task)
+
+    result = asyncio.run(
+        run_grill(
+            "https://github.com/owner/repo/issues/42",
+            settings,
+            run_id=run_id,
+            repo_path=repo_path,
+            github_client=fake_client,  # type: ignore[arg-type]
+        )
+    )
+
+    assert result.report.schema == "pawchestrator.grill_report.v1"
+    assert isinstance(seen["task"], RunnerTask)
+    assert seen["sandbox"] == "read-only"
+    assert seen["bypass_sandbox"] is False
+    log = result.log_path.read_text(encoding="utf-8")
+    assert "[claude stdout]" in log
+    assert "[codex stdout]" in log
+    warnings = asyncio.run(get_run_warnings(settings, run_id))
+    assert [warning["code"] for warning in warnings] == ["grill_usage_limit_fallback"]
+    assert warnings[0]["message"] == "Claude usage limit exhausted; using Codex for grill."
+
+
+def test_run_grill_respects_disabled_usage_limit_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = Settings(
+        app_dir=tmp_path,
+        stages={"grill": StageSettings(usage_limit_fallback_runner="none")},
+    )
+    run_id = "run-123"
+    asyncio.run(_insert_run(settings, run_id))
+    _write_snapshot(settings, run_id)
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+
+    async def fake_check_health(self: Runner) -> tuple[bool, str]:
+        return True, "ok"
+
+    async def fake_claude_run_task(
+        self: ClaudeRunner,
+        task: RunnerTask,
+    ) -> RunnerResult:
+        return RunnerResult(
+            exit_code=1,
+            stdout=json.dumps(
+                {
+                    "is_error": True,
+                    "api_error_status": 429,
+                    "error": "Claude usage limit reached for this session.",
+                }
+            ),
+            stderr="",
+            artifact=None,
+        )
+
+    async def fake_codex_run_task(
+        self: CodexRunner,
+        task: RunnerTask,
+    ) -> RunnerResult:
+        raise AssertionError("codex should not run")
+
+    monkeypatch.setattr(ClaudeRunner, "check_health", fake_check_health)
+    monkeypatch.setattr(CodexRunner, "check_health", fake_check_health)
+    monkeypatch.setattr(ClaudeRunner, "run_task", fake_claude_run_task)
+    monkeypatch.setattr(CodexRunner, "run_task", fake_codex_run_task)
+
+    with pytest.raises(RuntimeError, match="usage limit reached"):
+        asyncio.run(
+            run_grill(
+                "https://github.com/owner/repo/issues/42",
+                settings,
+                run_id=run_id,
+                repo_path=repo_path,
+                github_client=FakeGitHubClient(),  # type: ignore[arg-type]
+            )
+        )
+
+    assert asyncio.run(get_run_warnings(settings, run_id)) == []
+
+
+def test_run_grill_codex_primary_does_not_self_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = Settings(
+        app_dir=tmp_path,
+        stages={"grill": StageSettings(runner="codex")},
+    )
+    run_id = "run-123"
+    asyncio.run(_insert_run(settings, run_id))
+    _write_snapshot(settings, run_id)
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+
+    async def fake_check_health(self: CodexRunner) -> tuple[bool, str]:
+        return True, "ok"
+
+    async def fake_codex_run_task(
+        self: CodexRunner,
+        task: RunnerTask,
+    ) -> RunnerResult:
+        return RunnerResult(exit_code=1, stdout="", stderr="codex failed", artifact=None)
+
+    monkeypatch.setattr(CodexRunner, "check_health", fake_check_health)
+    monkeypatch.setattr(CodexRunner, "run_task", fake_codex_run_task)
+
+    with pytest.raises(RuntimeError, match="codex failed"):
+        asyncio.run(
+            run_grill(
+                "https://github.com/owner/repo/issues/42",
+                settings,
+                run_id=run_id,
+                repo_path=repo_path,
+                github_client=FakeGitHubClient(),  # type: ignore[arg-type]
+            )
+        )
+
+    assert asyncio.run(get_run_warnings(settings, run_id)) == []
 
 
 def test_publish_report_marks_body_unchanged_when_all_criteria_are_semantic_duplicates(
