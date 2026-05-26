@@ -59,12 +59,7 @@ async def run_plan(
     if not snapshot_path.exists():
         raise FileNotFoundError(f"issue snapshot not found: {snapshot_path}")
 
-    scout_path = _scout_artifact_path(settings, run_id)
-    if not scout_path.exists():
-        raise FileNotFoundError(f"scout report not found: {scout_path}")
-
     snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
-    scout_report = json.loads(scout_path.read_text(encoding="utf-8"))
     local_repo_path = (repo_path or Path.cwd()).resolve()
     stage_id = await start_plan_run(settings, run_id=run_id)
     active_runner = runner or resolve_runner(settings, "plan", "claude")
@@ -72,14 +67,20 @@ async def run_plan(
     fallback_runner = usage_limit_fallback_runner(settings, "plan", active_runner)
     log_path = _plan_log_path(settings, run_id)
     artifact_path = _plan_artifact_path(settings, run_id)
-    task = RunnerTask(
-        prompt=build_plan_prompt(snapshot, scout_report),
-        cwd=local_repo_path,
-        run_id=run_id,
-        stage_name="plan",
-    )
 
     try:
+        scout_path = _scout_artifact_path(settings, run_id)
+        if not scout_path.exists():
+            raise FileNotFoundError(f"scout report not found: {scout_path}")
+
+        scout_report = json.loads(scout_path.read_text(encoding="utf-8"))
+        task = RunnerTask(
+            prompt=build_plan_prompt(snapshot, scout_report),
+            cwd=local_repo_path,
+            run_id=run_id,
+            stage_name="plan",
+        )
+
         if fallback_runner is None:
             result = await run_checked_runner(active_runner, task)
             _write_plan_attempt_log(
