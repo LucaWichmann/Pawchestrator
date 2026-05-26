@@ -393,6 +393,92 @@ When a run starts via browser trigger, the pipeline looks up `(owner, repo)` in 
 
 ---
 
+---
+
+## PR Review feature (design locked 2026-05-26)
+
+### New workflow types
+
+**ReviewRun** — A run triggered from a GitHub PR page that conducts AI code review. `workflow_type = "review"`. Three stages: `review` (agent analyzes PR), `post` (Pawchestrator submits review to GitHub API — auto), `issues` (creates SuggestedIssues on GitHub — user-triggered, stays pending until clicked or skipped). Identified by `{owner, repo, pr_number}` rather than `issue_number`.
+
+**RepairRun** — A run triggered from a GitHub PR page when the PR has `changes_requested` review state. Reads outstanding review comments + PR diff, dispatches the original implementer agent to fix them on the PR branch, pushes the branch, and re-requests review. `workflow_type = "repair"`. Two stages: `repair` (agent commits fixes locally), `push` (Pawchestrator pushes branch + re-requests review via GitHub API). Mirrors implement→pr pattern.
+
+### Cross-review pattern
+
+**CrossReview** — Config-driven behavior where the review runner is the opposite of the implement runner for Pawchestrator-originated PRs. Codex implements → Claude reviews. Claude implements → Codex reviews. Cross-review only applies when both runners are healthy. Falls back to `default_runner` silently if cross-review is not possible (only one runner available or healthy). Doctor warns (non-blocking) when `cross_review = true` but only one runner is healthy.
+
+**ReviewVerdict** — The agent-determined outcome of a ReviewRun. One of: `REQUEST_CHANGES` (blocking issues: bugs, security risks, wrong behavior), `APPROVE` (no blocking issues — minor items may become SuggestedIssues), `COMMENT` (observations without a formal decision). Agent picks verdict. Auto-approving is a valid outcome; constraining to always REQUEST_CHANGES loses signal.
+
+**SuggestedIssues** — Minor, non-blocking items surfaced during an APPROVE review that are worth tracking but don't block merge. Proposed in the PR panel as a list of `{title, body}` pairs. Human clicks "Create Issues" to open them on GitHub — not auto-created. The `issues` stage runs only on user confirmation; stays pending otherwise.
+
+### Review agent inputs
+
+**ReviewAgent input:** PR diff (`gh pr diff {number}`) + PR description (`gh pr view {number}`). PR description always available and contains plan + verification summary for paw-PRs automatically. No extra lookups needed.
+
+**RepairAgent input:** Review comments (both inline file/line comments and top-level PR comments, fetched from GitHub API) + PR diff. Full comment context ensures agent addresses both specific and architectural feedback.
+
+### Review agent output artifact schema
+
+```json
+{
+  "inline_comments": [{"file": "...", "line": 42, "body": "..."}],
+  "summary": "Overall review vibe — e.g. 'smaller changes requested, logic is sound'",
+  "verdict": "REQUEST_CHANGES | APPROVE | COMMENT",
+  "suggested_issues": [{"title": "...", "body": "..."}]
+}
+```
+
+`suggested_issues` only populated when `verdict = "APPROVE"`. Inline comments use file line numbers; Pawchestrator backend translates to GitHub diff positions before submitting via API. GitHub review posted as one `POST /pulls/{number}/reviews` call with inline comments + summary body + event field.
+
+### Runner assignment
+
+| Run type | Runner selection |
+|---|---|
+| ReviewRun — paw PR | Opposite of `implement` stage runner (CrossReview). Falls back to `default_runner`. |
+| ReviewRun — human PR | `[review] default_runner` from config |
+| RepairRun — paw PR | Same runner that ran `implement` stage |
+| RepairRun — human PR | `[review] default_runner` from config |
+
+### Worktree for repair
+
+Fresh `git worktree add` per RepairRun from remote PR branch. Worktree path derived from new repair `run_id`, not original run. No stale-worktree risk. Pawchestrator fetches PR head branch name via GitHub API before checkout.
+
+### New config section
+
+```toml
+[review]
+default_runner = "claude"   # used for non-paw PRs and when cross_review not possible
+cross_review = true         # flip runner for paw PRs; doctor warns if only one runner healthy
+```
+
+### New API endpoints
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/runs/review/start` | Start ReviewRun. Body: `{owner, repo, pr_number}`. Returns `{run_id}`. |
+| `POST` | `/runs/repair/start` | Start RepairRun. Body: `{owner, repo, pr_number}`. Returns `{run_id}`. |
+| `GET` | `/prs/{owner}/{repo}/{number}/review-state` | Returns `{state: "changes_requested" \| "approved" \| "open"}`. Called on PR page load for button visibility. |
+| `POST` | `/runs/{run_id}/create-issues` | Triggers `issues` stage for a completed ReviewRun (user-confirmed). |
+| `GET` | `/runs/{run_id}/status` | Reuse existing endpoint — works for review and repair runs without changes. |
+
+### PR panel behavior (Tampermonkey)
+
+- Panel injected above the Conversation tab content area on PR pages (`/pull/\d+` URL pattern).
+- Same panel style as issue panel (left accent border, status colors, collapse/expand).
+- Polls status every 3s while any run is active — same `POLL_INTERVAL_MS` constant.
+- One active ReviewRun or RepairRun per PR at a time. Button disabled while either is running.
+- "Work on Request Changes" button visible only when `GET /prs/.../review-state` returns `changes_requested`. Checked on every PR page load.
+- `owner`, `repo`, `pr_number` extracted from `window.location.pathname` — no DOM scraping needed.
+- Active run_id for a PR persisted via `GM_setValue` keyed by PR URL path.
+
+### DB additions
+
+`workflow_runs` gains a new nullable `pr_number` column. Pipeline runs populate `issue_number` and leave `pr_number` null. ReviewRun and RepairRun populate `pr_number` and leave `issue_number` null. Kept separate to avoid lookup collision when issue number and PR number happen to be equal.
+
+`workflow_runs.workflow_type` gains new values: `"review"`, `"repair"`. New stages: `review`, `post`, `issues`, `repair`, `push` — added to the known stage name set; same `workflow_stages` table schema otherwise.
+
+---
+
 ## Open decisions
 
 - Desktop app framework: decision deferred. Python + userscript is the active mode.
