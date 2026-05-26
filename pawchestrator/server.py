@@ -23,6 +23,8 @@ from pawchestrator.db import (
     fail_review_issues_run,
     fail_stale_runs_on_startup,
     get_latest_epic_run_by_issue,
+    get_latest_failed_epic_run_by_issue,
+    get_latest_pipeline_runs_by_group_issue,
     get_latest_grill_run_by_issue,
     get_latest_run_by_issue,
     get_run_by_pr_number,
@@ -103,6 +105,11 @@ class EpicStartResponse(BaseModel):
     run_id: str
     group_id: str
     sub_runs: list[EpicSubRunResponse]
+    resumed: bool = False
+    status: str | None = None
+    mode: str | None = None
+    branch: str | None = None
+    pr_url: str | None = None
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -260,16 +267,46 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     detail="repo not registered - run `pawchestrator repo add <path>` first",
                 )
 
-            group_id = str(uuid4())
-            parent_run_id = str(uuid4())
-            await create_epic_run(
+            failed_epic = await get_latest_failed_epic_run_by_issue(
                 runtime_settings,
-                run_id=parent_run_id,
                 owner=body.owner,
                 repo=body.repo,
                 issue_number=body.number,
-                group_id=group_id,
             )
+            resumed = failed_epic is not None
+            if failed_epic is None:
+                group_id = str(uuid4())
+                parent_run_id = str(uuid4())
+                await create_epic_run(
+                    runtime_settings,
+                    run_id=parent_run_id,
+                    owner=body.owner,
+                    repo=body.repo,
+                    issue_number=body.number,
+                    group_id=group_id,
+                )
+                latest_child_runs = {}
+                mode = runtime_settings.pipeline.epic_branch_mode
+                branch = None
+                pr_url = None
+            else:
+                group_id = str(failed_epic["group_id"])
+                parent_run_id = str(failed_epic["run_id"])
+                latest_child_runs = await get_latest_pipeline_runs_by_group_issue(
+                    runtime_settings,
+                    group_id,
+                )
+                mode = str(failed_epic["mode"])
+                branch = (
+                    None
+                    if failed_epic["branch"] is None
+                    else str(failed_epic["branch"])
+                )
+                pr_url = (
+                    None
+                    if failed_epic["pr_url"] is None
+                    else str(failed_epic["pr_url"])
+                )
             background_tasks.add_task(
                 _run_epic_background,
                 url,
@@ -285,9 +322,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     EpicSubRunResponse(
                         issue_number=int(sub_issue["number"]),
                         title=str(sub_issue.get("title") or ""),
+                        run_id=str(
+                            (
+                                latest_child_runs.get(int(sub_issue["number"]))
+                                or {}
+                            ).get("id")
+                            or ""
+                        ),
                     )
                     for sub_issue in sub_issues
                 ],
+                resumed=resumed,
+                status="epic_running",
+                mode=mode,
+                branch=branch,
+                pr_url=pr_url,
             )
 
         run_id = await _prepare_pipeline_run(url, runtime_settings)

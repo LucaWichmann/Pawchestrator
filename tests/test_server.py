@@ -172,6 +172,77 @@ def test_issue_start_routes_epic_when_sub_issues_exist(
     ]
 
 
+def test_issue_start_resumes_latest_failed_epic(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _seed_token(settings)
+    _insert_repo_registration(settings, tmp_path)
+    _insert_failed_epic_resume_state(settings)
+    client = _FakeSubIssueClient(
+        [
+            {
+                "number": 43,
+                "title": "Done",
+                "url": "https://github.com/owner/repo/issues/43",
+            },
+            {
+                "number": 44,
+                "title": "Retry",
+                "url": "https://github.com/owner/repo/issues/44",
+            },
+        ],
+        settings=settings,
+    )
+    calls = []
+    _patch_sub_issue_client(monkeypatch, client)
+
+    async def fake_run_epic(
+        issue_url: str,
+        runtime_settings: Settings,
+        *,
+        repo_path: Path,
+        group_id: str,
+        parent_run_id: str,
+    ):
+        calls.append((issue_url, runtime_settings.app_dir, repo_path, group_id, parent_run_id))
+        return SimpleNamespace(group_id=group_id, sub_runs=[])
+
+    monkeypatch.setattr("pawchestrator.server.run_epic", fake_run_epic)
+
+    with TestClient(create_app(settings)) as client_app:
+        response = client_app.post(
+            "/issue/start",
+            json={"owner": "owner", "repo": "repo", "number": 42},
+            headers=_token_headers(),
+        )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["type"] == "epic"
+    assert payload["resumed"] is True
+    assert payload["run_id"] == "failed-epic"
+    assert payload["group_id"] == "resume-group"
+    assert payload["status"] == "epic_running"
+    assert payload["mode"] == "epic-with-sub-issues"
+    assert payload["branch"] == "paw/epic-42-resume"
+    assert payload["pr_url"] == "https://github.com/owner/repo/pull/42"
+    assert payload["sub_runs"] == [
+        {"issue_number": 43, "title": "Done", "run_id": "done-43"},
+        {"issue_number": 44, "title": "Retry", "run_id": "failed-44"},
+    ]
+    assert calls == [
+        (
+            "https://github.com/owner/repo/issues/42",
+            tmp_path,
+            tmp_path.resolve(),
+            "resume-group",
+            "failed-epic",
+        )
+    ]
+
+
 def test_issue_start_background_failure_does_not_raise(
     tmp_path: Path,
     monkeypatch,
@@ -664,6 +735,74 @@ def _insert_repo_registration(settings: Settings, local_path: Path) -> None:
             local_path=local_path,
         )
     )
+
+
+def _insert_failed_epic_resume_state(settings: Settings) -> None:
+    import asyncio
+
+    async def insert() -> None:
+        await init_db(settings)
+        async with aiosqlite.connect(settings.database_path) as db:
+            await db.execute(
+                """
+                INSERT INTO workflow_runs (
+                  id, owner, repo, issue_number, group_id, workflow_type, status,
+                  current_stage, pr_url, epic_branch_mode, created_at, updated_at
+                )
+                VALUES (
+                  'failed-epic', 'owner', 'repo', 42, 'resume-group', 'epic',
+                  'epic_failed', 'epic', 'https://github.com/owner/repo/pull/42',
+                  'epic-with-sub-issues', '2026-05-24T10:00:00Z',
+                  '2026-05-24T10:00:04Z'
+                )
+                """
+            )
+            await db.execute(
+                """
+                INSERT INTO worktrees (
+                  id, run_id, owner, repo, issue_number, branch, path,
+                  created_at, updated_at
+                )
+                VALUES (
+                  'resume-worktree', 'failed-epic', 'owner', 'repo', 42,
+                  'paw/epic-42-resume', '/tmp/epic-42',
+                  '2026-05-24T10:00:00Z', '2026-05-24T10:00:01Z'
+                )
+                """
+            )
+            await db.executemany(
+                """
+                INSERT INTO workflow_runs (
+                  id, owner, repo, issue_number, group_id, workflow_type, status,
+                  current_stage, pr_url, created_at, updated_at
+                )
+                VALUES (?, 'owner', 'repo', ?, 'resume-group', 'pipeline', ?, ?,
+                        ?, ?, ?)
+                """,
+                [
+                    (
+                        "done-43",
+                        43,
+                        "completed",
+                        "pr",
+                        "https://github.com/owner/repo/pull/43",
+                        "2026-05-24T10:00:01Z",
+                        "2026-05-24T10:00:02Z",
+                    ),
+                    (
+                        "failed-44",
+                        44,
+                        "failed",
+                        "verify",
+                        None,
+                        "2026-05-24T10:00:02Z",
+                        "2026-05-24T10:00:03Z",
+                    ),
+                ],
+            )
+            await db.commit()
+
+    asyncio.run(insert())
 
 
 def _token_headers(token: str = "known-token") -> dict[str, str]:

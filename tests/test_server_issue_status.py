@@ -115,6 +115,30 @@ def test_issue_status_returns_epic_run_with_pipeline_shaped_sub_runs(
     assert second_sub_run["pr_url"] == "https://github.com/owner/repo/pull/44"
 
 
+def test_issue_status_dedupes_epic_child_attempts_to_latest(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _seed_token(settings)
+    _stub_runner_health(monkeypatch)
+    _insert_epic_run_with_duplicate_child_attempts(settings)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.get(
+            "/issue/owner/repo/42/status",
+            headers=_token_headers(),
+        )
+
+    payload = response.json()
+    assert response.status_code == 200
+    sub_runs = payload["epic"]["sub_runs"]
+    assert [run["issue_number"] for run in sub_runs] == [43, 44]
+    assert sub_runs[0]["run_id"] == "epic-child-43-new"
+    assert sub_runs[0]["status"] == "completed"
+    assert sub_runs[1]["run_id"] == "epic-child-44"
+
+
 def test_issue_status_marks_stale_pipeline_failed_on_startup(
     tmp_path: Path,
     monkeypatch,
@@ -549,6 +573,69 @@ def _insert_epic_run(settings: Settings) -> None:
                   'Tests were skipped', '2026-05-24T10:00:03Z'
                 )
                 """
+            )
+            await db.commit()
+
+    asyncio.run(insert())
+
+
+def _insert_epic_run_with_duplicate_child_attempts(settings: Settings) -> None:
+    import asyncio
+
+    async def insert() -> None:
+        await init_db(settings)
+        async with aiosqlite.connect(settings.database_path) as db:
+            await db.execute(
+                """
+                INSERT INTO workflow_runs (
+                  id, owner, repo, issue_number, group_id, workflow_type, status,
+                  current_stage, created_at, updated_at
+                )
+                VALUES (
+                  'epic-parent', 'owner', 'repo', 42, 'epic-group', 'epic',
+                  'epic_failed', 'epic', '2026-05-24T10:00:00Z',
+                  '2026-05-24T10:00:04Z'
+                )
+                """
+            )
+            await db.executemany(
+                """
+                INSERT INTO workflow_runs (
+                  id, owner, repo, issue_number, group_id, workflow_type, status,
+                  current_stage, pr_url, created_at, updated_at
+                )
+                VALUES (?, 'owner', 'repo', ?, 'epic-group', 'pipeline', ?, ?,
+                        ?, ?, ?)
+                """,
+                [
+                    (
+                        "epic-child-43-old",
+                        43,
+                        "failed",
+                        "verify",
+                        None,
+                        "2026-05-24T10:00:01Z",
+                        "2026-05-24T10:00:02Z",
+                    ),
+                    (
+                        "epic-child-43-new",
+                        43,
+                        "completed",
+                        "pr",
+                        "https://github.com/owner/repo/pull/43",
+                        "2026-05-24T10:00:03Z",
+                        "2026-05-24T10:00:04Z",
+                    ),
+                    (
+                        "epic-child-44",
+                        44,
+                        "completed",
+                        "pr",
+                        "https://github.com/owner/repo/pull/44",
+                        "2026-05-24T10:00:05Z",
+                        "2026-05-24T10:00:06Z",
+                    ),
+                ],
             )
             await db.commit()
 

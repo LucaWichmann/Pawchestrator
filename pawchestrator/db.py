@@ -1518,6 +1518,72 @@ async def get_runs_by_group_id(settings: Settings, group_id: str) -> list[dict]:
     return [dict(row) for row in rows]
 
 
+async def get_latest_pipeline_runs_by_group_issue(
+    settings: Settings,
+    group_id: str,
+) -> dict[int, dict[str, object]]:
+    grouped_runs = [
+        run
+        for run in await get_runs_by_group_id(settings, group_id)
+        if run.get("workflow_type") == "pipeline" and run.get("issue_number") is not None
+    ]
+    latest_by_issue: dict[int, dict[str, object]] = {}
+    for run in grouped_runs:
+        issue_number = int(run["issue_number"])
+        existing = latest_by_issue.get(issue_number)
+        if existing is None or _run_sort_key(run) >= _run_sort_key(existing):
+            latest_by_issue[issue_number] = run
+    return latest_by_issue
+
+
+async def get_latest_failed_epic_run_by_issue(
+    settings: Settings,
+    *,
+    owner: str,
+    repo: str,
+    issue_number: int,
+) -> dict[str, object] | None:
+    await init_db(settings)
+    async with aiosqlite.connect(settings.database_path) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT id, group_id, status, pr_url, epic_branch_mode
+            FROM workflow_runs
+            WHERE owner = ?
+              AND repo = ?
+              AND issue_number = ?
+              AND workflow_type = 'epic'
+              AND status = 'epic_failed'
+            ORDER BY updated_at DESC, created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (owner, repo, issue_number),
+        )
+        row = await cursor.fetchone()
+
+    if row is None or row["group_id"] is None:
+        return None
+
+    parent_worktree = await get_worktree_record(settings, run_id=str(row["id"]))
+    return {
+        "run_id": str(row["id"]),
+        "group_id": str(row["group_id"]),
+        "status": str(row["status"]),
+        "mode": str(row["epic_branch_mode"] or settings.pipeline.epic_branch_mode),
+        "branch": None if parent_worktree is None else str(parent_worktree["branch"]),
+        "pr_url": row["pr_url"],
+    }
+
+
+def _run_sort_key(run: dict[str, object]) -> tuple[str, str, str]:
+    return (
+        str(run.get("updated_at") or ""),
+        str(run.get("created_at") or ""),
+        str(run.get("id") or ""),
+    )
+
+
 async def start_implement_run(settings: Settings, *, run_id: str) -> str:
     await init_db(settings)
     now = utc_now_iso()
@@ -2086,10 +2152,12 @@ async def get_latest_epic_run_by_issue(
     parent_run_id = str(row["id"])
     group_id = str(row["group_id"])
     parent_worktree = await get_worktree_record(settings, run_id=parent_run_id)
+    latest_runs_by_issue = await get_latest_pipeline_runs_by_group_issue(
+        settings,
+        group_id,
+    )
     sub_runs = []
-    for grouped_run in await get_runs_by_group_id(settings, group_id):
-        if grouped_run.get("workflow_type") != "pipeline":
-            continue
+    for grouped_run in latest_runs_by_issue.values():
         run = await get_run_state(settings, str(grouped_run["id"]))
         if run is None:
             continue

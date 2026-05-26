@@ -11,6 +11,8 @@ from pawchestrator.config import Settings
 from pawchestrator.db import (
     complete_epic_run,
     fail_epic_run,
+    get_latest_pipeline_runs_by_group_issue,
+    get_run_state,
     set_run_pr_url,
     start_epic_run,
     upsert_worktree_record,
@@ -50,7 +52,12 @@ async def run_epic(
     client = GitHubIssueClient(get_gh_token())
     sub_issues = await client.fetch_sub_issues(reference)
     title = await _fetch_epic_title(client, reference)
-    mode = settings.pipeline.epic_branch_mode
+    parent_state = await get_run_state(settings, parent_run_id)
+    mode = str(
+        (parent_state or {}).get("epic_branch_mode")
+        or settings.pipeline.epic_branch_mode
+    )
+    parent_pr_url = str((parent_state or {}).get("pr_url") or "")
     epic_branch = f"paw/epic-{reference.number}-{slugify(title)}"
     epic_path = (
         settings.app_dir
@@ -87,22 +94,47 @@ async def run_epic(
         )
 
         if mode == "epic-with-sub-issues":
-            epic_pr = await _create_epic_pr(
-                settings=settings,
-                run_id=parent_run_id,
-                issue_number=reference.number,
-                title=title,
-                branch=epic_worktree.branch,
-                worktree_path=epic_worktree.path,
-                draft=True,
-                allow_empty_commit=True,
-                sub_runs=[],
-            )
-            await set_run_pr_url(settings, run_id=parent_run_id, pr_url=epic_pr.pr_url)
-            progress(f"[epic] draft PR ready - {epic_pr.pr_url}")
+            if parent_pr_url:
+                progress(f"[epic] draft PR already exists - {parent_pr_url}")
+            else:
+                epic_pr = await _create_epic_pr(
+                    settings=settings,
+                    run_id=parent_run_id,
+                    issue_number=reference.number,
+                    title=title,
+                    branch=epic_worktree.branch,
+                    worktree_path=epic_worktree.path,
+                    draft=True,
+                    allow_empty_commit=True,
+                    sub_runs=[],
+                )
+                parent_pr_url = epic_pr.pr_url
+                await set_run_pr_url(
+                    settings,
+                    run_id=parent_run_id,
+                    pr_url=epic_pr.pr_url,
+                )
+                progress(f"[epic] draft PR ready - {epic_pr.pr_url}")
 
+        latest_child_runs = await get_latest_pipeline_runs_by_group_issue(
+            settings,
+            group_id,
+        )
         for sub_issue in sub_issues:
             issue_number = int(sub_issue["number"])
+            completed_child = latest_child_runs.get(issue_number)
+            if completed_child is not None and completed_child.get("status") == "completed":
+                progress(f"[epic] skipping completed sub-issue #{issue_number}")
+                sub_runs.append(
+                    SubRunResult(
+                        issue_number=issue_number,
+                        title=str(sub_issue.get("title") or ""),
+                        run_id=str(completed_child["id"]),
+                        pr_url=str(completed_child.get("pr_url") or ""),
+                    )
+                )
+                continue
+
             child_issue_url = str(
                 sub_issue.get("url")
                 or f"https://github.com/{reference.owner}/{reference.repo}/issues/{issue_number}"

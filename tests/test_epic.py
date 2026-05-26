@@ -1,5 +1,6 @@
 import asyncio
 import json
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -231,6 +232,141 @@ def test_run_epic_continues_on_failure_when_fail_fast_false(
     assert status["status"] == "epic_failed"
 
 
+def test_run_epic_resume_skips_completed_sub_issue_and_reruns_failed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    asyncio.run(_insert_parent(settings, status="epic_failed"))
+    _insert_child_run(settings, run_id="completed-43", issue_number=43, status="completed")
+    _insert_child_run(settings, run_id="failed-44", issue_number=44, status="failed")
+    calls: list[dict[str, object]] = []
+    pr_calls: list[dict[str, object]] = []
+    progress: list[str] = []
+    _patch_client(
+        monkeypatch,
+        _FakeSubIssueClient(
+            [
+                {"number": 43, "title": "Done", "url": "https://github.com/owner/repo/issues/43"},
+                {"number": 44, "title": "Retry", "url": "https://github.com/owner/repo/issues/44"},
+                {"number": 45, "title": "Next", "url": "https://github.com/owner/repo/issues/45"},
+            ]
+        ),
+    )
+    _patch_epic_worktree(monkeypatch, tmp_path)
+    _patch_pipeline(monkeypatch, calls)
+    _patch_epic_pr(monkeypatch, pr_calls)
+
+    result = asyncio.run(
+        run_epic(
+            "https://github.com/owner/repo/issues/42",
+            settings,
+            repo_path=tmp_path,
+            progress=progress.append,
+            group_id="group-123",
+            parent_run_id="epic-parent",
+        )
+    )
+
+    assert "[epic] skipping completed sub-issue #43" in progress
+    assert [call["issue_url"] for call in calls] == [
+        "https://github.com/owner/repo/issues/44",
+        "https://github.com/owner/repo/issues/45",
+    ]
+    assert [sub_run.run_id for sub_run in result.sub_runs] == [
+        "completed-43",
+        "run-44",
+        "run-45",
+    ]
+    assert len(pr_calls) == 1
+    assert "Sub-issues completed: #43, #44, #45" in str(pr_calls[0]["body"])
+
+
+def test_run_epic_resume_all_children_complete_creates_final_pr(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    asyncio.run(_insert_parent(settings, status="epic_failed"))
+    _insert_child_run(settings, run_id="completed-43", issue_number=43, status="completed")
+    _insert_child_run(settings, run_id="completed-44", issue_number=44, status="completed")
+    calls: list[dict[str, object]] = []
+    pr_calls: list[dict[str, object]] = []
+    _patch_client(
+        monkeypatch,
+        _FakeSubIssueClient(
+            [
+                {"number": 43, "title": "Done", "url": "https://github.com/owner/repo/issues/43"},
+                {"number": 44, "title": "Also done", "url": "https://github.com/owner/repo/issues/44"},
+            ]
+        ),
+    )
+    _patch_epic_worktree(monkeypatch, tmp_path)
+    _patch_pipeline(monkeypatch, calls)
+    _patch_epic_pr(monkeypatch, pr_calls)
+
+    result = asyncio.run(
+        run_epic(
+            "https://github.com/owner/repo/issues/42",
+            settings,
+            repo_path=tmp_path,
+            progress=lambda _message: None,
+            group_id="group-123",
+            parent_run_id="epic-parent",
+        )
+    )
+
+    assert calls == []
+    assert [sub_run.run_id for sub_run in result.sub_runs] == [
+        "completed-43",
+        "completed-44",
+    ]
+    assert len(pr_calls) == 1
+
+
+def test_run_epic_with_sub_issues_resume_reuses_existing_draft_pr(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(
+        app_dir=tmp_path,
+        pipeline=PipelineSettings(epic_branch_mode="epic-with-sub-issues"),
+    )
+    asyncio.run(
+        _insert_parent(
+            settings,
+            status="epic_failed",
+            pr_url="https://github.com/owner/repo/pull/42",
+        )
+    )
+    calls: list[dict[str, object]] = []
+    pr_calls: list[dict[str, object]] = []
+    _patch_client(
+        monkeypatch,
+        _FakeSubIssueClient(
+            [{"number": 43, "url": "https://github.com/owner/repo/issues/43"}]
+        ),
+    )
+    _patch_epic_worktree(monkeypatch, tmp_path)
+    _patch_pipeline(monkeypatch, calls)
+    _patch_epic_pr(monkeypatch, pr_calls)
+
+    result = asyncio.run(
+        run_epic(
+            "https://github.com/owner/repo/issues/42",
+            settings,
+            repo_path=tmp_path,
+            progress=lambda _message: None,
+            group_id="group-123",
+            parent_run_id="epic-parent",
+        )
+    )
+
+    assert pr_calls == []
+    assert calls[0]["create_pr"] is True
+    assert result.sub_runs[0].pr_url == "https://github.com/owner/repo/pull/43"
+
+
 class _FakeSubIssueClient:
     def __init__(self, sub_issues: list[dict[str, object]]) -> None:
         self.sub_issues = sub_issues
@@ -244,7 +380,12 @@ class _FakeSubIssueClient:
         return "Big epic"
 
 
-async def _insert_parent(settings: Settings) -> None:
+async def _insert_parent(
+    settings: Settings,
+    *,
+    status: str = "pending",
+    pr_url: str | None = None,
+) -> None:
     await create_epic_run(
         settings,
         run_id="epic-parent",
@@ -253,6 +394,47 @@ async def _insert_parent(settings: Settings) -> None:
         issue_number=42,
         group_id="group-123",
     )
+    if status != "pending" or pr_url is not None:
+        with sqlite3.connect(settings.database_path) as db:
+            db.execute(
+                """
+                UPDATE workflow_runs
+                SET status = ?, current_stage = 'epic', pr_url = ?
+                WHERE id = 'epic-parent'
+                """,
+                (status, pr_url),
+            )
+            db.commit()
+
+
+def _insert_child_run(
+    settings: Settings,
+    *,
+    run_id: str,
+    issue_number: int,
+    status: str,
+    pr_url: str | None = None,
+) -> None:
+    with sqlite3.connect(settings.database_path) as db:
+        db.execute(
+            """
+            INSERT INTO workflow_runs (
+              id, owner, repo, issue_number, group_id, workflow_type, status,
+              current_stage, pr_url, created_at, updated_at
+            )
+            VALUES (?, 'owner', 'repo', ?, 'group-123', 'pipeline', ?, 'pr', ?,
+                    ?, ?)
+            """,
+            (
+                run_id,
+                issue_number,
+                status,
+                pr_url,
+                f"2026-05-24T10:00:{issue_number}Z",
+                f"2026-05-24T10:01:{issue_number}Z",
+            ),
+        )
+        db.commit()
 
 
 def _patch_client(monkeypatch: pytest.MonkeyPatch, client: _FakeSubIssueClient) -> None:
