@@ -51,7 +51,7 @@ curl -fsSL https://raw.githubusercontent.com/LucaWichmann/Pawchestrator/main/ins
 irm https://raw.githubusercontent.com/LucaWichmann/Pawchestrator/main/install.ps1 | iex
 ```
 
-Both scripts clone the repo to `~/.pawchestrator-cli`, run `uv sync`, and run `pawchestrator doctor` to show what's ready.
+Both scripts install the CLI with `uv tool install git+https://github.com/LucaWichmann/Pawchestrator.git` and run `pawchestrator doctor` to show what's ready.
 
 > **Prerequisites:** [`uv`](https://docs.astral.sh/uv/getting-started/installation/), [`git`](https://git-scm.com/), [`gh`](https://cli.github.com/), [`claude`](https://github.com/anthropics/claude-code), [`codex`](https://github.com/openai/codex)
 
@@ -60,8 +60,8 @@ Both scripts clone the repo to `~/.pawchestrator-cli`, run `uv sync`, and run `p
 ```sh
 git clone https://github.com/LucaWichmann/Pawchestrator.git
 cd Pawchestrator
-uv sync
-uv run pawchestrator doctor
+uv tool install --editable .
+pawchestrator doctor
 ```
 
 ---
