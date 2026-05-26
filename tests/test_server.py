@@ -307,7 +307,8 @@ def test_repair_start_returns_run_id_and_schedules_repair(
     assert payload["id"] == run_id
     assert payload["workflow_type"] == "repair"
     assert payload["pr_number"] == 42
-    assert [stage["stage_name"] for stage in payload["stages"]] == ["repair"]
+    assert [stage["stage_name"] for stage in payload["stages"]] == ["repair", "push"]
+    assert {stage["status"] for stage in payload["stages"]} == {"pending"}
 
 
 def test_openapi_exposes_issue_grill_route(tmp_path: Path) -> None:
