@@ -15,6 +15,7 @@ from pawchestrator import __version__
 from pawchestrator.config import LOCAL_HOST, Settings, load_settings
 from pawchestrator.db import (
     create_epic_run,
+    create_review_run,
     fail_stale_runs_on_startup,
     get_latest_epic_run_by_issue,
     get_latest_grill_run_by_issue,
@@ -29,6 +30,7 @@ from pawchestrator.epic import run_epic
 from pawchestrator.github import GitHubIssueClient, get_gh_token, parse_issue_url
 from pawchestrator.grill import run_grill
 from pawchestrator.pipeline import run_pipeline
+from pawchestrator.review import run_review
 from pawchestrator.runners import get_runner_health
 from pawchestrator.sessions import (
     _pair_lock,
@@ -51,12 +53,22 @@ class IssueGrillRequest(BaseModel):
     number: int = Field(gt=0)
 
 
+class ReviewStartRequest(BaseModel):
+    owner: str = Field(min_length=1)
+    repo: str = Field(min_length=1)
+    pr_number: int = Field(gt=0)
+
+
 class PairResponse(BaseModel):
     token: str
 
 
 class PipelineStartResponse(BaseModel):
     type: str = "pipeline"
+    run_id: str
+
+
+class ReviewStartResponse(BaseModel):
     run_id: str
 
 
@@ -139,6 +151,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/runs/{run_id}")
     async def run_state(run_id: str) -> dict[str, object]:
+        state = await get_run_state(runtime_settings, run_id)
+        if state is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        return state
+
+    @app.get("/runs/{run_id}/status")
+    async def run_status(run_id: str) -> dict[str, object]:
         state = await get_run_state(runtime_settings, run_id)
         if state is None:
             raise HTTPException(status_code=404, detail="run not found")
@@ -252,6 +271,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         return {"run_id": run_id}
 
+    @app.post("/runs/review/start")
+    async def review_start(
+        body: ReviewStartRequest,
+        background_tasks: BackgroundTasks,
+    ) -> ReviewStartResponse:
+        from uuid import uuid4
+
+        run_id = str(uuid4())
+        await create_review_run(
+            runtime_settings,
+            run_id=run_id,
+            owner=body.owner,
+            repo=body.repo,
+            pr_number=body.pr_number,
+        )
+        background_tasks.add_task(
+            _run_review_background,
+            runtime_settings,
+            run_id=run_id,
+        )
+        return ReviewStartResponse(run_id=run_id)
+
     return app
 
 
@@ -323,6 +364,17 @@ async def _run_grill_background(
     except Exception as error:
         await mark_run_failed(settings, run_id=run_id)
         print(f"[run {run_id}] grill failed: {error}")
+
+
+async def _run_review_background(
+    settings: Settings,
+    *,
+    run_id: str,
+) -> None:
+    try:
+        await run_review(run_id, settings)
+    except Exception as error:
+        print(f"[run {run_id}] review failed: {error}")
 
 
 async def _prepare_pipeline_run(issue_url_value: str, settings: Settings) -> str:

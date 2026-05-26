@@ -242,6 +242,42 @@ def test_issue_grill_returns_run_id_and_schedules_grill(
     assert payload["workflow_type"] == "grill"
 
 
+def test_review_start_returns_run_id_and_schedules_review(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _seed_token(settings)
+    calls = []
+
+    async def fake_run_review(
+        run_id: str,
+        runtime_settings: Settings,
+        *,
+        implement_runner: str | None = None,
+    ):
+        calls.append((run_id, runtime_settings.app_dir, implement_runner))
+
+    monkeypatch.setattr("pawchestrator.server.run_review", fake_run_review)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.post(
+            "/runs/review/start",
+            json={"owner": "owner", "repo": "repo", "pr_number": 42},
+            headers=_token_headers(),
+        )
+        run_id = response.json()["run_id"]
+        state_response = client.get(f"/runs/{run_id}/status", headers=_token_headers())
+
+    assert response.status_code == 200
+    assert response.json() == {"run_id": run_id}
+    assert calls == [(run_id, tmp_path, None)]
+    payload = state_response.json()
+    assert payload["id"] == run_id
+    assert payload["workflow_type"] == "review"
+    assert payload["pr_number"] == 42
+
+
 def test_openapi_exposes_issue_grill_route(tmp_path: Path) -> None:
     settings = Settings(app_dir=tmp_path)
     _seed_token(settings)
