@@ -13,333 +13,134 @@
 </p>
 
 <p align="center">
-  <a href="#install">Install</a> |
-  <a href="#quick-start">Quick start</a> |
-  <a href="#what-it-does">What it does</a> |
-  <a href="#how-it-works">How it works</a> |
-  <a href="#userscript-pairing">Userscript pairing</a> |
-  <a href="#configuration">Configuration</a> |
-  <a href="#troubleshooting">Troubleshooting</a>
+  <a href="#install">Install</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#configuration">Configuration</a> ·
+  <a href="docs/cli.md">CLI reference</a> ·
+  <a href="docs/troubleshooting.md">Troubleshooting</a>
 </p>
+
+---
+
+<p align="center">
+  <img src="docs/assets/screenshot.png" alt="Pawchestrator in action" width="800">
+</p>
+
+---
+
+`Issue → Snapshot → Scout → Plan → Implement → Verify → PR`
+
+- Runs **Claude** and **Codex** in a structured pipeline - each stage hands off artifacts, not chat transcripts
+- Triggered from a **GitHub issue page** via a browser userscript, or directly from the CLI
+- Creates an **isolated git worktree** per issue and opens a draft PR when done
+- Everything stays **local** - state, logs, worktrees, and tokens never leave your machine
 
 ---
 
 ## Install
 
-Install Tampermonkey first:
-[Chrome](https://chrome.google.com/webstore/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo) |
-[Firefox](https://addons.mozilla.org/firefox/addon/tampermonkey/)
+### macOS / Linux
 
-Then install the Pawchestrator userscript:
-
-<p>
-  <a href="https://raw.githubusercontent.com/LucaWichmann/Pawchestrator/main/Pawchestrator.user.js"><img alt="Install userscript" src="https://img.shields.io/badge/install-userscript-2ea44f?style=for-the-badge"></a>
-</p>
-
-## At a glance
-
-| | |
-|---|---|
-| **What it is** | A local backend that coordinates GitHub issue snapshots, agent stages, verification, and draft PR creation. |
-| **What it uses** | Claude Code and Codex runners, `gh`, local git worktrees, SQLite, and a browser userscript for issue-page control. |
-| **What stays local** | State, logs, worktrees, pairing tokens, and run artifacts. |
-| **What GitHub sees** | A structured run comment, stage labels, and a draft pull request. |
-
-## How it works
-
-```mermaid
-flowchart TD
-    A[GitHub issue page] --> B[Userscript or CLI]
-    B --> C[Local backend]
-    C --> D[Snapshot]
-    D --> E[Scout]
-    E --> F[Plan]
-    F --> G[Implement]
-    G --> H[Verify]
-    H --> I[Draft PR]
-
-    C --> J[(SQLite state)]
-    G --> K[(Worktree)]
-    H --> L[(Repo config)]
-    I --> M[GitHub PR]
+```sh
+curl -fsSL https://raw.githubusercontent.com/LucaWichmann/Pawchestrator/main/install.sh | sh
 ```
 
-## What it does
-
-| Surface | Purpose | Notes |
-|---|---|---|
-| `pawchestrator serve` | Start the local FastAPI backend | Binds to `127.0.0.1:38472` and exposes `/health`, `/pair`, `/issue/start`, and `/runs/{run_id}`. |
-| `pawchestrator doctor` | Check the local environment | Reports required and optional dependencies, plus local port, SQLite, and repo registry checks. |
-| `pawchestrator issue snapshot <issue-url>` | Capture a GitHub issue snapshot | Writes a structured issue artifact for later stages. |
-| `pawchestrator issue start <issue-url> [--repo-path ...]` | Run the full issue-to-PR pipeline | Executes snapshot -> scout -> plan -> implement -> verify -> pr. If the issue has GitHub sub-issues, runs the epic workflow instead. |
-| `pawchestrator run scout <run-id>` | Re-run scouting for an existing run | Useful when you want to inspect or recover a specific stage. |
-| `pawchestrator run plan <run-id>` | Re-run planning for an existing run | Reads the scout artifact and writes the implementation plan. |
-| `pawchestrator run implement <run-id>` | Re-run implementation for an existing run | Uses the run worktree and writes file edits plus a report. |
-| `pawchestrator run verify <run-id>` | Re-run verification for an existing run | Reads repo-local build/test commands and writes a verification report. |
-| `pawchestrator run pr <run-id>` | Create the draft PR for a verified run | Pushes the worktree branch and opens or reuses the draft PR. |
-| `pawchestrator checkbox check <owner>/<repo>/<number> <index>` | Check an issue-body checkbox | Manual checks update GitHub directly. `--run-id` is for Pawchestrator pipeline agents, which record run-scoped marks for later reconciliation. |
-| `pawchestrator repo add <path>` | Register a local clone | Required for browser-triggered runs that do not pass `--repo-path`. |
-| `pawchestrator repo list` | List registered repos | Shows the `owner/repo -> local path` mapping. |
-| `pawchestrator codegraph sync <run-id>` | Sync a merged CodeGraph index | Copies a run worktree index back only after its branch is already in `main`. |
-| `pawchestrator sessions clear` | Revoke pairing sessions | Deletes stored browser pairing tokens. |
-
-## Why this design
-
-- Local-first keeps the orchestration inspectable, fast, and under your control.
-- Structured artifacts beat long chat transcripts, so each stage hands off JSON or files instead of prose.
-- GitHub comments are template-only and factual, not LLM-generated.
-- Token spend stays low because the pipeline uses terse prompts, compact stage outputs, and local comments/state instead of verbose summaries.
-
-## Quick start
-
-### 1. Install dependencies
+### Windows (PowerShell)
 
 ```powershell
+irm https://raw.githubusercontent.com/LucaWichmann/Pawchestrator/main/install.ps1 | iex
+```
+
+Both scripts clone the repo to `~/.pawchestrator-cli`, run `uv sync`, and run `pawchestrator doctor` to show what's ready.
+
+> **Prerequisites:** [`uv`](https://docs.astral.sh/uv/getting-started/installation/), [`git`](https://git-scm.com/), [`gh`](https://cli.github.com/), [`claude`](https://github.com/anthropics/claude-code), [`codex`](https://github.com/openai/codex)
+
+### Manual (dev / contributor)
+
+```sh
+git clone https://github.com/LucaWichmann/Pawchestrator.git
+cd Pawchestrator
 uv sync
-```
-
-### 2. Check your setup
-
-```powershell
 uv run pawchestrator doctor
 ```
 
-### 3. Start the backend
+---
+
+## Quick start
+
+**1. Start the backend**
 
 ```powershell
 uv run pawchestrator serve
 ```
 
-The backend binds to `127.0.0.1:38472`.
+**2. Install the browser extension**
 
-### 4. Run an issue from the CLI
+Install [Tampermonkey](https://www.tampermonkey.net/) ([Chrome](https://chrome.google.com/webstore/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo) · [Firefox](https://addons.mozilla.org/firefox/addon/tampermonkey/)), then install the userscript:
+
+<p>
+  <a href="https://raw.githubusercontent.com/LucaWichmann/Pawchestrator/main/Pawchestrator.user.js"><img alt="Install userscript" src="https://img.shields.io/badge/install-userscript-2ea44f?style=for-the-badge"></a>
+</p>
+
+**3. Register your repo**
 
 ```powershell
-uv run pawchestrator issue start https://github.com/OWNER/REPO/issues/123 --repo-path C:\src\REPO
+uv run pawchestrator repo add C:\src\MY-REPO
 ```
 
-If you already registered the repository with `pawchestrator repo add <path>`, you can omit `--repo-path` from browser-triggered runs and let Pawchestrator resolve the clone from the `owner/repo` mapping.
+**4. Run an issue**
 
-## Userscript pairing
+Open a GitHub issue and click **Work on this issue** - Pawchestrator pairs on first use and runs the full pipeline.
 
-The browser flow uses `Pawchestrator.user.js` to add controls to GitHub issue pages and call the local backend.
+Or run directly from the CLI:
 
-1. Start the backend with `uv run pawchestrator serve`.
-2. Register the local repository clone:
+```powershell
+uv run pawchestrator issue start https://github.com/OWNER/REPO/issues/123
+```
 
-   ```powershell
-   uv run pawchestrator repo add C:\src\REPO
-   ```
+Full pairing and polling details: [docs/userscript.md](docs/userscript.md)
 
-3. Install [`Pawchestrator.user.js`](Pawchestrator.user.js) in Tampermonkey.
-4. Open a GitHub issue page and click the `Work on this issue` button in the issue header.
-5. On first use, the userscript calls `POST /pair`.
-6. The backend prompts in the terminal; press Enter to approve or Ctrl+C to deny.
-7. Pawchestrator stores the token in Tampermonkey and sends it on later requests as `X-Pawchestrator-Token`.
-8. The userscript then calls `POST /issue/start` and polls `GET /runs/{run_id}` for progress updates.
-
-`/health` stays open for offline checks. All other authenticated browser calls require the pairing token.
+---
 
 ## Configuration
 
-Pawchestrator loads optional defaults from `~/.pawchestrator/config.toml`.
-
-### Runner defaults
+Config lives at `~/.pawchestrator/config.toml`. Minimal example:
 
 ```toml
-[app]
-debug = true
-
 [runners.claude]
-execution = "native"
 model = "sonnet"
 effort = "low"
-allowed_tools = ["Read", "Glob", "Grep"]
-bypass_permissions = false
 
 [runners.codex]
-execution = "auto"
 model = "gpt-5.5"
 reasoning_effort = "low"
-sandbox = "workspace-write"
-approval_policy = "never"
-bypass_sandbox = false
-previous_response_not_found_attempts = 3
-
-[codegraph]
-enabled = true
-directory = ".codegraph"
-sync_policy = "safe-lazy"
 
 [pipeline]
 verify_repair_attempts = 1
-epic_fail_fast = true
-epic_confirm = false
-epic_branch_mode = "epic"
 ```
 
-Notes:
+Full reference - runners, per-stage overrides, epic workflow, CodeGraph, verify commands: [docs/configuration.md](docs/configuration.md)
 
-- `doctor` reads the same config and checks the local runner/tooling setup.
-- `debug = true` prints runner argv plus captured stdout/stderr.
-- Per-stage runner policy lives under `[stages.<stage>]`; runner-specific overrides live under `[stages.<stage>.claude]` and `[stages.<stage>.codex]`.
-- `execution = "auto"` on Codex tries native first and may fall back to WSL on known Windows sandbox failures.
-- `previous_response_not_found_attempts` caps Codex recovery attempts, including the original attempt.
-- Pawchestrator tries to preserve local CodeGraph databases even when `.codegraph/` is ignored by git. Before implementation it seeds the issue worktree from the source repo index with a SQLite-safe copy; it syncs back only when git proves the run branch has already merged into `main`.
+---
 
-Set a stage's primary runner and usage-limit fallback together:
+## How it works
 
-```toml
-[stages.scout]
-runner = "claude"
-usage_limit_fallback_runner = "codex"
-```
+Pawchestrator breaks the issue-to-PR flow into discrete stages. Each stage reads an artifact from the previous one and writes its own - no long chat history passed between agents, no context bleed.
 
-Disable usage-limit fallback for a stage with `"none"`:
+**Snapshot** fetches the GitHub issue body, metadata, and any sub-issues into a structured JSON artifact. **Scout** reads the snapshot and explores the codebase to build a file map and surface relevant context. **Plan** turns the scout report into an implementation plan - a concrete list of files and changes. **Implement** executes the plan in an isolated git worktree, writing actual code. **Verify** runs the repo's configured build, test, and lint commands against the worktree and produces a pass/fail report. **PR** pushes the worktree branch and opens a draft pull request with a structured run comment.
 
-```toml
-[stages.plan]
-runner = "claude"
-usage_limit_fallback_runner = "none"
-```
+If the issue has GitHub sub-issues, Pawchestrator runs the epic workflow: sub-issues are processed in sequence on a shared branch, and a single draft PR is opened when all sub-issues complete.
 
-### Usage-limit fallback
+Every stage writes its output to `~/.pawchestrator/runs/{run_id}/` so you can inspect, replay, or resume any point in the pipeline.
 
-Usage-limit fallback is stage-local and only handles recognized Claude usage/session exhaustion. Known Claude-primary stages with defined permission intent (`scout`, `plan`, `grill`, and `criteria_dedupe`) default to Codex fallback when `usage_limit_fallback_runner` is unset. Setting `usage_limit_fallback_runner = "codex"` makes that default explicit; setting `usage_limit_fallback_runner = "none"` disables fallback for that stage.
+---
 
-Codex-primary stages do not self-fallback when `usage_limit_fallback_runner` is unset. For example, `implement` defaults to Codex and will fail normally if Codex fails, unless you explicitly configure Claude as the primary runner and Codex as its usage-limit fallback.
+## Design
 
-Fallback preserves the stage's artifact contract and permission intent. Read-only Claude stages (`scout`, `plan`, `grill`, and `criteria_dedupe`) run Codex fallback with a read-only Codex sandbox. If `implement` is explicitly configured as Claude-primary with Codex fallback, the fallback uses the normal write-capable implement permissions because the stage itself is write-capable.
+**Local-first.** The orchestration layer runs on your machine. State, logs, worktrees, and pairing tokens never leave your local environment. GitHub only sees a structured run comment, stage labels, and a draft PR - nothing is LLM-generated on GitHub's side.
 
-Before invoking fallback, Pawchestrator emits a `RunWarning`. While the fallback runner is active, that warning is visible in the browser overlay and in GitHub run comments so users can see that Codex is continuing after Claude usage exhaustion.
+**Structured handoffs.** Each stage exchanges JSON artifacts rather than prose summaries or accumulated chat history. This keeps individual agent context windows small, makes failures easy to diagnose, and lets you re-run any stage in isolation without replaying the whole pipeline.
 
-This behavior mirrors [ADR 0010: Claude usage-limit fallback for agent stages](docs/adr/0010-claude-usage-limit-fallback.md).
+**Two runners, right tool for each job.** Claude handles read-heavy reasoning stages (scout, plan, grill). Codex handles write-heavy implementation. Each runner gets only the permissions it needs for its stage - scout runs read-only, implement runs with write access to the worktree. If Claude hits a usage limit mid-pipeline, Pawchestrator falls back to Codex automatically and flags it in the run comment.
 
-### Criteria dedupe
-
-Grill runs a `criteria_dedupe` utility stage before publishing suggested criteria to GitHub. It removes semantic duplicates from newly inferred criteria so the `## Pawchestrator Suggested Criteria` section does not repeat existing acceptance criteria or paraphrased suggestions. The stage affects only criteria publishing to the issue body; it does not change the `GrillReport` artifact shape.
-
-By default, Claude uses Haiku for this utility stage:
-
-```toml
-[stages.criteria_dedupe]
-runner = "claude"
-
-[stages.criteria_dedupe.claude]
-model = "haiku"
-effort = "low"
-```
-
-Codex can also run the stage with GPT-5.4-Mini and low reasoning:
-
-```toml
-[stages.criteria_dedupe]
-runner = "codex"
-
-[stages.criteria_dedupe.codex]
-model = "gpt-5.4-mini"
-reasoning_effort = "low"
-```
-
-If the configured utility LLM is unavailable, exits nonzero, or returns invalid JSON, Pawchestrator logs a warning and falls back to deterministic normalized dedupe. That fallback catches exact normalized duplicates but does not try to detect paraphrases.
-
-### Epic workflow
-
-Pawchestrator treats an issue as an epic when GitHub's `GET /repos/{owner}/{repo}/issues/{number}/sub_issues` endpoint returns one or more sub-issues. Only direct sub-issues are expanded; sub-issues of sub-issues are not.
-
-Configure epic branch behavior in `~/.pawchestrator/config.toml`:
-
-```toml
-[pipeline]
-epic_branch_mode = "epic"
-```
-
-| Mode | Branches | PRs |
-|---|---|---|
-| `"epic"` | One shared `paw/epic-{number}-{slug}` branch/worktree for all sub-issues. | One final PR from the epic branch to `main` after all sub-issues finish. Draft state follows `[pr] draft`. |
-| `"epic-with-sub-issues"` | One epic branch plus one issue branch/worktree per sub-issue. | A draft epic PR to `main` is opened first, then each sub-issue opens a PR into the epic branch. Child PR draft state follows `[pr] draft`. |
-
-In `"epic-with-sub-issues"` mode, Pawchestrator does not watch for child PR merges or mark the epic PR ready. Humans merge child PRs into the epic branch, then mark or merge the epic PR when the epic is complete.
-
-### Local state
-
-| Path | Contents |
-|---|---|
-| `~/.pawchestrator/config.toml` | Optional app and runner defaults. |
-| `~/.pawchestrator/database.sqlite` | Workflow runs, stages, repo registrations, and artifact metadata. |
-| `~/.pawchestrator/sessions.json` | Browser pairing tokens. |
-| `~/.pawchestrator/runs/{run_id}/` | Issue snapshot, scout report, plan, implementation report, verification report, PR draft, and logs. |
-| `~/.pawchestrator/worktrees/{owner}/{repo}/issue-{number}/` | Isolated git worktree for each issue run. |
-| `<repo>/.pawchestrator/verify.toml` | Tracked repo verification commands. |
-
-### CodeGraph indexes
-
-CodeGraph indexes are usually local machine artifacts and are often ignored by git because the SQLite database can be large. Pawchestrator still tries to support them for agent runs:
-
-- If the source repo has `.codegraph/codegraph.db`, Pawchestrator copies it into the issue worktree before invoking the implementation agent.
-- The copy uses SQLite backup semantics and does not copy `codegraph.db-wal` or `codegraph.db-shm`.
-- Worktree index changes stay isolated while the branch is unmerged.
-- Sync-back to the source repo only happens when the branch HEAD is already contained in `main`, either opportunistically on later runs or via `uv run pawchestrator codegraph sync <run-id>`.
-
-### Repo verification config
-
-Verification reads repo-local commands from `.pawchestrator/verify.toml` in the run worktree. Commit this file with the repository so every contributor and every Pawchestrator worktree uses the same verification steps.
-
-```toml
-[commands]
-build = "cmake --build build"
-test = "ctest --test-dir build"
-lint = "ruff check ."
-```
-
-Pawchestrator runs commands in `build`, `test`, `lint` order and stops on the first failure. If the repo config is missing, or no build/test commands are configured, verify skips with a warning instead of failing the whole run.
-
-## Troubleshooting
-
-### GitHub issue runs cannot find the repo
-
-Browser-triggered runs rely on `owner/repo -> local path` registration. If Pawchestrator says the repo is not registered, run:
-
-```powershell
-uv run pawchestrator repo add C:\src\REPO
-```
-
-### Pairing does not work
-
-- Make sure the backend is running on `127.0.0.1`.
-- Approve the pairing prompt in the terminal after the first `POST /pair`.
-- If you want to reset the browser token, run `uv run pawchestrator sessions clear`.
-
-### Windows Codex sandbox issues
-
-If native Codex on Windows fails with sandbox setup errors, `os error 740`, or a run that produces no diff:
-
-1. Run Codex once interactively in the repo so the Windows sandbox setup can finish.
-2. Set `[windows] sandbox = "unelevated"` in `~/.codex/config.toml` if elevated setup is blocked on your machine.
-3. Install Codex inside WSL and set `[runners.codex] execution = "wsl"` for Pawchestrator.
-
-```powershell
-wsl --exec sh -lc "npm install -g @openai/codex@latest && codex --version"
-```
-
-Use `bypass_sandbox = true` only as an intentional last resort for trusted repos.
-
-### Codex `previous_response_not_found`
-
-Codex can sometimes fail with `previous_response_not_found`, especially through wrappers such as `codex-lb`. This is usually transient: rerunning the same prompt, or resuming the latest Codex exec session and sending the same prompt again, often succeeds.
-
-Pawchestrator handles this inside `CodexRunner`. When Codex exits nonzero and reports both `previous_response_not_found` and `previous_response_id`, Pawchestrator retries with:
-
-```powershell
-codex exec resume --last -
-```
-
-The original prompt is sent again through stdin. The default cap is 3 total attempts, including the first failing attempt. Configure it with:
-
-```toml
-[runners.codex]
-previous_response_not_found_attempts = 3
-```
-
-This retry is local to the Codex runner. Pawchestrator does not restart the whole workflow or paste the full workflow context into Codex again. Retry and exhaustion notes are appended to the runner log.
-
+**Repo-local verification.** Build, test, and lint commands live in `.pawchestrator/verify.toml` committed to each repo. Verify runs those commands against the worktree before a PR is opened - not a post-hoc check, but a gate.
