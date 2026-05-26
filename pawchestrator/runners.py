@@ -119,7 +119,6 @@ class ClaudeRunner(Runner):
         cmd = [
             binary,
             "-p",
-            task.prompt,
             "--model",
             config.model,
             "--effort",
@@ -147,33 +146,18 @@ class ClaudeRunner(Runner):
                     artifact=None,
                 )
             cmd, cwd = prepared
-        prompt_index = _prompt_index(cmd, task.prompt)
-        _debug_print_command(
-            enabled=self.debug,
+        stdout, stderr, exit_code = await _run_process(
+            cmd,
+            cwd=cwd,
+            stdin_text=task.prompt,
+            debug=self.debug,
             runner_id=self.id,
             task=task,
-            cmd=cmd,
-            prompt_index=prompt_index,
-        )
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            cwd=str(cwd),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout_bytes, stderr_bytes = await proc.communicate()
-        stdout = stdout_bytes.decode("utf-8", errors="replace")
-        stderr = stderr_bytes.decode("utf-8", errors="replace")
-        _debug_print_result(
-            enabled=self.debug,
-            runner_id=self.id,
-            task=task,
-            exit_code=proc.returncode or 0,
-            stdout=stdout,
-            stderr=stderr,
+            prompt_index=None,
+            prompt_stdin_chars=len(task.prompt),
         )
         return RunnerResult(
-            exit_code=proc.returncode or 0,
+            exit_code=exit_code,
             stdout=stdout,
             stderr=stderr,
             artifact=_parse_json_artifact(stdout),
@@ -628,6 +612,9 @@ async def _run_process(
         )
     except FileNotFoundError as error:
         return "", str(error), 127
+    except PermissionError as error:
+        reason = error.strerror or str(error)
+        return "", f"failed to launch {cmd[0]}: {reason}", 126
 
     if debug and runner_id and task and hasattr(proc, "stdout") and hasattr(proc, "stderr"):
         stdout_bytes, stderr_bytes = await _communicate_with_debug_streaming(
@@ -1038,6 +1025,8 @@ def _debug_print_command(
             rendered_cmd[prompt_index] = f"<prompt chars={len(rendered_cmd[prompt_index])}>"
         else:
             rendered_cmd[prompt_index] = f"<prompt stdin chars={prompt_stdin_chars}>"
+    elif prompt_stdin_chars is not None:
+        rendered_cmd.append(f"stdin=<prompt chars={prompt_stdin_chars}>")
 
     print(
         f"[pawchestrator:debug] run={task.run_id} stage={task.stage_name} "

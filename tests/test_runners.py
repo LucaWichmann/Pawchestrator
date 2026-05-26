@@ -360,6 +360,7 @@ def test_claude_runner_invokes_expected_command_and_parses_result(
         returncode = 0
 
         async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
+            calls["input"] = input
             return (
                 json.dumps(
                     {
@@ -378,6 +379,7 @@ def test_claude_runner_invokes_expected_command_and_parses_result(
     async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
         calls["cmd"] = list(cmd)
         calls["cwd"] = kwargs["cwd"]
+        calls["stdin"] = kwargs["stdin"]
         calls["stdout"] = kwargs["stdout"]
         calls["stderr"] = kwargs["stderr"]
         return FakeProcess()
@@ -403,7 +405,6 @@ def test_claude_runner_invokes_expected_command_and_parses_result(
     assert calls["cmd"] == [
         "claude-beta",
         "-p",
-        "repo scout prompt",
         "--model",
         "sonnet",
         "--effort",
@@ -414,6 +415,8 @@ def test_claude_runner_invokes_expected_command_and_parses_result(
         "Read,Glob,Grep",
     ]
     assert calls["cwd"] == str(tmp_path)
+    assert calls["stdin"] == asyncio.subprocess.PIPE
+    assert calls["input"] == b"repo scout prompt"
     assert result.exit_code == 0
     assert result.stderr == "warning"
     assert result.artifact == {
@@ -497,6 +500,31 @@ def test_claude_runner_parses_direct_fenced_json_stdout(
     result = asyncio.run(ClaudeRunner().run_task(task))
 
     assert result.artifact == {"schema": "pawchestrator.scout_report.v1"}
+
+
+def test_claude_runner_reports_permission_error_on_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_create_subprocess_exec(*cmd, **kwargs) -> object:
+        raise PermissionError(5, "Access is denied")
+
+    monkeypatch.setattr(
+        "pawchestrator.runners.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+
+    task = RunnerTask(
+        prompt="repo scout prompt",
+        cwd=tmp_path,
+        run_id="run-123",
+        stage_name="scout",
+    )
+
+    result = asyncio.run(ClaudeRunner().run_task(task))
+
+    assert result.exit_code == 126
+    assert result.stdout == ""
+    assert result.stderr == "failed to launch claude: Access is denied"
 
 
 def test_claude_runner_uses_stage_permission_override(
@@ -634,10 +662,11 @@ def test_claude_runner_wsl_mode_invokes_wsl_and_preserves_tools(
             self.returncode = returncode
 
         async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
+            calls[-1]["input"] = input
             return self._stdout, self._stderr
 
     async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
-        calls.append({"cmd": list(cmd), "cwd": kwargs["cwd"]})
+        calls.append({"cmd": list(cmd), "cwd": kwargs["cwd"], "stdin": kwargs.get("stdin")})
         if "wslpath" in cmd:
             return FakeProcess(b"/mnt/c/repo\n")
         return FakeProcess(b'{"result": {"status": "success"}}')
@@ -680,7 +709,6 @@ def test_claude_runner_wsl_mode_invokes_wsl_and_preserves_tools(
         "--exec",
         "claude-linux",
         "-p",
-        "repo scout prompt",
         "--model",
         "sonnet",
         "--effort",
@@ -690,6 +718,9 @@ def test_claude_runner_wsl_mode_invokes_wsl_and_preserves_tools(
         "--allowedTools",
         "Read",
     ]
+    assert "repo scout prompt" not in calls[1]["cmd"]
+    assert calls[1]["stdin"] == asyncio.subprocess.PIPE
+    assert calls[1]["input"] == b"repo scout prompt"
 
 
 def test_claude_runner_debug_prints_command_and_output(
@@ -720,7 +751,8 @@ def test_claude_runner_debug_prints_command_and_output(
 
     output = capsys.readouterr().out
     assert "[pawchestrator:debug] run=run-debug stage=scout runner=claude" in output
-    assert "<prompt chars=12>" in output
+    assert "stdin=<prompt chars=12>" in output
+    assert "debug prompt" not in output
     assert "--model sonnet --effort low" in output
     assert '{"result": {"status": "success"}}' in output
     assert "claude warning" in output
