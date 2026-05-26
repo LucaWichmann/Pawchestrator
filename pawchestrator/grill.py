@@ -26,6 +26,7 @@ from pawchestrator.github import (
 from pawchestrator.issues import snapshot_issue
 from pawchestrator.runners import (
     Runner,
+    RunnerFailedError,
     RunnerResult,
     RunnerTask,
     resolve_runner,
@@ -117,11 +118,15 @@ async def run_grill(
     except Exception as error:
         if not log_path.exists():
             _write_grill_log(log_path, "", str(error))
+        if isinstance(error, RunnerFailedError):
+            db_error = error.public_message
+        else:
+            db_error = "Stage failed. See local run logs."
         await fail_grill_run(
             settings,
             run_id=active_run_id,
             stage_id=stage_id,
-            error=str(error),
+            error=db_error,
         )
         raise
 

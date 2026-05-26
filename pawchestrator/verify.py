@@ -20,6 +20,7 @@ from pawchestrator.db import (
     skip_verify_run,
     start_verify_run,
 )
+from pawchestrator.runners import RunnerFailedError
 
 VERIFICATION_REPORT_SCHEMA = "pawchestrator.verification_report.v1"
 VERIFY_COMMAND_ORDER = ("build", "test", "lint")
@@ -279,11 +280,15 @@ async def run_verify(
                     skip_reason=None,
                 ),
             )
+        if isinstance(error, RunnerFailedError):
+            db_error = error.public_message
+        else:
+            db_error = "Stage failed. See local run logs."
         await fail_verify_run(
             settings,
             run_id=run_id,
             stage_id=stage_id,
-            error=str(error),
+            error=db_error,
         )
         raise
 

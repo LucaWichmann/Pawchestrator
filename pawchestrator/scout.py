@@ -17,6 +17,7 @@ from pawchestrator.db import (
 )
 from pawchestrator.runners import (
     Runner,
+    RunnerFailedError,
     RunnerResult,
     RunnerTask,
     resolve_runner,
@@ -101,11 +102,15 @@ async def run_scout(
     except Exception as error:
         if not log_path.exists():
             _write_scout_log(log_path, "", str(error))
+        if isinstance(error, RunnerFailedError):
+            db_error = error.public_message
+        else:
+            db_error = "Stage failed. See local run logs."
         await fail_scout_run(
             settings,
             run_id=run_id,
             stage_id=stage_id,
-            error=str(error),
+            error=db_error,
         )
         raise
 

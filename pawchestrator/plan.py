@@ -123,11 +123,15 @@ async def run_plan(
     except Exception as error:
         if not log_path.exists():
             _write_plan_log(log_path, "", str(error))
+        if isinstance(error, RunnerFailedError):
+            db_error = error.public_message
+        else:
+            db_error = "Stage failed. See local run logs."
         await fail_plan_run(
             settings,
             run_id=run_id,
             stage_id=stage_id,
-            error=str(error),
+            error=db_error,
         )
         raise
 
