@@ -114,6 +114,10 @@ async def run_review(
         )
         raise
 
+    from pawchestrator.review_post import run_review_post
+
+    await run_review_post(run_id, settings)
+
     return ReviewResult(
         run_id=run_id,
         artifact_path=artifact_path,
