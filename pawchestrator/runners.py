@@ -29,7 +29,7 @@ class RunnerTask:
     stage_name: str
 
 
-@dataclass(frozen=True)
+@dataclass
 class RunnerFailedError(Exception):
     public_message: str
     exit_code: int

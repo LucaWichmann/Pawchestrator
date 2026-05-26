@@ -297,9 +297,11 @@ def test_run_scout_does_not_fallback_for_non_usage_claude_failure(
     monkeypatch.setattr(ClaudeRunner, "run_task", fake_claude_run_task)
     monkeypatch.setattr(CodexRunner, "run_task", fake_codex_run_task)
 
-    with pytest.raises(RuntimeError, match="not signed in"):
+    with pytest.raises(RunnerFailedError) as error:
         asyncio.run(run_scout(run_id, settings, repo_path=tmp_path))
 
+    assert str(error.value) == "Runner exited with code 1"
+    assert error.value.stderr == "not signed in"
     assert asyncio.run(get_run_warnings(settings, run_id)) == []
 
 
