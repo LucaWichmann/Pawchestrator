@@ -18,6 +18,7 @@ from pawchestrator.config import LOCAL_HOST, Settings, load_settings
 from pawchestrator.db import (
     complete_review_issues_run,
     create_epic_run,
+    create_repair_run,
     create_review_run,
     fail_review_issues_run,
     fail_stale_runs_on_startup,
@@ -35,6 +36,7 @@ from pawchestrator.db import (
 from pawchestrator.epic import run_epic
 from pawchestrator.github import GitHubIssueClient, get_gh_token, parse_issue_url
 from pawchestrator.grill import run_grill
+from pawchestrator.implement import run_repair
 from pawchestrator.pipeline import run_pipeline
 from pawchestrator.review import run_review
 from pawchestrator.review import review_report_path
@@ -66,6 +68,12 @@ class ReviewStartRequest(BaseModel):
     pr_number: int = Field(gt=0)
 
 
+class RepairStartRequest(BaseModel):
+    owner: str = Field(min_length=1)
+    repo: str = Field(min_length=1)
+    pr_number: int = Field(gt=0)
+
+
 class PairResponse(BaseModel):
     token: str
 
@@ -76,6 +84,10 @@ class PipelineStartResponse(BaseModel):
 
 
 class ReviewStartResponse(BaseModel):
+    run_id: str
+
+
+class RepairStartResponse(BaseModel):
     run_id: str
 
 
@@ -300,6 +312,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         return ReviewStartResponse(run_id=run_id)
 
+    @app.post("/runs/repair/start")
+    async def repair_start(
+        body: RepairStartRequest,
+        background_tasks: BackgroundTasks,
+    ) -> RepairStartResponse:
+        from uuid import uuid4
+
+        run_id = str(uuid4())
+        await create_repair_run(
+            runtime_settings,
+            run_id=run_id,
+            owner=body.owner,
+            repo=body.repo,
+            pr_number=body.pr_number,
+        )
+        background_tasks.add_task(
+            _run_repair_background,
+            runtime_settings,
+            run_id=run_id,
+        )
+        return RepairStartResponse(run_id=run_id)
+
     @app.post("/runs/{run_id}/create-issues")
     async def create_review_issues(run_id: str) -> dict[str, object]:
         return await _create_review_issues(runtime_settings, run_id)
@@ -492,6 +526,17 @@ async def _run_review_background(
         await run_review(run_id, settings)
     except Exception as error:
         print(f"[run {run_id}] review failed: {error}")
+
+
+async def _run_repair_background(
+    settings: Settings,
+    *,
+    run_id: str,
+) -> None:
+    try:
+        await run_repair(run_id, settings)
+    except Exception as error:
+        print(f"[run {run_id}] repair failed: {error}")
 
 
 async def _prepare_pipeline_run(issue_url_value: str, settings: Settings) -> str:

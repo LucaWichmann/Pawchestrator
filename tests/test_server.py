@@ -278,6 +278,38 @@ def test_review_start_returns_run_id_and_schedules_review(
     assert payload["pr_number"] == 42
 
 
+def test_repair_start_returns_run_id_and_schedules_repair(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _seed_token(settings)
+    calls = []
+
+    async def fake_run_repair(run_id: str, runtime_settings: Settings):
+        calls.append((run_id, runtime_settings.app_dir))
+
+    monkeypatch.setattr("pawchestrator.server.run_repair", fake_run_repair)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.post(
+            "/runs/repair/start",
+            json={"owner": "owner", "repo": "repo", "pr_number": 42},
+            headers=_token_headers(),
+        )
+        run_id = response.json()["run_id"]
+        state_response = client.get(f"/runs/{run_id}/status", headers=_token_headers())
+
+    assert response.status_code == 200
+    assert response.json() == {"run_id": run_id}
+    assert calls == [(run_id, tmp_path)]
+    payload = state_response.json()
+    assert payload["id"] == run_id
+    assert payload["workflow_type"] == "repair"
+    assert payload["pr_number"] == 42
+    assert [stage["stage_name"] for stage in payload["stages"]] == ["repair"]
+
+
 def test_openapi_exposes_issue_grill_route(tmp_path: Path) -> None:
     settings = Settings(app_dir=tmp_path)
     _seed_token(settings)
