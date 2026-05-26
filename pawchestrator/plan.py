@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from pawchestrator.config import Settings
+from pawchestrator.skill_loader import load_skill
 from pawchestrator.db import (
     complete_plan_run,
     fail_plan_run,
@@ -75,7 +76,7 @@ async def run_plan(
 
         scout_report = json.loads(scout_path.read_text(encoding="utf-8"))
         task = RunnerTask(
-            prompt=build_plan_prompt(snapshot, scout_report),
+            prompt=build_plan_prompt(snapshot, scout_report, app_dir=settings.app_dir),
             cwd=local_repo_path,
             run_id=run_id,
             stage_name="plan",
@@ -154,39 +155,26 @@ def _log_tool_mismatch(runner: Runner) -> None:
         LOGGER.warning(warning)
 
 
-def build_plan_prompt(snapshot: dict[str, Any], scout_report: dict[str, Any]) -> str:
+_PLAN_FALLBACK = "Create an implementation plan for this issue and return an ImplementationPlan JSON artifact with approach_summary, steps, files_to_modify, and estimated_risk."
+
+
+def build_plan_prompt(
+    snapshot: dict[str, Any],
+    scout_report: dict[str, Any],
+    app_dir: Path | None = None,
+) -> str:
     prompt_scout_report = _prompt_scout_report(scout_report)
-
-    return f"""You are creating an implementation plan for a GitHub issue.
-
-Issue: #{snapshot.get("number")} - {snapshot.get("title", "")}
+    instructions = load_skill("ImplementationPlan", app_dir) or _PLAN_FALLBACK
+    data_section = f"""Issue: #{snapshot.get("number")} - {snapshot.get("title", "")}
 Repository: {snapshot.get("owner", "")}/{snapshot.get("repo", "")}
 
 IssueSnapshot JSON:
 {_prompt_json(snapshot)}
 
 ScoutReport JSON:
-{_prompt_json(prompt_scout_report)}
+{_prompt_json(prompt_scout_report)}"""
 
-Return a JSON object matching this schema exactly:
-{{
-  "schema": "pawchestrator.implementation_plan.v1",
-  "approach_summary": "string - 2-3 sentence overview",
-  "steps": [
-    {{
-      "order": 1,
-      "description": "string",
-      "files_to_modify": ["path/to/file.py"],
-      "notes": "string"
-    }}
-  ],
-  "files_to_modify": ["deduplicated list of all files"],
-  "estimated_risk": "low" | "medium" | "high"
-}}
-
-Use your Read, Glob, Grep tools to explore the codebase before planning.
-Be terse. Return minimal valid JSON. Keep descriptions under 20 words per step.
-"""
+    return f"{instructions}\n\n{data_section}"
 
 
 def _prompt_json(value: dict[str, Any]) -> str:

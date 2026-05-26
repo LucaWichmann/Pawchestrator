@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from pawchestrator.config import Settings
+from pawchestrator.skill_loader import load_skill
 from pawchestrator.db import (
     complete_scout_run,
     fail_scout_run,
@@ -66,7 +67,7 @@ async def run_scout(
     fallback_runner = usage_limit_fallback_runner(settings, "scout", active_runner)
     log_path = _scout_log_path(settings, run_id)
     artifact_path = _scout_artifact_path(settings, run_id)
-    prompt = build_scout_prompt(snapshot)
+    prompt = build_scout_prompt(snapshot, app_dir=settings.app_dir)
 
     try:
         task = RunnerTask(
@@ -132,37 +133,26 @@ def _log_tool_mismatch(runner: Runner) -> None:
         LOGGER.warning(warning)
 
 
-def build_scout_prompt(snapshot: dict[str, Any]) -> str:
+_SCOUT_FALLBACK = "Analyze this issue and return a ScoutReport JSON artifact with readiness, risk, findings, and next_recommended_stage."
+
+
+def build_scout_prompt(snapshot: dict[str, Any], app_dir: Path | None = None) -> str:
     comments = _prompt_comments(snapshot.get("comments"))
     rendered_comments = "\n\n".join(_render_comment(comment) for comment in comments)
     if not rendered_comments:
         rendered_comments = "(none)"
 
-    return f"""You are scouting a GitHub issue for implementation readiness.
-
-Issue: #{snapshot.get("number")} - {snapshot.get("title", "")}
+    instructions = load_skill("RepoScout", app_dir) or _SCOUT_FALLBACK
+    data_section = f"""Issue: #{snapshot.get("number")} - {snapshot.get("title", "")}
 Repository: {snapshot.get("owner", "")}/{snapshot.get("repo", "")}
 
 Issue body:
 {snapshot.get("body", "")}
 
 Comments:
-{rendered_comments}
+{rendered_comments}"""
 
-Analyze this issue and return a JSON object matching this schema exactly:
-{{
-  "schema": "pawchestrator.scout_report.v1",
-  "status": "success" | "error",
-  "readiness": "ready" | "needs_info" | "blocked",
-  "risk": "low" | "medium" | "high",
-  "findings": [{{"kind": "string", "text": "string"}}],
-  "risks": [{{"level": "string", "text": "string"}}],
-  "next_recommended_stage": "grill" | "plan" | "implement"
-}}
-
-Use your Read, Glob, Grep tools to explore the repository as needed.
-Be terse. Return minimal valid JSON. No prose outside JSON fields.
-"""
+    return f"{instructions}\n\n{data_section}"
 
 
 def normalize_scout_report(artifact: dict[str, Any] | None) -> dict[str, Any]:

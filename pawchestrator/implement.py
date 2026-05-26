@@ -12,6 +12,7 @@ from typing import Any
 
 from pawchestrator.codegraph import CodeGraphSyncResult, seed_worktree_index, sync_back_if_merged
 from pawchestrator.config import Settings
+from pawchestrator.skill_loader import load_skill
 from pawchestrator.db import (
     complete_implement_run,
     fail_implement_run,
@@ -145,6 +146,7 @@ async def run_implement(
                     run_id=run_id,
                     repair_context=repair_context,
                     repair_attempt=repair_attempt,
+                    app_dir=settings.app_dir,
                 ),
                 cwd=worktree_info.path,
                 run_id=run_id,
@@ -352,6 +354,9 @@ async def _prepare_base_branch(source_repo_path: Path, base_branch: str) -> None
         raise RuntimeError(f"base branch not found: {base_branch}")
 
 
+_IMPLEMENT_FALLBACK = "Implement the changes described in the plan. Make granular, well-named commits as you go. Commit message format: `type(scope): description` (conventional commits). Do not run build or test commands - verification is handled separately."
+
+
 def build_implement_prompt(
     snapshot: dict[str, Any],
     implementation_plan: dict[str, Any],
@@ -360,14 +365,14 @@ def build_implement_prompt(
     run_id: str = "",
     repair_context: dict[str, Any] | None = None,
     repair_attempt: int | None = None,
+    app_dir: Path | None = None,
 ) -> str:
     prompt_plan = _prompt_implementation_plan(implementation_plan)
     repair_section = _prompt_repair_context(repair_context, repair_attempt)
     checkbox_section = _prompt_checkbox_criteria(snapshot, run_id)
+    instructions = load_skill("WorkOnIssue", app_dir) or _IMPLEMENT_FALLBACK
 
-    return f"""You are implementing a GitHub issue in a local git worktree.
-
-Issue: #{snapshot.get("number")} - {snapshot.get("title", "")}
+    data_section = f"""Issue: #{snapshot.get("number")} - {snapshot.get("title", "")}
 Repository: {snapshot.get("owner", "")}/{snapshot.get("repo", "")}
 Working directory: {worktree_path}
 
@@ -380,12 +385,9 @@ IssueSnapshot JSON:
 Implementation plan:
 {_prompt_json(prompt_plan)}
 {repair_section}
-{checkbox_section}
+{checkbox_section}"""
 
-Implement the changes described in the plan. Make granular, well-named commits as you go.
-Commit message format: `type(scope): description` (conventional commits).
-Do not run build or test commands - verification is handled separately.
-"""
+    return f"{data_section}\n\n{instructions}"
 
 
 def _prompt_checkbox_criteria(snapshot: dict[str, Any], run_id: str) -> str:

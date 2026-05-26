@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from pawchestrator.config import Settings
+from pawchestrator.skill_loader import load_skill
 from pawchestrator.db import (
     complete_grill_run,
     fail_grill_run,
@@ -138,19 +139,22 @@ async def run_grill(
     )
 
 
+_GRILL_FALLBACK = "Analyze this issue for acceptance criteria and return a GrillReport JSON artifact with suggested_criteria and unanswerable_questions."
+
+
 def build_grill_prompt(
     snapshot: dict[str, Any],
     *,
     codebase_available: bool = True,
+    app_dir: Path | None = None,
 ) -> str:
     mode = (
         "Use your Read, Glob, Grep tools to explore the repository before answering."
         if codebase_available
         else "No local repository is registered. Do not claim codebase facts; list only questions needed to infer criteria."
     )
-    return f"""You are grilling a GitHub issue for precise acceptance criteria.
-
-Issue: #{snapshot.get("number")} - {snapshot.get("title", "")}
+    instructions = load_skill("IssueGrill", app_dir) or _GRILL_FALLBACK
+    data_section = f"""Issue: #{snapshot.get("number")} - {snapshot.get("title", "")}
 Repository: {snapshot.get("owner", "")}/{snapshot.get("repo", "")}
 
 Issue body:
@@ -159,31 +163,23 @@ Issue body:
 Issue comments:
 {_format_prompt_comments(snapshot)}
 
-{mode}
+{mode}"""
 
-Return a JSON object matching this schema exactly:
-{{
-  "schema": "pawchestrator.grill_report.v1",
-  "status": "success" | "needs_info" | "error",
-  "suggested_criteria": ["string"],
-  "unanswerable_questions": ["string"]
-}}
+    return f"{instructions}\n\n{data_section}"
 
-Suggested criteria must be concrete, testable bullets inferred from the issue and, when available, codebase context.
-Only include questions that cannot be answered from the issue or repository context.
-Return minimal valid JSON. No prose outside JSON fields.
-"""
+
+_DEDUPE_FALLBACK_TASK = "Return only proposed criteria that are genuinely new. Treat paraphrases or same-requirement restatements of existing criteria as duplicates."
 
 
 def build_dedupe_prompt(
     existing_criteria: list[str],
     proposed_criteria: list[str],
+    app_dir: Path | None = None,
 ) -> str:
+    skill_text = load_skill("CriteriaDedupe", app_dir)
+    task = " ".join(skill_text.split()) if skill_text else _DEDUPE_FALLBACK_TASK
     payload = {
-        "task": (
-            "Return only proposed criteria that are genuinely new. Treat paraphrases "
-            "or same-requirement restatements of existing criteria as duplicates."
-        ),
+        "task": task,
         "existing_criteria": existing_criteria,
         "proposed_criteria": proposed_criteria,
         "output_schema": {
@@ -225,7 +221,7 @@ async def dedupe_criteria(
         active_runner,
     )
     task = RunnerTask(
-        prompt=build_dedupe_prompt(existing_criteria, llm_candidates),
+        prompt=build_dedupe_prompt(existing_criteria, llm_candidates, app_dir=settings.app_dir),
         cwd=cwd.resolve(),
         run_id=run_id,
         stage_name="criteria_dedupe",
@@ -431,7 +427,7 @@ async def _build_report_payload(
         active_runner=active_runner,
         fallback_runner=fallback_runner,
         task=RunnerTask(
-            prompt=build_grill_prompt(snapshot),
+            prompt=build_grill_prompt(snapshot, app_dir=settings.app_dir),
             cwd=local_repo_path.resolve(),
             run_id=run_id,
             stage_name="grill",
