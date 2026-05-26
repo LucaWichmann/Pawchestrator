@@ -23,6 +23,8 @@ from pawchestrator.runners import (
     claude_usage_limit_exhausted,
     clear_runner_health_cache,
     get_runner_health,
+    resolve_repair_runner,
+    resolve_review_runner,
     resolve_runner,
 )
 
@@ -122,6 +124,95 @@ def test_stage_settings_rejects_invalid_usage_limit_fallback_runner() -> None:
     assert "usage_limit_fallback_runner" in str(error.value)
     assert "codex" in str(error.value)
     assert "none" in str(error.value)
+
+
+def test_resolve_review_runner_uses_opposite_known_runner_when_both_healthy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_get_runner_health(settings: Settings) -> dict[str, dict[str, object]]:
+        return {
+            "claude": {"available": True, "version": "claude 1.0.0"},
+            "codex": {"available": True, "version": "codex 1.0.0"},
+        }
+
+    monkeypatch.setattr("pawchestrator.runners.get_runner_health", fake_get_runner_health)
+
+    runner = asyncio.run(resolve_review_runner(Settings(), "codex"))
+
+    assert isinstance(runner, ClaudeRunner)
+
+
+def test_resolve_review_runner_falls_back_to_default_when_cross_review_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fail_get_runner_health(settings: Settings) -> dict[str, dict[str, object]]:
+        raise AssertionError("health check should not run")
+
+    monkeypatch.setattr("pawchestrator.runners.get_runner_health", fail_get_runner_health)
+
+    runner = asyncio.run(
+        resolve_review_runner(
+            Settings(review={"default_runner": "codex", "cross_review": False}),
+            "codex",
+        )
+    )
+
+    assert isinstance(runner, CodexRunner)
+
+
+@pytest.mark.parametrize(
+    ("implement_runner", "health"),
+    [
+        (
+            "codex",
+            {
+                "claude": {"available": False, "version": None},
+                "codex": {"available": True, "version": "codex 1.0.0"},
+            },
+        ),
+        (
+            "codex",
+            {
+                "claude": {"available": True, "version": "claude 1.0.0"},
+                "codex": {"available": False, "version": None},
+            },
+        ),
+        (
+            "unknown",
+            {
+                "claude": {"available": True, "version": "claude 1.0.0"},
+                "codex": {"available": True, "version": "codex 1.0.0"},
+            },
+        ),
+    ],
+)
+def test_resolve_review_runner_falls_back_to_default(
+    monkeypatch: pytest.MonkeyPatch,
+    implement_runner: str,
+    health: dict[str, dict[str, object]],
+) -> None:
+    async def fake_get_runner_health(settings: Settings) -> dict[str, dict[str, object]]:
+        return health
+
+    monkeypatch.setattr("pawchestrator.runners.get_runner_health", fake_get_runner_health)
+
+    runner = asyncio.run(resolve_review_runner(Settings(), implement_runner))
+
+    assert isinstance(runner, ClaudeRunner)
+
+
+def test_resolve_repair_runner_uses_original_implementer() -> None:
+    runner = asyncio.run(resolve_repair_runner(Settings(), "codex"))
+
+    assert isinstance(runner, CodexRunner)
+
+
+def test_resolve_repair_runner_falls_back_to_default_for_unknown_origin() -> None:
+    runner = asyncio.run(
+        resolve_repair_runner(Settings(review={"default_runner": "codex"}), None)
+    )
+
+    assert isinstance(runner, CodexRunner)
 
 
 def test_claude_usage_limit_exhausted_detects_structured_429() -> None:
