@@ -182,10 +182,26 @@ Notes:
 
 - `doctor` reads the same config and checks the local runner/tooling setup.
 - `debug = true` prints runner argv plus captured stdout/stderr.
-- Per-stage overrides live under `[stages.<stage>.claude]` and `[stages.<stage>.codex]`.
+- Per-stage runner policy lives under `[stages.<stage>]`; runner-specific overrides live under `[stages.<stage>.claude]` and `[stages.<stage>.codex]`.
 - `execution = "auto"` on Codex tries native first and may fall back to WSL on known Windows sandbox failures.
 - `previous_response_not_found_attempts` caps Codex recovery attempts, including the original attempt.
 - Pawchestrator tries to preserve local CodeGraph databases even when `.codegraph/` is ignored by git. Before implementation it seeds the issue worktree from the source repo index with a SQLite-safe copy; it syncs back only when git proves the run branch has already merged into `main`.
+
+Set a stage's primary runner and usage-limit fallback together:
+
+```toml
+[stages.scout]
+runner = "claude"
+usage_limit_fallback_runner = "codex"
+```
+
+Disable usage-limit fallback for a stage with `"none"`:
+
+```toml
+[stages.plan]
+runner = "claude"
+usage_limit_fallback_runner = "none"
+```
 
 ### Criteria dedupe
 
