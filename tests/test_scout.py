@@ -214,9 +214,11 @@ def test_run_scout_falls_back_to_codex_for_claude_usage_limit(
             exit_code=1,
             stdout=json.dumps(
                 {
+                    "type": "result",
+                    "subtype": "success",
                     "is_error": True,
                     "api_error_status": 429,
-                    "error": "Claude usage limit reached for this session.",
+                    "result": "You've hit your session limit \u00b7 resets 12:20am (Europe/Berlin)",
                 }
             ),
             stderr="",

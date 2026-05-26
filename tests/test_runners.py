@@ -232,6 +232,25 @@ def test_claude_usage_limit_exhausted_detects_structured_429() -> None:
     assert claude_usage_limit_exhausted(result) is True
 
 
+def test_claude_usage_limit_exhausted_detects_hit_session_limit_429() -> None:
+    result = RunnerResult(
+        exit_code=1,
+        stdout=json.dumps(
+            {
+                "type": "result",
+                "subtype": "success",
+                "is_error": True,
+                "api_error_status": 429,
+                "result": "You've hit your session limit \u00b7 resets 12:20am (Europe/Berlin)",
+            }
+        ),
+        stderr="",
+        artifact=None,
+    )
+
+    assert claude_usage_limit_exhausted(result) is True
+
+
 def test_claude_usage_limit_exhausted_ignores_generic_failure() -> None:
     result = RunnerResult(
         exit_code=1,

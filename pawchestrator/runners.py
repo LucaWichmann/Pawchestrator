@@ -1162,10 +1162,11 @@ def _nested_value(value: object, key: str) -> object:
 
 def _has_usage_limit_wording(text: str) -> bool:
     exhaustion_terms = ("exhaust", "exceeded", "reached", "limit reached", "too many")
+    hit_limit = "hit your" in text or "hit the" in text or "hit a" in text
     if "usage" in text and "limit" in text:
-        return any(term in text for term in exhaustion_terms)
+        return hit_limit or any(term in text for term in exhaustion_terms)
     if "session" in text and "limit" in text:
-        return any(term in text for term in exhaustion_terms)
+        return hit_limit or any(term in text for term in exhaustion_terms)
     return False
 
 
