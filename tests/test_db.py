@@ -10,11 +10,14 @@ from pawchestrator.db import (
     create_epic_run,
     create_pipeline_run,
     create_grill_run,
+    create_repair_run,
+    create_review_run,
     fail_verify_run,
     fail_stale_runs_on_startup,
     get_github_comment_id,
     get_latest_grill_run_by_issue,
     get_runs_by_group_id,
+    get_run_state,
     get_run_warnings,
     init_db,
     insert_run_warning,
@@ -51,6 +54,7 @@ def test_init_db_creates_mvp0_tables(tmp_path: Path) -> None:
     assert "github_comment_id" in columns
     assert "group_id" in columns
     assert "workflow_type" in columns
+    assert "pr_number" in columns
 
 
 def test_init_db_migrates_legacy_workflow_runs_table(tmp_path: Path) -> None:
@@ -101,6 +105,7 @@ def test_init_db_migrates_legacy_workflow_runs_table(tmp_path: Path) -> None:
     assert "github_comment_id" in columns
     assert "group_id" in columns
     assert "workflow_type" in columns
+    assert "pr_number" in columns
     assert row == (None,)
 
 
@@ -168,7 +173,11 @@ def test_create_pipeline_run_inserts_all_pending_stages(tmp_path: Path) -> None:
 
     with sqlite3.connect(tmp_path / "database.sqlite") as db:
         run = db.execute(
-            "SELECT status, current_stage, group_id FROM workflow_runs WHERE id = 'run-123'"
+            """
+            SELECT status, current_stage, group_id, pr_number
+            FROM workflow_runs
+            WHERE id = 'run-123'
+            """
         ).fetchone()
         stages = db.execute(
             """
@@ -179,7 +188,7 @@ def test_create_pipeline_run_inserts_all_pending_stages(tmp_path: Path) -> None:
             """
         ).fetchall()
 
-    assert run == ("pending", None, None)
+    assert run == ("pending", None, None, None)
     assert stages == [
         ("snapshot", "pending"),
         ("scout", "pending"),
@@ -188,6 +197,47 @@ def test_create_pipeline_run_inserts_all_pending_stages(tmp_path: Path) -> None:
         ("verify", "pending"),
         ("pr", "pending"),
     ]
+
+
+def test_review_and_repair_runs_use_pr_number(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+
+    asyncio.run(
+        create_review_run(
+            settings,
+            run_id="review-run",
+            owner="owner",
+            repo="repo",
+            pr_number=7,
+        )
+    )
+    asyncio.run(
+        create_repair_run(
+            settings,
+            run_id="repair-run",
+            owner="owner",
+            repo="repo",
+            pr_number=8,
+        )
+    )
+
+    with sqlite3.connect(tmp_path / "database.sqlite") as db:
+        rows = db.execute(
+            """
+            SELECT id, issue_number, pr_number, workflow_type
+            FROM workflow_runs
+            ORDER BY id
+            """
+        ).fetchall()
+
+    assert rows == [
+        ("repair-run", None, 8, "repair"),
+        ("review-run", None, 7, "review"),
+    ]
+    review_state = asyncio.run(get_run_state(settings, "review-run"))
+    assert review_state is not None
+    assert review_state["issue_number"] is None
+    assert review_state["pr_number"] == 7
 
 
 def test_create_epic_run_inserts_parent_without_stages(tmp_path: Path) -> None:

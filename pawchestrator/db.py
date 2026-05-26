@@ -27,7 +27,8 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
   id TEXT PRIMARY KEY,
   owner TEXT NOT NULL,
   repo TEXT NOT NULL,
-  issue_number INTEGER NOT NULL,
+  issue_number INTEGER,
+  pr_number INTEGER,
   group_id TEXT,
   workflow_type TEXT NOT NULL DEFAULT 'pipeline',
   status TEXT NOT NULL DEFAULT 'pending',
@@ -107,6 +108,8 @@ async def init_db(settings: Settings) -> Path:
     async with aiosqlite.connect(settings.database_path) as db:
         await db.executescript(SCHEMA_SQL)
         await _add_column_if_missing(db, "github_comment_id TEXT")
+        await _rebuild_workflow_runs_for_nullable_issue_number(db)
+        await _add_column_if_missing(db, "pr_number INTEGER")
         await _add_column_if_missing(db, "group_id TEXT")
         await _add_column_if_missing(
             db,
@@ -126,6 +129,49 @@ async def _add_column_if_missing(
     existing_columns = {str(row[1]) for row in await cursor.fetchall()}
     if column_name not in existing_columns:
         await db.execute(f"ALTER TABLE workflow_runs ADD COLUMN {column_definition}")
+
+
+async def _rebuild_workflow_runs_for_nullable_issue_number(
+    db: aiosqlite.Connection,
+) -> None:
+    cursor = await db.execute("PRAGMA table_info(workflow_runs)")
+    columns = await cursor.fetchall()
+    issue_column = next((row for row in columns if str(row[1]) == "issue_number"), None)
+    if issue_column is None or not bool(issue_column[3]):
+        return
+
+    column_names = [str(row[1]) for row in columns]
+    selected_columns = ", ".join(column_names)
+    await db.execute("PRAGMA legacy_alter_table = ON")
+    await db.execute("ALTER TABLE workflow_runs RENAME TO workflow_runs_legacy")
+    await db.execute("PRAGMA legacy_alter_table = OFF")
+    await db.execute(
+        """
+        CREATE TABLE workflow_runs (
+          id TEXT PRIMARY KEY,
+          owner TEXT NOT NULL,
+          repo TEXT NOT NULL,
+          issue_number INTEGER,
+          pr_number INTEGER,
+          group_id TEXT,
+          workflow_type TEXT NOT NULL DEFAULT 'pipeline',
+          status TEXT NOT NULL DEFAULT 'pending',
+          current_stage TEXT,
+          pr_url TEXT,
+          epic_branch_mode TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+        """
+    )
+    await db.execute(
+        f"""
+        INSERT INTO workflow_runs ({selected_columns})
+        SELECT {selected_columns}
+        FROM workflow_runs_legacy
+        """
+    )
+    await db.execute("DROP TABLE workflow_runs_legacy")
 
 
 def utc_now_iso() -> str:
@@ -200,6 +246,67 @@ async def create_pipeline_run(
                 """,
                 (str(uuid4()), run_id, stage_name),
             )
+        await db.commit()
+
+
+async def create_review_run(
+    settings: Settings,
+    *,
+    run_id: str,
+    owner: str,
+    repo: str,
+    pr_number: int,
+) -> None:
+    await _create_pr_workflow_run(
+        settings,
+        run_id=run_id,
+        owner=owner,
+        repo=repo,
+        pr_number=pr_number,
+        workflow_type="review",
+    )
+
+
+async def create_repair_run(
+    settings: Settings,
+    *,
+    run_id: str,
+    owner: str,
+    repo: str,
+    pr_number: int,
+) -> None:
+    await _create_pr_workflow_run(
+        settings,
+        run_id=run_id,
+        owner=owner,
+        repo=repo,
+        pr_number=pr_number,
+        workflow_type="repair",
+    )
+
+
+async def _create_pr_workflow_run(
+    settings: Settings,
+    *,
+    run_id: str,
+    owner: str,
+    repo: str,
+    pr_number: int,
+    workflow_type: str,
+) -> None:
+    await init_db(settings)
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            INSERT INTO workflow_runs (
+              id, owner, repo, issue_number, pr_number, workflow_type, status, current_stage,
+              created_at, updated_at
+            )
+            VALUES (?, ?, ?, NULL, ?, ?, 'pending', NULL, ?, ?)
+            """,
+            (run_id, owner, repo, pr_number, workflow_type, now, now),
+        )
         await db.commit()
 
 
@@ -828,7 +935,7 @@ async def get_runs_by_group_id(settings: Settings, group_id: str) -> list[dict]:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
             """
-            SELECT id, owner, repo, issue_number, group_id, workflow_type, status,
+            SELECT id, owner, repo, issue_number, pr_number, group_id, workflow_type, status,
                    current_stage, pr_url, created_at, updated_at
             FROM workflow_runs
             WHERE group_id = ?
@@ -1265,7 +1372,7 @@ async def get_run_state(settings: Settings, run_id: str) -> dict[str, object] | 
         db.row_factory = aiosqlite.Row
         run_cursor = await db.execute(
             """
-            SELECT id, owner, repo, issue_number, workflow_type, status,
+            SELECT id, owner, repo, issue_number, pr_number, workflow_type, status,
                    current_stage, pr_url, github_comment_id, epic_branch_mode,
                    created_at, updated_at
             FROM workflow_runs
