@@ -80,7 +80,7 @@ def test_build_scout_prompt_includes_issue_context() -> None:
     assert "Body text" in prompt
     assert "alice at 2026-05-23T00:00:00Z" in prompt
     assert "Needs tests" in prompt
-    assert "Be terse. Return minimal valid JSON. No prose outside JSON fields." in prompt
+    assert "No prose. No progress updates. Emit valid JSON artifact only." in prompt
 
 
 def test_build_scout_prompt_truncates_comments_for_prompt_only() -> None:
