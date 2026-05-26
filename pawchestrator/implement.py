@@ -16,12 +16,16 @@ from pawchestrator.skill_loader import load_skill
 from pawchestrator.db import (
     complete_implement_run,
     complete_repair_run,
+    complete_repair_push_run,
     fail_implement_run,
+    fail_repair_push_run,
     fail_repair_run,
     get_run_by_pr_number,
     get_run_state,
+    insert_run_warning,
     lookup_repo_path,
     start_implement_run,
+    start_repair_push_run,
     start_repair_run,
     upsert_worktree_record,
 )
@@ -51,6 +55,7 @@ SLUG_MAX_LENGTH = 40
 MAX_PROMPT_APPROACH_SUMMARY_CHARS = 150
 REPAIR_REPORT_SCHEMA = "pawchestrator.repair_report.v1"
 LOGGER = logging.getLogger(__name__)
+NO_CHANGES_REQUESTED_REVIEWERS = "no_changes_requested_reviewers"
 
 
 @dataclass(frozen=True)
@@ -540,6 +545,17 @@ async def run_repair(
         await fail_repair_run(settings, run_id=run_id, stage_id=stage_id, error=db_error)
         raise
 
+    await run_repair_push(
+        run_id,
+        settings,
+        client=github_client,
+        owner=owner,
+        repo=repo,
+        pr_number=pr_number,
+        branch=worktree_info.branch,
+        worktree_path=worktree_info.path,
+    )
+
     return RepairResult(
         run_id=run_id,
         artifact_path=artifact_path,
@@ -548,6 +564,42 @@ async def run_repair(
         branch=worktree_info.branch,
         report=report,
     )
+
+
+async def run_repair_push(
+    run_id: str,
+    settings: Settings,
+    *,
+    client: GitHubIssueClient,
+    owner: str,
+    repo: str,
+    pr_number: int,
+    branch: str,
+    worktree_path: Path,
+) -> None:
+    stage_id = await start_repair_push_run(settings, run_id=run_id)
+    try:
+        await _run_git_checked(["push", "origin", branch], worktree_path)
+        reviewers = await client.fetch_changes_requested_reviewers(owner, repo, pr_number)
+        if reviewers:
+            await client.request_review(owner, repo, pr_number, reviewers)
+        else:
+            await insert_run_warning(
+                settings,
+                run_id=run_id,
+                stage_name="push",
+                code=NO_CHANGES_REQUESTED_REVIEWERS,
+                message="No CHANGES_REQUESTED reviewers found; skipped re-review request.",
+            )
+        await complete_repair_push_run(settings, run_id=run_id, stage_id=stage_id)
+    except Exception:
+        await fail_repair_push_run(
+            settings,
+            run_id=run_id,
+            stage_id=stage_id,
+            error="Stage failed. See local run logs.",
+        )
+        raise
 
 
 def build_repair_prompt(

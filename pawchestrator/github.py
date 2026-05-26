@@ -303,6 +303,53 @@ class GitHubIssueClient:
             return "approved"
         return "open"
 
+    async def fetch_changes_requested_reviewers(
+        self,
+        owner: str,
+        repo: str,
+        number: int,
+    ) -> list[str]:
+        async with httpx.AsyncClient(
+            base_url=self._api_base,
+            headers=self._headers(),
+            transport=self._transport,
+        ) as client:
+            reviews = await self._get_all_pages(
+                client,
+                f"/repos/{owner}/{repo}/pulls/{number}/reviews",
+            )
+
+        reviewers: list[str] = []
+        seen: set[str] = set()
+        for review in reviews:
+            if review.get("state") != "CHANGES_REQUESTED":
+                continue
+            user = review.get("user")
+            login = user.get("login") if isinstance(user, dict) else None
+            if not isinstance(login, str) or not login or login in seen:
+                continue
+            reviewers.append(login)
+            seen.add(login)
+        return reviewers
+
+    async def request_review(
+        self,
+        owner: str,
+        repo: str,
+        number: int,
+        reviewers: Sequence[str],
+    ) -> None:
+        async with httpx.AsyncClient(
+            base_url=self._api_base,
+            headers=self._headers(),
+            transport=self._transport,
+        ) as client:
+            response = await client.post(
+                f"/repos/{owner}/{repo}/pulls/{number}/requested_reviewers",
+                json={"reviewers": list(reviewers)},
+            )
+            self._raise_for_status(response)
+
     async def fetch_pr_head_branch(
         self,
         owner: str,

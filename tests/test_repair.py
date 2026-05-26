@@ -4,7 +4,12 @@ from pathlib import Path
 from typing import Any
 
 from pawchestrator.config import Settings
-from pawchestrator.db import create_repair_run, init_db, insert_repo_registration
+from pawchestrator.db import (
+    create_repair_run,
+    get_run_warnings,
+    init_db,
+    insert_repo_registration,
+)
 from pawchestrator.implement import (
     WorktreeInfo,
     build_repair_prompt,
@@ -17,6 +22,8 @@ from pawchestrator.runners import Runner, RunnerResult, RunnerTask
 class FakeRepairClient:
     def __init__(self) -> None:
         self.calls: list[str] = []
+        self.reviewers = ["alice", "bob"]
+        self.requested_reviewers: list[tuple[str, str, int, list[str]]] = []
 
     async def fetch_pr_head_branch(self, owner: str, repo: str, number: int) -> str:
         self.calls.append(f"head:{owner}/{repo}#{number}")
@@ -32,6 +39,25 @@ class FakeRepairClient:
     async def fetch_pr_diff(self, owner: str, repo: str, number: int) -> str:
         self.calls.append(f"diff:{owner}/{repo}#{number}")
         return "diff --git a/app.py b/app.py\n"
+
+    async def fetch_changes_requested_reviewers(
+        self,
+        owner: str,
+        repo: str,
+        number: int,
+    ) -> list[str]:
+        self.calls.append(f"reviews:{owner}/{repo}#{number}")
+        return self.reviewers
+
+    async def request_review(
+        self,
+        owner: str,
+        repo: str,
+        number: int,
+        reviewers: list[str],
+    ) -> None:
+        self.calls.append(f"request-review:{owner}/{repo}#{number}")
+        self.requested_reviewers.append((owner, repo, number, reviewers))
 
 
 class FakeRepairRunner(Runner):
@@ -156,6 +182,13 @@ def test_run_repair_invokes_agent_with_review_context(
         "pawchestrator.implement._diff_since",
         lambda cwd, base_commit: _async_value("diff --git a/app.py b/app.py\n"),
     )
+    git_calls: list[tuple[list[str], Path]] = []
+
+    async def fake_run_git(args: list[str], cwd: Path) -> tuple[str, str, int]:
+        git_calls.append((args, cwd))
+        return "", "", 0
+
+    monkeypatch.setattr("pawchestrator.implement._run_git", fake_run_git)
 
     result = asyncio.run(run_repair(run_id, settings, client=client, runner=runner))
 
@@ -166,19 +199,76 @@ def test_run_repair_invokes_agent_with_review_context(
     assert "Fix summary" in runner.task.prompt
     assert result.report["status"] == "success"
     assert result.report["files_changed"] == ["app.py"]
+    assert git_calls == [(["push", "origin", "paw/repair-pr-42"], worktree)]
+    assert client.requested_reviewers == [
+        ("owner", "repo", 42, ["alice", "bob"]),
+    ]
 
     with sqlite3.connect(settings.database_path) as db:
         run = db.execute(
             "SELECT workflow_type, status, current_stage FROM workflow_runs WHERE id = ?",
             (run_id,),
         ).fetchone()
-        stage = db.execute(
+        stages = db.execute(
             "SELECT stage_name, status FROM workflow_stages WHERE run_id = ?",
             (run_id,),
-        ).fetchone()
+        ).fetchall()
 
-    assert run == ("repair", "repair_complete", "repair")
-    assert stage == ("repair", "complete")
+    assert run == ("repair", "push_complete", "push")
+    assert stages == [("repair", "complete"), ("push", "complete")]
+
+
+def test_run_repair_push_warns_when_no_changes_requested_reviewers(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    run_id = "repair-run"
+    asyncio.run(_seed_repair_run(settings, run_id))
+    client = FakeRepairClient()
+    client.reviewers = []
+    runner = FakeRepairRunner()
+    worktree = tmp_path / "worktree"
+
+    async def fake_ensure_pr_worktree(
+        settings: Settings,
+        *,
+        source_repo_path: Path,
+        owner: str,
+        repo: str,
+        pr_number: int,
+        head_branch: str,
+    ) -> WorktreeInfo:
+        return WorktreeInfo(path=worktree, branch="paw/repair-pr-42", reused=False)
+
+    async def fake_run_git(args: list[str], cwd: Path) -> tuple[str, str, int]:
+        return "", "", 0
+
+    monkeypatch.setattr("pawchestrator.implement.ensure_pr_worktree", fake_ensure_pr_worktree)
+    monkeypatch.setattr("pawchestrator.implement._run_git", fake_run_git)
+    monkeypatch.setattr(
+        "pawchestrator.implement._git_rev_parse_head",
+        lambda cwd: _async_value("base-sha"),
+    )
+    monkeypatch.setattr(
+        "pawchestrator.implement._diff_since",
+        lambda cwd, base_commit: _async_value("diff --git a/app.py b/app.py\n"),
+    )
+
+    asyncio.run(run_repair(run_id, settings, client=client, runner=runner))
+
+    warnings = asyncio.run(get_run_warnings(settings, run_id))
+    assert client.requested_reviewers == []
+    assert warnings == [
+        {
+            "id": warnings[0]["id"],
+            "run_id": run_id,
+            "stage_name": "push",
+            "code": "no_changes_requested_reviewers",
+            "message": "No CHANGES_REQUESTED reviewers found; skipped re-review request.",
+            "created_at": warnings[0]["created_at"],
+        }
+    ]
 
 
 async def _seed_repair_run(settings: Settings, run_id: str) -> None:

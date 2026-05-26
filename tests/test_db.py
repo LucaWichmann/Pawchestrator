@@ -247,7 +247,7 @@ def test_review_and_repair_runs_use_pr_number(tmp_path: Path) -> None:
     assert repair_state is not None
     assert repair_state["workflow_type"] == "repair"
     assert repair_state["pr_number"] == 8
-    assert [stage["stage_name"] for stage in repair_state["stages"]] == ["repair"]
+    assert [stage["stage_name"] for stage in repair_state["stages"]] == ["repair", "push"]
 
 
 def test_create_epic_run_inserts_parent_without_stages(tmp_path: Path) -> None:

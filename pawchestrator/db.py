@@ -24,7 +24,7 @@ REVIEW_STAGES = (
     "post",
     "issues",
 )
-REPAIR_STAGES = ("repair",)
+REPAIR_STAGES = ("repair", "push")
 TERMINAL_RUN_STATUSES = (
     "completed",
     "failed",
@@ -40,6 +40,8 @@ TERMINAL_RUN_STATUSES = (
     "review_failed",
     "repair_complete",
     "repair_failed",
+    "push_complete",
+    "push_failed",
 )
 STALE_RUN_ERROR = "Run aborted: Pawchestrator stopped before this run finished."
 
@@ -706,6 +708,92 @@ async def fail_repair_run(
             SET workflow_type = 'repair',
                 status = 'repair_failed',
                 current_stage = 'repair',
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (now, run_id),
+        )
+        await db.execute(
+            """
+            UPDATE workflow_stages
+            SET status = 'failed', error = ?, completed_at = ?
+            WHERE id = ?
+            """,
+            (error, now, stage_id),
+        )
+        await db.commit()
+
+
+async def start_repair_push_run(settings: Settings, *, run_id: str) -> str:
+    await init_db(settings)
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET workflow_type = 'repair',
+                status = 'push_running',
+                current_stage = 'push',
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (now, run_id),
+        )
+        stage_id = await _start_stage_row(
+            db,
+            run_id=run_id,
+            stage_name="push",
+            now=now,
+        )
+        await db.commit()
+    return stage_id
+
+
+async def complete_repair_push_run(
+    settings: Settings,
+    *,
+    run_id: str,
+    stage_id: str,
+) -> None:
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET workflow_type = 'repair',
+                status = 'push_complete',
+                current_stage = 'push',
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (now, run_id),
+        )
+        await db.execute(
+            """
+            UPDATE workflow_stages
+            SET status = 'complete', completed_at = ?
+            WHERE id = ?
+            """,
+            (now, stage_id),
+        )
+        await db.commit()
+
+
+async def fail_repair_push_run(
+    settings: Settings,
+    *,
+    run_id: str,
+    stage_id: str,
+    error: str,
+) -> None:
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET workflow_type = 'repair',
+                status = 'push_failed',
+                current_stage = 'push',
                 updated_at = ?
             WHERE id = ?
             """,
@@ -1884,6 +1972,7 @@ async def get_run_state(settings: Settings, run_id: str) -> dict[str, object] | 
                 WHEN 'post' THEN 8
                 WHEN 'issues' THEN 9
                 WHEN 'repair' THEN 10
+                WHEN 'push' THEN 11
                 ELSE 99
               END,
               started_at,
@@ -1906,6 +1995,7 @@ async def get_run_state(settings: Settings, run_id: str) -> dict[str, object] | 
     payload = dict(run)
     payload["stages"] = [dict(stage) for stage in stages]
     payload["artifacts"] = [dict(artifact) for artifact in artifacts]
+    payload["warnings"] = await get_run_warnings(settings, str(run["id"]))
     payload["created_issue_urls"] = _created_issue_urls(payload)
     return payload
 

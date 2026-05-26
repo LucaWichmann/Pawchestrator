@@ -508,6 +508,59 @@ def test_github_issue_client_fetches_review_comments_and_pr_diff() -> None:
     assert diff == "diff --git a/app.py b/app.py\n"
 
 
+def test_github_issue_client_fetches_changes_requested_reviewers() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.method == "GET"
+        assert request.url.path == "/repos/owner/repo/pulls/42/reviews"
+        return httpx.Response(
+            200,
+            json=[
+                {"state": "COMMENTED", "user": {"login": "ignored"}},
+                {"state": "CHANGES_REQUESTED", "user": {"login": "alice"}},
+                {"state": "CHANGES_REQUESTED", "user": {"login": "alice"}},
+                {"state": "CHANGES_REQUESTED", "user": {"login": "bob"}},
+                {"state": "APPROVED", "user": {"login": "carol"}},
+            ],
+        )
+
+    client = GitHubIssueClient(
+        "token",
+        api_base="https://api.github.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    reviewers = asyncio.run(
+        client.fetch_changes_requested_reviewers("owner", "repo", 42)
+    )
+
+    assert reviewers == ["alice", "bob"]
+    assert len(requests) == 1
+
+
+def test_github_issue_client_requests_reviewers() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.method == "POST"
+        assert request.url.path == "/repos/owner/repo/pulls/42/requested_reviewers"
+        assert json.loads(request.read()) == {"reviewers": ["alice", "bob"]}
+        return httpx.Response(201, json={})
+
+    client = GitHubIssueClient(
+        "token",
+        api_base="https://api.github.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    asyncio.run(client.request_review("owner", "repo", 42, ["alice", "bob"]))
+
+    assert len(requests) == 1
+
+
 def test_github_issue_client_fetch_sub_issues_returns_empty_list() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "GET"
