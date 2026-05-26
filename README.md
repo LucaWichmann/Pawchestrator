@@ -203,6 +203,18 @@ runner = "claude"
 usage_limit_fallback_runner = "none"
 ```
 
+### Usage-limit fallback
+
+Usage-limit fallback is stage-local and only handles recognized Claude usage/session exhaustion. Known Claude-primary stages with defined permission intent (`scout`, `plan`, `grill`, and `criteria_dedupe`) default to Codex fallback when `usage_limit_fallback_runner` is unset. Setting `usage_limit_fallback_runner = "codex"` makes that default explicit; setting `usage_limit_fallback_runner = "none"` disables fallback for that stage.
+
+Codex-primary stages do not self-fallback when `usage_limit_fallback_runner` is unset. For example, `implement` defaults to Codex and will fail normally if Codex fails, unless you explicitly configure Claude as the primary runner and Codex as its usage-limit fallback.
+
+Fallback preserves the stage's artifact contract and permission intent. Read-only Claude stages (`scout`, `plan`, `grill`, and `criteria_dedupe`) run Codex fallback with a read-only Codex sandbox. If `implement` is explicitly configured as Claude-primary with Codex fallback, the fallback uses the normal write-capable implement permissions because the stage itself is write-capable.
+
+Before invoking fallback, Pawchestrator emits a `RunWarning`. While the fallback runner is active, that warning is visible in the browser overlay and in GitHub run comments so users can see that Codex is continuing after Claude usage exhaustion.
+
+This behavior mirrors [ADR 0010: Claude usage-limit fallback for agent stages](docs/adr/0010-claude-usage-limit-fallback.md).
+
 ### Criteria dedupe
 
 Grill runs a `criteria_dedupe` utility stage before publishing suggested criteria to GitHub. It removes semantic duplicates from newly inferred criteria so the `## Pawchestrator Suggested Criteria` section does not repeat existing acceptance criteria or paraphrased suggestions. The stage affects only criteria publishing to the issue body; it does not change the `GrillReport` artifact shape.
