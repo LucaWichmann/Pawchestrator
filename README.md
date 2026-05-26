@@ -182,10 +182,38 @@ Notes:
 
 - `doctor` reads the same config and checks the local runner/tooling setup.
 - `debug = true` prints runner argv plus captured stdout/stderr.
-- Per-stage overrides live under `[stages.<stage>.claude]` and `[stages.<stage>.codex]`.
+- Per-stage runner policy lives under `[stages.<stage>]`; runner-specific overrides live under `[stages.<stage>.claude]` and `[stages.<stage>.codex]`.
 - `execution = "auto"` on Codex tries native first and may fall back to WSL on known Windows sandbox failures.
 - `previous_response_not_found_attempts` caps Codex recovery attempts, including the original attempt.
 - Pawchestrator tries to preserve local CodeGraph databases even when `.codegraph/` is ignored by git. Before implementation it seeds the issue worktree from the source repo index with a SQLite-safe copy; it syncs back only when git proves the run branch has already merged into `main`.
+
+Set a stage's primary runner and usage-limit fallback together:
+
+```toml
+[stages.scout]
+runner = "claude"
+usage_limit_fallback_runner = "codex"
+```
+
+Disable usage-limit fallback for a stage with `"none"`:
+
+```toml
+[stages.plan]
+runner = "claude"
+usage_limit_fallback_runner = "none"
+```
+
+### Usage-limit fallback
+
+Usage-limit fallback is stage-local and only handles recognized Claude usage/session exhaustion. Known Claude-primary stages with defined permission intent (`scout`, `plan`, `grill`, and `criteria_dedupe`) default to Codex fallback when `usage_limit_fallback_runner` is unset. Setting `usage_limit_fallback_runner = "codex"` makes that default explicit; setting `usage_limit_fallback_runner = "none"` disables fallback for that stage.
+
+Codex-primary stages do not self-fallback when `usage_limit_fallback_runner` is unset. For example, `implement` defaults to Codex and will fail normally if Codex fails, unless you explicitly configure Claude as the primary runner and Codex as its usage-limit fallback.
+
+Fallback preserves the stage's artifact contract and permission intent. Read-only Claude stages (`scout`, `plan`, `grill`, and `criteria_dedupe`) run Codex fallback with a read-only Codex sandbox. If `implement` is explicitly configured as Claude-primary with Codex fallback, the fallback uses the normal write-capable implement permissions because the stage itself is write-capable.
+
+Before invoking fallback, Pawchestrator emits a `RunWarning`. While the fallback runner is active, that warning is visible in the browser overlay and in GitHub run comments so users can see that Codex is continuing after Claude usage exhaustion.
+
+This behavior mirrors [ADR 0010: Claude usage-limit fallback for agent stages](docs/adr/0010-claude-usage-limit-fallback.md).
 
 ### Criteria dedupe
 
