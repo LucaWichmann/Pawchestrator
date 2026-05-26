@@ -20,6 +20,7 @@ from pawchestrator.runners import (
     ClaudeRunner,
     CodexRunner,
     Runner,
+    RunnerFailedError,
     RunnerResult,
     RunnerTask,
 )
@@ -327,7 +328,7 @@ def test_run_plan_respects_disabled_usage_limit_fallback(
     monkeypatch.setattr(ClaudeRunner, "run_task", fake_claude_run_task)
     monkeypatch.setattr(CodexRunner, "run_task", fake_codex_run_task)
 
-    with pytest.raises(RuntimeError, match="usage limit reached"):
+    with pytest.raises(RunnerFailedError, match="Runner exited with code 1"):
         asyncio.run(run_plan(run_id, settings, repo_path=tmp_path))
 
     assert asyncio.run(get_run_warnings(settings, run_id)) == []
@@ -362,13 +363,13 @@ def test_run_plan_codex_primary_does_not_self_fallback(
     monkeypatch.setattr(CodexRunner, "check_health", fake_check_health)
     monkeypatch.setattr(CodexRunner, "run_task", fake_codex_run_task)
 
-    with pytest.raises(RuntimeError, match="codex failed"):
+    with pytest.raises(RunnerFailedError, match="Runner exited with code 1"):
         asyncio.run(run_plan(run_id, settings, repo_path=tmp_path))
 
     assert asyncio.run(get_run_warnings(settings, run_id)) == []
 
 
-def test_run_plan_fallback_failure_includes_original_claude_message(
+def test_run_plan_fallback_failure_uses_dual_exit_code_public_message(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     settings = Settings(app_dir=tmp_path)
@@ -413,13 +414,13 @@ def test_run_plan_fallback_failure_includes_original_claude_message(
     monkeypatch.setattr(ClaudeRunner, "run_task", fake_claude_run_task)
     monkeypatch.setattr(CodexRunner, "run_task", fake_codex_run_task)
 
-    with pytest.raises(RuntimeError) as error:
+    with pytest.raises(RunnerFailedError) as error:
         asyncio.run(run_plan(run_id, settings, repo_path=tmp_path))
 
-    message = str(error.value)
-    assert message.startswith("codex failed")
-    assert "Original Claude usage-limit failure" in message
-    assert "usage limit reached" in message
+    assert str(error.value) == "Claude exited with code 1; Codex fallback exited with code 1"
+    assert error.value.exit_code == 1
+    assert "codex failed" in error.value.stderr
+    assert "usage limit reached" in error.value.stdout
 
 
 def test_run_plan_records_failure_and_log(tmp_path: Path) -> None:
@@ -437,7 +438,7 @@ def test_run_plan_records_failure_and_log(tmp_path: Path) -> None:
         )
     )
 
-    with pytest.raises(RuntimeError, match="not signed in"):
+    with pytest.raises(RunnerFailedError, match="Runner exited with code 1"):
         asyncio.run(run_plan(run_id, settings, repo_path=tmp_path, runner=runner))
 
     log_path = tmp_path / "runs" / run_id / "stdout" / "plan.log"
@@ -456,7 +457,7 @@ def test_run_plan_records_failure_and_log(tmp_path: Path) -> None:
         ).fetchone()
 
     assert run == ("plan_failed", "plan")
-    assert stage == ("failed", "not signed in")
+    assert stage == ("failed", "Runner exited with code 1")
 
 
 def test_run_plan_reports_missing_run(tmp_path: Path) -> None:

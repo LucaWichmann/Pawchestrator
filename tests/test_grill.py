@@ -23,6 +23,7 @@ from pawchestrator.runners import (
     ClaudeRunner,
     CodexRunner,
     Runner,
+    RunnerFailedError,
     RunnerResult,
     RunnerTask,
     _effective_claude_config,
@@ -716,7 +717,7 @@ def test_run_grill_respects_disabled_usage_limit_fallback(
     monkeypatch.setattr(ClaudeRunner, "run_task", fake_claude_run_task)
     monkeypatch.setattr(CodexRunner, "run_task", fake_codex_run_task)
 
-    with pytest.raises(RuntimeError, match="usage limit reached"):
+    with pytest.raises(RunnerFailedError, match="Runner exited with code 1"):
         asyncio.run(
             run_grill(
                 "https://github.com/owner/repo/issues/42",
@@ -755,7 +756,7 @@ def test_run_grill_codex_primary_does_not_self_fallback(
     monkeypatch.setattr(CodexRunner, "check_health", fake_check_health)
     monkeypatch.setattr(CodexRunner, "run_task", fake_codex_run_task)
 
-    with pytest.raises(RuntimeError, match="codex failed"):
+    with pytest.raises(RunnerFailedError, match="Runner exited with code 1"):
         asyncio.run(
             run_grill(
                 "https://github.com/owner/repo/issues/42",
