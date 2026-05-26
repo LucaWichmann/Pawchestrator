@@ -48,6 +48,14 @@ def run_checks(settings: Settings, port: int = DEFAULT_PORT) -> list[CheckResult
     return [
         check_binary("git", required=True),
         check_binary("gh", required=True),
+        check_binary(
+            "pawchestrator",
+            required=False,
+            hint=(
+                "pawchestrator not on PATH — run: uv tool install "
+                "git+https://github.com/LucaWichmann/Pawchestrator.git"
+            ),
+        ),
         check_gh_auth(),
         check_wsl(settings),
         check_claude_runner(settings),
@@ -65,14 +73,15 @@ def has_required_failures(results: list[CheckResult]) -> bool:
     return any(result.required and result.status == STATUS_FAIL for result in results)
 
 
-def check_binary(name: str, required: bool) -> CheckResult:
+def check_binary(name: str, required: bool, hint: str | None = None) -> CheckResult:
     path = shutil.which(name)
     if path:
         return CheckResult(name, STATUS_PASS, f"found at {path}", required=required)
 
     status = STATUS_FAIL if required else STATUS_WARN
     need = "required" if required else "optional"
-    return CheckResult(name, status, f"{need} binary not found on PATH", required=required)
+    message = hint or f"{need} binary not found on PATH"
+    return CheckResult(name, status, message, required=required)
 
 
 def check_claude_runner(settings: Settings | None = None) -> CheckResult:
