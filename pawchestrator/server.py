@@ -169,6 +169,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "epic_confirm": runtime_settings.pipeline.epic_confirm,
         }
 
+    @app.get("/prs/{owner}/{repo}/{number}/review-state")
+    async def pr_review_state(owner: str, repo: str, number: int) -> dict[str, str]:
+        client = GitHubIssueClient(get_gh_token())
+        state = await client.fetch_pr_review_state(owner, repo, number)
+        return {"state": state}
+
     @app.post("/issue/start")
     async def issue_start(
         body: IssueStartRequest,

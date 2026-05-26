@@ -275,6 +275,29 @@ class GitHubIssueClient:
             if isinstance(item, dict)
         ]
 
+    async def fetch_pr_review_state(
+        self,
+        owner: str,
+        repo: str,
+        number: int,
+    ) -> str:
+        async with httpx.AsyncClient(
+            base_url=self._api_base,
+            headers=self._headers(),
+            transport=self._transport,
+        ) as client:
+            reviews = await self._get_all_pages(
+                client,
+                f"/repos/{owner}/{repo}/pulls/{number}/reviews",
+            )
+
+        states = [str(review.get("state") or "") for review in reviews]
+        if "CHANGES_REQUESTED" in states:
+            return "changes_requested"
+        if states and states[-1] == "APPROVED":
+            return "approved"
+        return "open"
+
     async def post_comment(
         self,
         owner: str,
