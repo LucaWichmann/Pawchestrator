@@ -11,7 +11,20 @@ import aiosqlite
 
 from pawchestrator.config import Settings, ensure_app_dir
 
-PIPELINE_STAGES = ("snapshot", "scout", "plan", "implement", "verify", "pr")
+PIPELINE_STAGES = (
+    "snapshot",
+    "scout",
+    "plan",
+    "implement",
+    "verify",
+    "pr",
+)
+REVIEW_STAGES = (
+    "review",
+    "post",
+    "issues",
+)
+REPAIR_STAGES = ("repair", "push")
 TERMINAL_RUN_STATUSES = (
     "completed",
     "failed",
@@ -19,6 +32,16 @@ TERMINAL_RUN_STATUSES = (
     "grill_failed",
     "epic_complete",
     "epic_failed",
+    "post_complete",
+    "post_failed",
+    "issues_complete",
+    "issues_failed",
+    "issues_skipped",
+    "review_failed",
+    "repair_complete",
+    "repair_failed",
+    "push_complete",
+    "push_failed",
 )
 STALE_RUN_ERROR = "Run aborted: Pawchestrator stopped before this run finished."
 
@@ -27,7 +50,8 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
   id TEXT PRIMARY KEY,
   owner TEXT NOT NULL,
   repo TEXT NOT NULL,
-  issue_number INTEGER NOT NULL,
+  issue_number INTEGER,
+  pr_number INTEGER,
   group_id TEXT,
   workflow_type TEXT NOT NULL DEFAULT 'pipeline',
   status TEXT NOT NULL DEFAULT 'pending',
@@ -107,6 +131,8 @@ async def init_db(settings: Settings) -> Path:
     async with aiosqlite.connect(settings.database_path) as db:
         await db.executescript(SCHEMA_SQL)
         await _add_column_if_missing(db, "github_comment_id TEXT")
+        await _rebuild_workflow_runs_for_nullable_issue_number(db)
+        await _add_column_if_missing(db, "pr_number INTEGER")
         await _add_column_if_missing(db, "group_id TEXT")
         await _add_column_if_missing(
             db,
@@ -126,6 +152,50 @@ async def _add_column_if_missing(
     existing_columns = {str(row[1]) for row in await cursor.fetchall()}
     if column_name not in existing_columns:
         await db.execute(f"ALTER TABLE workflow_runs ADD COLUMN {column_definition}")
+
+
+async def _rebuild_workflow_runs_for_nullable_issue_number(
+    db: aiosqlite.Connection,
+) -> None:
+    cursor = await db.execute("PRAGMA table_info(workflow_runs)")
+    columns = await cursor.fetchall()
+    issue_column = next((row for row in columns if str(row[1]) == "issue_number"), None)
+    if issue_column is None or not bool(issue_column[3]):
+        return
+
+    column_names = [str(row[1]) for row in columns]
+    selected_columns = ", ".join(column_names)
+    await db.execute("PRAGMA legacy_alter_table = ON")
+    await db.execute("ALTER TABLE workflow_runs RENAME TO workflow_runs_legacy")
+    await db.execute("PRAGMA legacy_alter_table = OFF")
+    await db.execute(
+        """
+        CREATE TABLE workflow_runs (
+          id TEXT PRIMARY KEY,
+          owner TEXT NOT NULL,
+          repo TEXT NOT NULL,
+          issue_number INTEGER,
+          pr_number INTEGER,
+          group_id TEXT,
+          workflow_type TEXT NOT NULL DEFAULT 'pipeline',
+          status TEXT NOT NULL DEFAULT 'pending',
+          current_stage TEXT,
+          pr_url TEXT,
+          github_comment_id TEXT,
+          epic_branch_mode TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+        """
+    )
+    await db.execute(
+        f"""
+        INSERT INTO workflow_runs ({selected_columns})
+        SELECT {selected_columns}
+        FROM workflow_runs_legacy
+        """
+    )
+    await db.execute("DROP TABLE workflow_runs_legacy")
 
 
 def utc_now_iso() -> str:
@@ -201,6 +271,614 @@ async def create_pipeline_run(
                 (str(uuid4()), run_id, stage_name),
             )
         await db.commit()
+
+
+async def create_review_run(
+    settings: Settings,
+    *,
+    run_id: str,
+    owner: str,
+    repo: str,
+    pr_number: int,
+) -> None:
+    await _create_pr_workflow_run(
+        settings,
+        run_id=run_id,
+        owner=owner,
+        repo=repo,
+        pr_number=pr_number,
+        workflow_type="review",
+    )
+
+
+async def start_review_run(settings: Settings, *, run_id: str) -> str:
+    await init_db(settings)
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET workflow_type = 'review',
+                status = 'review_running',
+                current_stage = 'review',
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (now, run_id),
+        )
+        stage_id = await _start_stage_row(
+            db,
+            run_id=run_id,
+            stage_name="review",
+            now=now,
+        )
+        await db.commit()
+    return stage_id
+
+
+async def complete_review_run(
+    settings: Settings,
+    *,
+    run_id: str,
+    stage_id: str,
+    artifact_path: Path,
+) -> None:
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET workflow_type = 'review',
+                status = 'review_complete',
+                current_stage = 'review',
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (now, run_id),
+        )
+        await db.execute(
+            """
+            UPDATE workflow_stages
+            SET status = 'complete', completed_at = ?
+            WHERE id = ?
+            """,
+            (now, stage_id),
+        )
+        await db.execute(
+            """
+            INSERT INTO artifacts (id, run_id, artifact_type, file_path, created_at)
+            VALUES (?, ?, 'review_report', ?, ?)
+            """,
+            (str(uuid4()), run_id, str(artifact_path), now),
+        )
+        await db.commit()
+
+
+async def start_review_post_run(settings: Settings, *, run_id: str) -> str:
+    await init_db(settings)
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET workflow_type = 'review',
+                status = 'post_running',
+                current_stage = 'post',
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (now, run_id),
+        )
+        stage_id = await _start_stage_row(
+            db,
+            run_id=run_id,
+            stage_name="post",
+            now=now,
+        )
+        await db.commit()
+    return stage_id
+
+
+async def complete_review_post_run(
+    settings: Settings,
+    *,
+    run_id: str,
+    stage_id: str,
+) -> None:
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET workflow_type = 'review',
+                status = 'post_complete',
+                current_stage = 'post',
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (now, run_id),
+        )
+        await db.execute(
+            """
+            UPDATE workflow_stages
+            SET status = 'complete', completed_at = ?
+            WHERE id = ?
+            """,
+            (now, stage_id),
+        )
+        await db.commit()
+
+
+async def fail_review_post_run(
+    settings: Settings,
+    *,
+    run_id: str,
+    stage_id: str,
+    error: str,
+) -> None:
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET workflow_type = 'review',
+                status = 'post_failed',
+                current_stage = 'post',
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (now, run_id),
+        )
+        await db.execute(
+            """
+            UPDATE workflow_stages
+            SET status = 'failed', error = ?, completed_at = ?
+            WHERE id = ?
+            """,
+            (error, now, stage_id),
+        )
+        await db.commit()
+
+
+async def start_review_issues_run(settings: Settings, *, run_id: str) -> str:
+    await init_db(settings)
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET workflow_type = 'review',
+                status = 'issues_running',
+                current_stage = 'issues',
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (now, run_id),
+        )
+        stage_id = await _start_stage_row(
+            db,
+            run_id=run_id,
+            stage_name="issues",
+            now=now,
+        )
+        await db.commit()
+    return stage_id
+
+
+async def complete_review_issues_run(
+    settings: Settings,
+    *,
+    run_id: str,
+    stage_id: str,
+    artifact_path: Path,
+) -> None:
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET workflow_type = 'review',
+                status = 'issues_complete',
+                current_stage = 'issues',
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (now, run_id),
+        )
+        await db.execute(
+            """
+            UPDATE workflow_stages
+            SET status = 'complete', completed_at = ?
+            WHERE id = ?
+            """,
+            (now, stage_id),
+        )
+        await db.execute(
+            """
+            INSERT INTO artifacts (id, run_id, artifact_type, file_path, created_at)
+            VALUES (?, ?, 'created_issues_report', ?, ?)
+            """,
+            (str(uuid4()), run_id, str(artifact_path), now),
+        )
+        await db.commit()
+
+
+async def skip_review_issues_run(
+    settings: Settings,
+    *,
+    run_id: str,
+    stage_id: str,
+    artifact_path: Path,
+    reason: str,
+) -> None:
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET workflow_type = 'review',
+                status = 'issues_skipped',
+                current_stage = 'issues',
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (now, run_id),
+        )
+        await db.execute(
+            """
+            UPDATE workflow_stages
+            SET status = 'skipped', error = ?, completed_at = ?
+            WHERE id = ?
+            """,
+            (reason, now, stage_id),
+        )
+        await db.execute(
+            """
+            INSERT INTO artifacts (id, run_id, artifact_type, file_path, created_at)
+            VALUES (?, ?, 'created_issues_report', ?, ?)
+            """,
+            (str(uuid4()), run_id, str(artifact_path), now),
+        )
+        await db.commit()
+
+
+async def fail_review_issues_run(
+    settings: Settings,
+    *,
+    run_id: str,
+    stage_id: str,
+    artifact_path: Path,
+    error: str,
+) -> None:
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET workflow_type = 'review',
+                status = 'issues_failed',
+                current_stage = 'issues',
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (now, run_id),
+        )
+        await db.execute(
+            """
+            UPDATE workflow_stages
+            SET status = 'failed', error = ?, completed_at = ?
+            WHERE id = ?
+            """,
+            (error, now, stage_id),
+        )
+        await db.execute(
+            """
+            INSERT INTO artifacts (id, run_id, artifact_type, file_path, created_at)
+            VALUES (?, ?, 'created_issues_report', ?, ?)
+            """,
+            (str(uuid4()), run_id, str(artifact_path), now),
+        )
+        await db.commit()
+
+
+async def fail_review_run(
+    settings: Settings,
+    *,
+    run_id: str,
+    stage_id: str,
+    error: str,
+) -> None:
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET workflow_type = 'review',
+                status = 'review_failed',
+                current_stage = 'review',
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (now, run_id),
+        )
+        await db.execute(
+            """
+            UPDATE workflow_stages
+            SET status = 'failed', error = ?, completed_at = ?
+            WHERE id = ?
+            """,
+            (error, now, stage_id),
+        )
+        await db.commit()
+
+
+async def create_repair_run(
+    settings: Settings,
+    *,
+    run_id: str,
+    owner: str,
+    repo: str,
+    pr_number: int,
+) -> None:
+    await _create_pr_workflow_run(
+        settings,
+        run_id=run_id,
+        owner=owner,
+        repo=repo,
+        pr_number=pr_number,
+        workflow_type="repair",
+    )
+
+
+async def start_repair_run(settings: Settings, *, run_id: str) -> str:
+    await init_db(settings)
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET workflow_type = 'repair',
+                status = 'repair_running',
+                current_stage = 'repair',
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (now, run_id),
+        )
+        stage_id = await _start_stage_row(
+            db,
+            run_id=run_id,
+            stage_name="repair",
+            now=now,
+        )
+        await db.commit()
+    return stage_id
+
+
+async def complete_repair_run(
+    settings: Settings,
+    *,
+    run_id: str,
+    stage_id: str,
+    artifact_path: Path,
+) -> None:
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET workflow_type = 'repair',
+                status = 'repair_complete',
+                current_stage = 'repair',
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (now, run_id),
+        )
+        await db.execute(
+            """
+            UPDATE workflow_stages
+            SET status = 'complete', completed_at = ?
+            WHERE id = ?
+            """,
+            (now, stage_id),
+        )
+        await db.execute(
+            """
+            INSERT INTO artifacts (id, run_id, artifact_type, file_path, created_at)
+            VALUES (?, ?, 'repair_report', ?, ?)
+            """,
+            (str(uuid4()), run_id, str(artifact_path), now),
+        )
+        await db.commit()
+
+
+async def fail_repair_run(
+    settings: Settings,
+    *,
+    run_id: str,
+    stage_id: str,
+    error: str,
+) -> None:
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET workflow_type = 'repair',
+                status = 'repair_failed',
+                current_stage = 'repair',
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (now, run_id),
+        )
+        await db.execute(
+            """
+            UPDATE workflow_stages
+            SET status = 'failed', error = ?, completed_at = ?
+            WHERE id = ?
+            """,
+            (error, now, stage_id),
+        )
+        await db.commit()
+
+
+async def start_repair_push_run(settings: Settings, *, run_id: str) -> str:
+    await init_db(settings)
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET workflow_type = 'repair',
+                status = 'push_running',
+                current_stage = 'push',
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (now, run_id),
+        )
+        stage_id = await _start_stage_row(
+            db,
+            run_id=run_id,
+            stage_name="push",
+            now=now,
+        )
+        await db.commit()
+    return stage_id
+
+
+async def complete_repair_push_run(
+    settings: Settings,
+    *,
+    run_id: str,
+    stage_id: str,
+) -> None:
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET workflow_type = 'repair',
+                status = 'push_complete',
+                current_stage = 'push',
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (now, run_id),
+        )
+        await db.execute(
+            """
+            UPDATE workflow_stages
+            SET status = 'complete', completed_at = ?
+            WHERE id = ?
+            """,
+            (now, stage_id),
+        )
+        await db.commit()
+
+
+async def fail_repair_push_run(
+    settings: Settings,
+    *,
+    run_id: str,
+    stage_id: str,
+    error: str,
+) -> None:
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET workflow_type = 'repair',
+                status = 'push_failed',
+                current_stage = 'push',
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (now, run_id),
+        )
+        await db.execute(
+            """
+            UPDATE workflow_stages
+            SET status = 'failed', error = ?, completed_at = ?
+            WHERE id = ?
+            """,
+            (error, now, stage_id),
+        )
+        await db.commit()
+
+
+async def _create_pr_workflow_run(
+    settings: Settings,
+    *,
+    run_id: str,
+    owner: str,
+    repo: str,
+    pr_number: int,
+    workflow_type: str,
+) -> None:
+    await init_db(settings)
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            INSERT INTO workflow_runs (
+              id, owner, repo, issue_number, pr_number, workflow_type, status, current_stage,
+              created_at, updated_at
+            )
+            VALUES (?, ?, ?, NULL, ?, ?, 'pending', NULL, ?, ?)
+            """,
+            (run_id, owner, repo, pr_number, workflow_type, now, now),
+        )
+        if workflow_type in {"review", "repair"}:
+            stage_names = REVIEW_STAGES if workflow_type == "review" else REPAIR_STAGES
+            for stage_name in stage_names:
+                await db.execute(
+                    """
+                    INSERT INTO workflow_stages (id, run_id, stage_name, status)
+                    VALUES (?, ?, ?, 'pending')
+                    """,
+                    (str(uuid4()), run_id, stage_name),
+                )
+        await db.commit()
+
+
+async def get_run_by_pr_number(
+    settings: Settings,
+    *,
+    owner: str,
+    repo: str,
+    pr_number: int,
+    workflow_type: str | None = None,
+) -> dict[str, object] | None:
+    await init_db(settings)
+    filters = [
+        "owner = ?",
+        "repo = ?",
+        "pr_number = ?",
+    ]
+    params: list[object] = [owner, repo, pr_number]
+    if workflow_type is not None:
+        filters.append("workflow_type = ?")
+        params.append(workflow_type)
+    where_clause = " AND ".join(filters)
+    async with aiosqlite.connect(settings.database_path) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            f"""
+            SELECT id, owner, repo, issue_number, pr_number, workflow_type, status,
+                   current_stage, pr_url, created_at, updated_at
+            FROM workflow_runs
+            WHERE {where_clause}
+            ORDER BY updated_at DESC, created_at DESC, id DESC
+            LIMIT 1
+            """,
+            params,
+        )
+        row = await cursor.fetchone()
+    return dict(row) if row is not None else None
 
 
 async def create_epic_run(
@@ -1265,7 +1943,7 @@ async def get_run_state(settings: Settings, run_id: str) -> dict[str, object] | 
         db.row_factory = aiosqlite.Row
         run_cursor = await db.execute(
             """
-            SELECT id, owner, repo, issue_number, workflow_type, status,
+            SELECT id, owner, repo, issue_number, pr_number, workflow_type, status,
                    current_stage, pr_url, github_comment_id, epic_branch_mode,
                    created_at, updated_at
             FROM workflow_runs
@@ -1290,6 +1968,11 @@ async def get_run_state(settings: Settings, run_id: str) -> dict[str, object] | 
                 WHEN 'implement' THEN 4
                 WHEN 'verify' THEN 5
                 WHEN 'pr' THEN 6
+                WHEN 'review' THEN 7
+                WHEN 'post' THEN 8
+                WHEN 'issues' THEN 9
+                WHEN 'repair' THEN 10
+                WHEN 'push' THEN 11
                 ELSE 99
               END,
               started_at,
@@ -1312,6 +1995,9 @@ async def get_run_state(settings: Settings, run_id: str) -> dict[str, object] | 
     payload = dict(run)
     payload["stages"] = [dict(stage) for stage in stages]
     payload["artifacts"] = [dict(artifact) for artifact in artifacts]
+    payload["warnings"] = await get_run_warnings(settings, str(run["id"]))
+    payload["review_report"] = _read_latest_artifact(payload, "review_report")
+    payload["created_issue_urls"] = _created_issue_urls(payload)
     return payload
 
 
@@ -1454,6 +2140,16 @@ def _read_latest_artifact(
     return payload if isinstance(payload, dict) else None
 
 
+def _created_issue_urls(run: dict[str, object]) -> list[str]:
+    report = _read_latest_artifact(run, "created_issues_report")
+    if report is None:
+        return []
+    urls = report.get("created_issue_urls")
+    if not isinstance(urls, list):
+        return []
+    return [url for url in urls if isinstance(url, str)]
+
+
 async def _stale_failure_stage(
     db: aiosqlite.Connection,
     run: aiosqlite.Row,
@@ -1461,6 +2157,8 @@ async def _stale_failure_stage(
     workflow_type = str(run["workflow_type"] or "pipeline")
     if workflow_type == "grill":
         return "grill"
+    if workflow_type == "repair":
+        return "repair"
 
     status = str(run["status"] or "")
     current_stage = _valid_pipeline_stage(run["current_stage"])
@@ -1482,7 +2180,11 @@ async def _stale_failure_stage(
 
 def _valid_pipeline_stage(stage_name: object) -> str | None:
     stage = str(stage_name or "")
-    return stage if stage in PIPELINE_STAGES else None
+    return (
+        stage
+        if stage in PIPELINE_STAGES or stage in REVIEW_STAGES or stage in REPAIR_STAGES
+        else None
+    )
 
 
 def _next_pipeline_stage(stage_name: str | None) -> str | None:

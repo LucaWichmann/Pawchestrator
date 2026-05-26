@@ -20,13 +20,19 @@
 
   const API_BASE = "http://127.0.0.1:38472";
   const PANEL_ID = "pawchestrator-panel";
+  const PR_PANEL_ID = "pawchestrator-pr-panel";
   const START_ID = "pawchestrator-start";
   const GRILL_ID = "pawchestrator-grill";
+  const PR_REVIEW_ID = "pawchestrator-review";
+  const PR_REPAIR_ID = "pawchestrator-repair";
+  const CREATE_ISSUES_ID = "pawchestrator-create-issues";
   const CONFIRM_OVERLAY_ID = "pawchestrator-confirm-overlay";
   const POLL_INTERVAL_MS = 3000;
   const REINJECT_DEBOUNCE_MS = 100;
   const TOKEN_KEY = "pawchestrator_token";
   const PIPELINE_STAGES = ["snapshot", "scout", "plan", "implement", "verify", "pr"];
+  const REVIEW_STAGES = ["review", "post", "issues"];
+  const REPAIR_STAGES = ["repair", "push"];
   const PAW = "\uD83D\uDC3E";
   const FIRE = "\uD83D\uDD25";
   const WARNING = "\u26A0";
@@ -45,6 +51,16 @@
     "grill_failed",
     "epic_complete",
     "epic_failed",
+    "post_complete",
+    "post_failed",
+    "issues_complete",
+    "issues_failed",
+    "issues_skipped",
+    "review_failed",
+    "repair_complete",
+    "repair_failed",
+    "push_complete",
+    "push_failed",
   ]);
   const PIPELINE_ACTIVE = new Set([
     "snapshot_running",
@@ -67,26 +83,36 @@
     "Replying to Pawchestrator questions \u2014 submitting will continue the grilling session.";
 
   let activePoll = null;
+  let activePrPoll = null;
   let activePathname = window.location.pathname;
   let panelExpandedByUser = null;
   let lastPipelineExpansionKey = null;
   let reinjectTimer = null;
   let grillReplyObserverState = null;
   let latestIssueStatus = null;
+  let latestPrRun = null;
+  let latestPrReviewState = null;
 
   GM_addStyle(`
     #${START_ID},
-    #${GRILL_ID} {
+    #${GRILL_ID},
+    #${PR_REVIEW_ID},
+    #${PR_REPAIR_ID},
+    #${CREATE_ISSUES_ID} {
       white-space: nowrap;
     }
 
     #${START_ID}:disabled,
-    #${GRILL_ID}:disabled {
+    #${GRILL_ID}:disabled,
+    #${PR_REVIEW_ID}:disabled,
+    #${PR_REPAIR_ID}:disabled,
+    #${CREATE_ISSUES_ID}:disabled {
       cursor: not-allowed;
       opacity: 0.65;
     }
 
-    #${PANEL_ID} {
+    #${PANEL_ID},
+    #${PR_PANEL_ID} {
       background: var(--bgColor-default, #ffffff);
       border: 1px solid var(--borderColor-default, #d0d7de);
       border-left: 4px solid var(--borderColor-default, #d0d7de);
@@ -98,23 +124,29 @@
     }
 
     #${PANEL_ID}[data-status="idle"],
-    #${PANEL_ID}[data-status="offline"] {
+    #${PANEL_ID}[data-status="offline"],
+    #${PR_PANEL_ID}[data-status="idle"],
+    #${PR_PANEL_ID}[data-status="offline"] {
       border-left-color: var(--borderColor-default, #d0d7de);
     }
 
-    #${PANEL_ID}[data-status="running"] {
+    #${PANEL_ID}[data-status="running"],
+    #${PR_PANEL_ID}[data-status="running"] {
       border-left-color: var(--fgColor-accent, #0969da);
     }
 
-    #${PANEL_ID}[data-status="done"] {
+    #${PANEL_ID}[data-status="done"],
+    #${PR_PANEL_ID}[data-status="done"] {
       border-left-color: var(--fgColor-success, #1a7f37);
     }
 
-    #${PANEL_ID}[data-status="failed"] {
+    #${PANEL_ID}[data-status="failed"],
+    #${PR_PANEL_ID}[data-status="failed"] {
       border-left-color: var(--fgColor-danger, #cf222e);
     }
 
-    #${PANEL_ID} .pawchestrator-panel-bar {
+    #${PANEL_ID} .pawchestrator-panel-bar,
+    #${PR_PANEL_ID} .pawchestrator-panel-bar {
       align-items: center;
       display: flex;
       gap: 8px;
@@ -122,7 +154,8 @@
       padding: 8px 12px;
     }
 
-    #${PANEL_ID} .pawchestrator-panel-toggle {
+    #${PANEL_ID} .pawchestrator-panel-toggle,
+    #${PR_PANEL_ID} .pawchestrator-panel-toggle {
       align-items: center;
       background: transparent;
       border: 0;
@@ -136,7 +169,8 @@
       width: 24px;
     }
 
-    #${PANEL_ID} .pawchestrator-panel-summary {
+    #${PANEL_ID} .pawchestrator-panel-summary,
+    #${PR_PANEL_ID} .pawchestrator-panel-summary {
       align-items: center;
       display: flex;
       flex: 1;
@@ -145,51 +179,61 @@
       overflow-wrap: anywhere;
     }
 
-    #${PANEL_ID} .pawchestrator-panel-brand-name {
+    #${PANEL_ID} .pawchestrator-panel-brand-name,
+    #${PR_PANEL_ID} .pawchestrator-panel-brand-name {
       flex: 0 0 auto;
       font-weight: 600;
     }
 
-    #${PANEL_ID} .pawchestrator-panel-status-text {
+    #${PANEL_ID} .pawchestrator-panel-status-text,
+    #${PR_PANEL_ID} .pawchestrator-panel-status-text {
       min-width: 0;
     }
 
-    #${PANEL_ID} .pawchestrator-panel-body {
+    #${PANEL_ID} .pawchestrator-panel-body,
+    #${PR_PANEL_ID} .pawchestrator-panel-body {
       border-top: 1px solid var(--borderColor-default, #d0d7de);
       display: none;
       padding: 10px 12px 12px;
     }
 
-    #${PANEL_ID}[data-expanded="true"] .pawchestrator-panel-body {
+    #${PANEL_ID}[data-expanded="true"] .pawchestrator-panel-body,
+    #${PR_PANEL_ID}[data-expanded="true"] .pawchestrator-panel-body {
       display: block;
     }
 
-    #${PANEL_ID} .pawchestrator-readiness-row {
+    #${PANEL_ID} .pawchestrator-readiness-row,
+    #${PR_PANEL_ID} .pawchestrator-readiness-row {
       align-items: center;
       display: flex;
       flex-wrap: wrap;
       gap: 8px 16px;
     }
 
-    #${PANEL_ID} .pawchestrator-readiness-item {
+    #${PANEL_ID} .pawchestrator-readiness-item,
+    #${PR_PANEL_ID} .pawchestrator-readiness-item {
       color: var(--fgColor-muted, #59636e);
       white-space: nowrap;
     }
 
-    #${PANEL_ID} .pawchestrator-readiness-item[data-ready="true"] {
+    #${PANEL_ID} .pawchestrator-readiness-item[data-ready="true"],
+    #${PR_PANEL_ID} .pawchestrator-readiness-item[data-ready="true"] {
       color: var(--fgColor-success, #1a7f37);
     }
 
-    #${PANEL_ID} .pawchestrator-readiness-item[data-ready="false"] {
+    #${PANEL_ID} .pawchestrator-readiness-item[data-ready="false"],
+    #${PR_PANEL_ID} .pawchestrator-readiness-item[data-ready="false"] {
       color: var(--fgColor-danger, #cf222e);
     }
 
-    #${PANEL_ID} .pawchestrator-run-line {
+    #${PANEL_ID} .pawchestrator-run-line,
+    #${PR_PANEL_ID} .pawchestrator-run-line {
       color: var(--fgColor-muted, #59636e);
       margin-top: 8px;
     }
 
-    #${PANEL_ID} .pawchestrator-pipeline {
+    #${PANEL_ID} .pawchestrator-pipeline,
+    #${PR_PANEL_ID} .pawchestrator-pipeline {
       border-top: 1px solid var(--borderColor-muted, #d8dee4);
       margin-top: 10px;
       padding-top: 10px;
@@ -207,7 +251,8 @@
       padding-top: 10px;
     }
 
-    #${PANEL_ID} .pawchestrator-pipeline-title {
+    #${PANEL_ID} .pawchestrator-pipeline-title,
+    #${PR_PANEL_ID} .pawchestrator-pipeline-title {
       color: var(--fgColor-muted, #59636e);
       font-weight: 600;
       margin-bottom: 8px;
@@ -282,7 +327,8 @@
       grid-column: 1 / -1;
     }
 
-    #${PANEL_ID} .pawchestrator-timeline {
+    #${PANEL_ID} .pawchestrator-timeline,
+    #${PR_PANEL_ID} .pawchestrator-timeline {
       align-items: flex-start;
       display: grid;
       gap: 8px;
@@ -291,13 +337,15 @@
       padding-bottom: 2px;
     }
 
-    #${PANEL_ID} .pawchestrator-step {
+    #${PANEL_ID} .pawchestrator-step,
+    #${PR_PANEL_ID} .pawchestrator-step {
       color: var(--fgColor-muted, #59636e);
       min-width: 72px;
       position: relative;
     }
 
-    #${PANEL_ID} .pawchestrator-step:not(:last-child)::after {
+    #${PANEL_ID} .pawchestrator-step:not(:last-child)::after,
+    #${PR_PANEL_ID} .pawchestrator-step:not(:last-child)::after {
       background: var(--borderColor-muted, #d8dee4);
       content: "";
       height: 1px;
@@ -307,12 +355,14 @@
       top: 8px;
     }
 
-    #${PANEL_ID} .pawchestrator-step[data-active="true"] {
+    #${PANEL_ID} .pawchestrator-step[data-active="true"],
+    #${PR_PANEL_ID} .pawchestrator-step[data-active="true"] {
       color: var(--fgColor-default, #24292f);
       font-weight: 600;
     }
 
-    #${PANEL_ID} .pawchestrator-step-label {
+    #${PANEL_ID} .pawchestrator-step-label,
+    #${PR_PANEL_ID} .pawchestrator-step-label {
       display: block;
       font-size: 12px;
       line-height: 16px;
@@ -320,7 +370,8 @@
       overflow-wrap: anywhere;
     }
 
-    #${PANEL_ID} .pawchestrator-step-indicator {
+    #${PANEL_ID} .pawchestrator-step-indicator,
+    #${PR_PANEL_ID} .pawchestrator-step-indicator {
       align-items: center;
       background: var(--bgColor-default, #ffffff);
       border: 1px solid var(--borderColor-muted, #d8dee4);
@@ -334,40 +385,47 @@
       z-index: 1;
     }
 
-    #${PANEL_ID} .pawchestrator-step[data-status="pending"] .pawchestrator-step-indicator {
+    #${PANEL_ID} .pawchestrator-step[data-status="pending"] .pawchestrator-step-indicator,
+    #${PR_PANEL_ID} .pawchestrator-step[data-status="pending"] .pawchestrator-step-indicator {
       color: var(--fgColor-muted, #59636e);
     }
 
-    #${PANEL_ID} .pawchestrator-step[data-status="running"] .pawchestrator-step-indicator {
+    #${PANEL_ID} .pawchestrator-step[data-status="running"] .pawchestrator-step-indicator,
+    #${PR_PANEL_ID} .pawchestrator-step[data-status="running"] .pawchestrator-step-indicator {
       animation: pawchestrator-spin 0.8s linear infinite;
       border-color: var(--fgColor-accent, #0969da);
       border-right-color: transparent;
       color: transparent;
     }
 
-    #${PANEL_ID} .pawchestrator-step[data-status="done"] .pawchestrator-step-indicator {
+    #${PANEL_ID} .pawchestrator-step[data-status="done"] .pawchestrator-step-indicator,
+    #${PR_PANEL_ID} .pawchestrator-step[data-status="done"] .pawchestrator-step-indicator {
       background: var(--bgColor-success-emphasis, #1a7f37);
       border-color: var(--bgColor-success-emphasis, #1a7f37);
       color: var(--fgColor-onEmphasis, #ffffff);
     }
 
-    #${PANEL_ID} .pawchestrator-step[data-status="failed"] .pawchestrator-step-indicator {
+    #${PANEL_ID} .pawchestrator-step[data-status="failed"] .pawchestrator-step-indicator,
+    #${PR_PANEL_ID} .pawchestrator-step[data-status="failed"] .pawchestrator-step-indicator {
       background: var(--bgColor-danger-emphasis, #cf222e);
       border-color: var(--bgColor-danger-emphasis, #cf222e);
       color: var(--fgColor-onEmphasis, #ffffff);
     }
 
-    #${PANEL_ID} .pawchestrator-warnings {
+    #${PANEL_ID} .pawchestrator-warnings,
+    #${PR_PANEL_ID} .pawchestrator-warnings {
       margin-top: 10px;
     }
 
-    #${PANEL_ID} .pawchestrator-warnings summary {
+    #${PANEL_ID} .pawchestrator-warnings summary,
+    #${PR_PANEL_ID} .pawchestrator-warnings summary {
       color: var(--fgColor-attention, #9a6700);
       cursor: pointer;
       font-weight: 600;
     }
 
-    #${PANEL_ID} .pawchestrator-warnings-list {
+    #${PANEL_ID} .pawchestrator-warnings-list,
+    #${PR_PANEL_ID} .pawchestrator-warnings-list {
       color: var(--fgColor-muted, #59636e);
       margin: 6px 0 0;
       padding-left: 18px;
@@ -379,7 +437,8 @@
       }
     }
 
-    #${PANEL_ID} a {
+    #${PANEL_ID} a,
+    #${PR_PANEL_ID} a {
       color: var(--fgColor-accent, #0969da);
     }
 
@@ -468,6 +527,49 @@
       && !extra;
   }
 
+  function parsePrReference() {
+    const [, owner, repo, type, number, extra] = window.location.pathname.split("/");
+    if (!owner || !repo || type !== "pull" || extra) {
+      throw new Error("Not a GitHub pull request page");
+    }
+
+    const prNumber = Number.parseInt(number, 10);
+    if (!Number.isInteger(prNumber) || String(prNumber) !== number || prNumber <= 0) {
+      throw new Error("Invalid GitHub pull request number");
+    }
+
+    return { owner, repo, pr_number: prNumber };
+  }
+
+  function isPrPage() {
+    try {
+      parsePrReference();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function activePanel() {
+    return document.getElementById(PANEL_ID) || document.getElementById(PR_PANEL_ID);
+  }
+
+  function prRunKey() {
+    return `pawchestrator_pr_run:${window.location.pathname}`;
+  }
+
+  function findPrConversationContainer() {
+    const selectors = [
+      "#discussion_bucket",
+      "#partial-discussion-header",
+      '[data-testid="issue-viewer-issue-container"]',
+      ".js-discussion",
+    ];
+    return selectors
+      .map((selector) => document.querySelector(selector))
+      .find(Boolean) || null;
+  }
+
   function findIssueBodyContainer() {
     const selectors = [
       ".IssueBody-module__outerContainer__ULNTb",
@@ -479,7 +581,7 @@
   }
 
   function setPanelSummary(message) {
-    const panel = document.getElementById(PANEL_ID);
+    const panel = activePanel();
     const status = panel && panel.querySelector(".pawchestrator-panel-status-text");
     if (status) {
       status.textContent = message;
@@ -487,14 +589,14 @@
   }
 
   function setPanelStatus(state) {
-    const panel = document.getElementById(PANEL_ID);
+    const panel = activePanel();
     if (panel) {
       panel.dataset.status = state;
     }
   }
 
   function setPanelExpanded(expanded) {
-    const panel = document.getElementById(PANEL_ID);
+    const panel = activePanel();
     if (!panel) {
       return;
     }
@@ -617,10 +719,26 @@
     if (!run) {
       return "idle";
     }
-    if (run.status === "completed" || run.status === "grill_complete") {
+    if (
+      run.status === "completed" ||
+      run.status === "grill_complete" ||
+      run.status === "post_complete" ||
+      run.status === "issues_complete" ||
+      run.status === "issues_skipped" ||
+      run.status === "repair_complete" ||
+      run.status === "push_complete"
+    ) {
       return "done";
     }
-    if (run.status === "failed" || run.status === "grill_failed") {
+    if (
+      run.status === "failed" ||
+      run.status === "grill_failed" ||
+      run.status === "review_failed" ||
+      run.status === "post_failed" ||
+      run.status === "issues_failed" ||
+      run.status === "repair_failed" ||
+      run.status === "push_failed"
+    ) {
       return "failed";
     }
     return "running";
@@ -687,6 +805,15 @@
     });
   }
 
+  function collapseNamedStages(stages, names) {
+    const rows = Array.isArray(stages) ? stages : [];
+    return names.map((name) => ({
+      name,
+      label: name,
+      stage: rows.find((stage) => stageName(stage) === name) || { stage_name: name, status: "pending" },
+    }));
+  }
+
   function activeStageIndex(pipeline, steps) {
     const failedIndex = steps.findIndex((step) => stageStatus(step.stage) === "failed");
     if (failedIndex >= 0) {
@@ -711,6 +838,26 @@
     return -1;
   }
 
+  function activeNamedStageIndex(run, steps) {
+    const failedIndex = steps.findIndex((step) => stageStatus(step.stage) === "failed");
+    if (failedIndex >= 0) {
+      return failedIndex;
+    }
+
+    const current = String(run.current_stage || "");
+    const currentIndex = steps.findIndex((step) => step.name === current);
+    if (currentIndex >= 0) {
+      return currentIndex;
+    }
+
+    const runningIndex = steps.findIndex((step) => stageStatus(step.stage) === "running");
+    if (runningIndex >= 0) {
+      return runningIndex;
+    }
+
+    return -1;
+  }
+
   function renderPipelineTimeline(parent, pipeline) {
     const steps = collapseStages(pipeline.stages);
     const activeIndex = activeStageIndex(pipeline, steps);
@@ -722,6 +869,35 @@
       item.className = "pawchestrator-step";
       item.dataset.status = status;
       item.dataset.active = String(index === activeIndex && pipeline.status !== "completed");
+
+      const indicator = document.createElement("span");
+      indicator.className = "pawchestrator-step-indicator";
+      indicator.textContent = status === "done" ? "\u2713" : status === "failed" ? "\u00D7" : "\u2022";
+
+      const label = document.createElement("span");
+      label.className = "pawchestrator-step-label";
+      label.textContent = step.label;
+
+      item.append(indicator, label);
+      timeline.append(item);
+    });
+    parent.append(timeline);
+  }
+
+  function renderReviewTimeline(parent, run) {
+    const steps = collapseNamedStages(
+      run.stages,
+      run.workflow_type === "repair" ? REPAIR_STAGES : REVIEW_STAGES,
+    );
+    const activeIndex = activeNamedStageIndex(run, steps);
+    const timeline = document.createElement("div");
+    timeline.className = "pawchestrator-timeline";
+    steps.forEach((step, index) => {
+      const status = normalizeStepStatus(step.stage, activeIndex >= 0 && index > activeIndex);
+      const item = document.createElement("div");
+      item.className = "pawchestrator-step";
+      item.dataset.status = status;
+      item.dataset.active = String(index === activeIndex && !RUN_DONE.has(run.status));
 
       const indicator = document.createElement("span");
       indicator.className = "pawchestrator-step-indicator";
@@ -1306,6 +1482,190 @@
     });
   }
 
+  async function fetchPrRun(runId) {
+    return requestJson(`/runs/${runId}/status`, {
+      label: "PR review status request",
+    });
+  }
+
+  async function fetchPrStatus(pr = parsePrReference()) {
+    return requestJson(`/pr/${pr.owner}/${pr.repo}/${pr.pr_number}/status`, {
+      label: "PR status request",
+    });
+  }
+
+  async function fetchPrReviewState(pr = parsePrReference()) {
+    return requestJson(`/prs/${pr.owner}/${pr.repo}/${pr.pr_number}/review-state`, {
+      label: "PR review state request",
+    });
+  }
+
+  function reviewHasSuggestedIssues(run) {
+    const suggestedIssues = run?.review_report?.suggested_issues;
+    return Array.isArray(suggestedIssues)
+      && suggestedIssues.length > 0
+      && _stageStatusFromRun(run, "issues") === "pending";
+  }
+
+  function _stageStatusFromRun(run, stageName) {
+    const stages = Array.isArray(run?.stages) ? run.stages : [];
+    const stage = stages.find((item) => item.stage_name === stageName);
+    return stage?.status || null;
+  }
+
+  function isPrRunActive(run) {
+    return Boolean(run && !RUN_DONE.has(run.status));
+  }
+
+  function summarizePrRun(run) {
+    if (!run) {
+      if (latestPrReviewState === "changes_requested") {
+        return "Changes requested";
+      }
+      return "Ready for review";
+    }
+    if (run.workflow_type === "repair") {
+      return isPrRunActive(run) ? "[repair] running..." : `Repair ${run.status || "complete"}`;
+    }
+    if (run.status === "post_complete" && reviewHasSuggestedIssues(run)) {
+      return "Review complete - suggested issues ready";
+    }
+    if (run.status === "post_complete" || run.status === "issues_complete" || run.status === "issues_skipped") {
+      return "Review complete";
+    }
+    if (run.status === "review_failed" || run.status === "post_failed" || run.status === "issues_failed") {
+      return summarizeError(run);
+    }
+    const stage = run.current_stage || "review";
+    const status = (run.status || "pending").replace(/^(review|post|issues)_/, "");
+    return `[${stage}] ${status}...`;
+  }
+
+  function renderPrStatus(run) {
+    latestPrRun = run;
+    setPanelSummary(summarizePrRun(run));
+    setPanelStatus(panelStatusForRun(run));
+    setPanelExpanded(Boolean(run));
+    updatePrActionButtons(run);
+
+    const body = document.getElementById(PR_PANEL_ID)?.querySelector(".pawchestrator-panel-body");
+    if (!body) {
+      return;
+    }
+    body.textContent = "";
+
+    if (!run) {
+      const line = document.createElement("div");
+      line.className = "pawchestrator-run-line";
+      line.textContent = "No active review run for this PR.";
+      body.append(line);
+      return;
+    }
+
+    const line = document.createElement("div");
+    line.className = "pawchestrator-run-line";
+    line.textContent = `${run.workflow_type || "review"}: ${summarizePrRun(run)}`;
+    body.append(line);
+
+    const section = document.createElement("section");
+    section.className = "pawchestrator-pipeline";
+    const title = document.createElement("div");
+    title.className = "pawchestrator-pipeline-title";
+    title.textContent = run.workflow_type === "repair" ? "Repair" : "Review";
+    section.append(title);
+    renderReviewTimeline(section, run);
+
+    if (reviewHasSuggestedIssues(run)) {
+      const issuesLine = document.createElement("div");
+      issuesLine.className = "pawchestrator-run-line";
+      issuesLine.textContent = "issues: pending";
+      issuesLine.append(document.createTextNode(" "));
+      issuesLine.append(createButton(CREATE_ISSUES_ID, "pawchestrator-create-issues-button", "Create Issues", createIssues));
+      section.append(issuesLine);
+    }
+
+    body.append(section);
+  }
+
+  function renderPrOffline() {
+    latestPrRun = null;
+    latestPrReviewState = null;
+    setPanelSummary(OFFLINE_MESSAGE);
+    setPanelStatus("offline");
+    const body = document.getElementById(PR_PANEL_ID)?.querySelector(".pawchestrator-panel-body");
+    if (body) {
+      body.textContent = "";
+    }
+    document.getElementById(PR_REVIEW_ID)?.removeAttribute("disabled");
+    document.getElementById(PR_REPAIR_ID)?.remove();
+  }
+
+  function renderPrReviewState(reviewState) {
+    latestPrReviewState = reviewState;
+    updatePrActionButtons(latestPrRun);
+    if (!latestPrRun && reviewState === "changes_requested") {
+      setPanelSummary("Changes requested");
+    }
+  }
+
+  async function pollPrStatusOnce() {
+    const reviewStatePromise = fetchPrReviewState();
+    const storedRunId = await GM_getValue(prRunKey());
+    if (storedRunId) {
+      const storedRun = await fetchPrRun(storedRunId);
+      if (isPrRunActive(storedRun)) {
+        renderPrReviewState((await reviewStatePromise).state);
+        renderPrStatus(storedRun);
+        return true;
+      }
+
+      const [status, reviewState] = await Promise.all([fetchPrStatus(), reviewStatePromise]);
+      renderPrReviewState(reviewState.state);
+      const activeRun = [status.repair, status.review].filter(Boolean).find(isPrRunActive);
+      const run = activeRun || storedRun;
+      if (activeRun?.id && activeRun.id !== storedRunId) {
+        await GM_setValue(prRunKey(), activeRun.id);
+      }
+      renderPrStatus(run);
+      return isPrRunActive(run);
+    }
+
+    const [status, reviewState] = await Promise.all([fetchPrStatus(), reviewStatePromise]);
+    renderPrReviewState(reviewState.state);
+    const run = [status.repair, status.review].filter(Boolean).find(isPrRunActive)
+      || status.review
+      || status.repair
+      || null;
+    if (run?.id) {
+      await GM_setValue(prRunKey(), run.id);
+    }
+    renderPrStatus(run);
+    if (!run) {
+      renderPrStatus(null);
+      return false;
+    }
+    return isPrRunActive(run);
+  }
+
+  function startPrStatusPolling() {
+    stopPrStatusPolling();
+    pollPrStatusOnce().catch(() => renderPrOffline());
+    activePrPoll = window.setInterval(() => {
+      pollPrStatusOnce().then((running) => {
+        if (!running && activePrPoll) {
+          stopPrStatusPolling();
+        }
+      }).catch(() => renderPrOffline());
+    }, POLL_INTERVAL_MS);
+  }
+
+  function stopPrStatusPolling() {
+    if (activePrPoll) {
+      window.clearInterval(activePrPoll);
+      activePrPoll = null;
+    }
+  }
+
   async function pollIssueStatusOnce() {
     const issue = parseIssueReference();
     const status = await fetchIssueStatus(issue);
@@ -1476,6 +1836,111 @@
     }
   }
 
+  async function startReview() {
+    const button = document.getElementById(PR_REVIEW_ID);
+    if (button) {
+      button.disabled = true;
+    }
+
+    try {
+      const pr = parsePrReference();
+      await getOrAcquireToken(setPanelSummary);
+      setPanelSummary("[review] starting...");
+      panelExpandedByUser = true;
+      setPanelExpanded(true);
+      const response = await requestJson("/runs/review/start", {
+        method: "POST",
+        label: "Review start request",
+        statusSetter: setPanelSummary,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(pr),
+      });
+      await GM_setValue(prRunKey(), response.run_id);
+      renderPrStatus({
+        run_id: response.run_id,
+        workflow_type: "review",
+        status: "review_running",
+        current_stage: "review",
+        stages: REVIEW_STAGES.map((stage_name) => ({
+          stage_name,
+          status: stage_name === "review" ? "running" : "pending",
+        })),
+      });
+      startPrStatusPolling();
+    } catch (error) {
+      setPanelSummary(error.message);
+      if (button) {
+        button.disabled = false;
+      }
+    }
+  }
+
+  async function startRepair() {
+    const button = document.getElementById(PR_REPAIR_ID);
+    if (button) {
+      button.disabled = true;
+    }
+
+    try {
+      const pr = parsePrReference();
+      await getOrAcquireToken(setPanelSummary);
+      setPanelSummary("[repair] starting...");
+      panelExpandedByUser = true;
+      setPanelExpanded(true);
+      const response = await requestJson("/runs/repair/start", {
+        method: "POST",
+        label: "Repair start request",
+        statusSetter: setPanelSummary,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(pr),
+      });
+      await GM_setValue(prRunKey(), response.run_id);
+      renderPrStatus({
+        run_id: response.run_id,
+        workflow_type: "repair",
+        status: "repair_running",
+        current_stage: "repair",
+        stages: REPAIR_STAGES.map((stage_name) => ({
+          stage_name,
+          status: stage_name === "repair" ? "running" : "pending",
+        })),
+      });
+      startPrStatusPolling();
+    } catch (error) {
+      setPanelSummary(error.message);
+      if (button) {
+        button.disabled = false;
+      }
+    }
+  }
+
+  async function createIssues() {
+    const runId = latestPrRun?.id || latestPrRun?.run_id || await GM_getValue(prRunKey());
+    const button = document.getElementById(CREATE_ISSUES_ID);
+    if (button) {
+      button.disabled = true;
+    }
+
+    try {
+      if (!runId) {
+        throw new Error("No review run found for this PR");
+      }
+      setPanelSummary("[issues] creating...");
+      const run = await requestJson(`/runs/${runId}/create-issues`, {
+        method: "POST",
+        label: "Create issues request",
+        statusSetter: setPanelSummary,
+      });
+      renderPrStatus(run);
+      startPrStatusPolling();
+    } catch (error) {
+      setPanelSummary(error.message);
+      if (button) {
+        button.disabled = false;
+      }
+    }
+  }
+
   function createButton(id, testid, labelText, onClick) {
     const button = document.createElement("button");
     button.id = id;
@@ -1506,6 +1971,42 @@
 
   function createStartButton() {
     return createButton(START_ID, "pawchestrator-work-button", `${PAW} Work on this issue`, startRun);
+  }
+
+  function createReviewButton() {
+    return createButton(PR_REVIEW_ID, "pawchestrator-review-button", `${PAW} Review with Pawchestrator`, startReview);
+  }
+
+  function createRepairButton() {
+    return createButton(PR_REPAIR_ID, "pawchestrator-repair-button", `${PAW} Work on Request Changes`, startRepair);
+  }
+
+  function updatePrActionButtons(run = latestPrRun) {
+    const active = isPrRunActive(run);
+    const reviewButton = document.getElementById(PR_REVIEW_ID);
+    if (reviewButton) {
+      reviewButton.toggleAttribute("disabled", active);
+    }
+
+    let repairButton = document.getElementById(PR_REPAIR_ID);
+    if (latestPrReviewState !== "changes_requested") {
+      repairButton?.remove();
+      return;
+    }
+
+    if (!repairButton) {
+      repairButton = createRepairButton();
+      const bar = document.getElementById(PR_PANEL_ID)?.querySelector(".pawchestrator-panel-bar");
+      const review = document.getElementById(PR_REVIEW_ID);
+      if (bar) {
+        if (review?.nextSibling) {
+          bar.insertBefore(repairButton, review.nextSibling);
+        } else {
+          bar.append(repairButton);
+        }
+      }
+    }
+    repairButton.toggleAttribute("disabled", active);
   }
 
   function grillButtonLabel(grill) {
@@ -1569,11 +2070,59 @@
     return panel;
   }
 
+  function createPrPanel() {
+    const panel = document.createElement("div");
+    panel.id = PR_PANEL_ID;
+    panel.dataset.expanded = "false";
+    panel.dataset.status = "idle";
+
+    const bar = document.createElement("div");
+    bar.className = "pawchestrator-panel-bar";
+
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "pawchestrator-panel-toggle prc-Button-ButtonBase-9n-Xk";
+    toggle.setAttribute("aria-label", "Toggle Pawchestrator panel");
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.textContent = "\u25B8";
+    toggle.addEventListener("click", () => {
+      const expanded = panel.dataset.expanded !== "true";
+      panelExpandedByUser = expanded;
+      setPanelExpanded(expanded);
+    });
+
+    const summary = document.createElement("div");
+    summary.className = "pawchestrator-panel-summary";
+
+    const brand = document.createElement("span");
+    brand.className = "pawchestrator-panel-brand-name";
+    brand.textContent = `${PAW} Pawchestrator`;
+
+    const separator = document.createElement("span");
+    separator.setAttribute("aria-hidden", "true");
+    separator.textContent = "\u00B7";
+
+    const status = document.createElement("span");
+    status.className = "pawchestrator-panel-status-text";
+    status.textContent = "Checking review status...";
+
+    summary.append(brand, separator, status);
+
+    const body = document.createElement("div");
+    body.className = "pawchestrator-panel-body";
+
+    bar.append(toggle, summary, createReviewButton());
+    panel.append(bar, body);
+    return panel;
+  }
+
   function removeInjectedControls() {
     document.getElementById(PANEL_ID)?.remove();
+    document.getElementById(PR_PANEL_ID)?.remove();
     lastPipelineExpansionKey = null;
     disconnectGrillReplyObserver();
     stopIssueStatusPolling();
+    stopPrStatusPolling();
   }
 
   function injectIssuePanel() {
@@ -1607,6 +2156,46 @@
     }
   }
 
+  function injectPrPanel() {
+    const container = findPrConversationContainer();
+    if (!container || !container.parentElement) {
+      return false;
+    }
+
+    const existingPanel = document.getElementById(PR_PANEL_ID);
+    const panel = existingPanel && document.contains(existingPanel) ? existingPanel : createPrPanel();
+    panel.style.marginLeft = "";
+    if (panel.nextElementSibling !== container) {
+      container.before(panel);
+    }
+    return true;
+  }
+
+  function injectPrControls() {
+    if (!isPrPage()) {
+      return false;
+    }
+
+    document.getElementById(PANEL_ID)?.remove();
+    stopIssueStatusPolling();
+    const panelReady = injectPrPanel();
+    if (panelReady && !activePrPoll) {
+      startPrStatusPolling();
+    }
+    return panelReady;
+  }
+
+  function injectControls() {
+    if (isPrPage()) {
+      injectPrControls();
+      return;
+    }
+
+    document.getElementById(PR_PANEL_ID)?.remove();
+    stopPrStatusPolling();
+    injectIssueControls();
+  }
+
   function scheduleInjection() {
     const pathnameChanged = activePathname !== window.location.pathname;
     if (pathnameChanged) {
@@ -1614,6 +2203,7 @@
       panelExpandedByUser = null;
       lastPipelineExpansionKey = null;
       stopIssueStatusPolling();
+      stopPrStatusPolling();
     }
 
     if (reinjectTimer) {
@@ -1622,7 +2212,7 @@
 
     reinjectTimer = window.setTimeout(() => {
       reinjectTimer = null;
-      injectIssueControls();
+      injectControls();
     }, pathnameChanged ? 0 : REINJECT_DEBOUNCE_MS);
   }
 
@@ -1641,7 +2231,7 @@
     });
   }
 
-  injectIssueControls();
+  injectControls();
   installNavigationHooks();
 
   const observer = new MutationObserver(() => {

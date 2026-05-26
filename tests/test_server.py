@@ -2,10 +2,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import aiosqlite
+import httpx
 from fastapi.testclient import TestClient
 
 from pawchestrator.config import LOCAL_HOST, Settings
 from pawchestrator.db import init_db
+from pawchestrator.github import GitHubIssueClient
 from pawchestrator.server import create_app
 from pawchestrator.sessions import save_sessions
 
@@ -240,6 +242,75 @@ def test_issue_grill_returns_run_id_and_schedules_grill(
     assert payload["workflow_type"] == "grill"
 
 
+def test_review_start_returns_run_id_and_schedules_review(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _seed_token(settings)
+    calls = []
+
+    async def fake_run_review(
+        run_id: str,
+        runtime_settings: Settings,
+        *,
+        implement_runner: str | None = None,
+    ):
+        calls.append((run_id, runtime_settings.app_dir, implement_runner))
+
+    monkeypatch.setattr("pawchestrator.server.run_review", fake_run_review)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.post(
+            "/runs/review/start",
+            json={"owner": "owner", "repo": "repo", "pr_number": 42},
+            headers=_token_headers(),
+        )
+        run_id = response.json()["run_id"]
+        state_response = client.get(f"/runs/{run_id}/status", headers=_token_headers())
+
+    assert response.status_code == 200
+    assert response.json() == {"run_id": run_id}
+    assert calls == [(run_id, tmp_path, None)]
+    payload = state_response.json()
+    assert payload["id"] == run_id
+    assert payload["workflow_type"] == "review"
+    assert payload["pr_number"] == 42
+
+
+def test_repair_start_returns_run_id_and_schedules_repair(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _seed_token(settings)
+    calls = []
+
+    async def fake_run_repair(run_id: str, runtime_settings: Settings):
+        calls.append((run_id, runtime_settings.app_dir))
+
+    monkeypatch.setattr("pawchestrator.server.run_repair", fake_run_repair)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.post(
+            "/runs/repair/start",
+            json={"owner": "owner", "repo": "repo", "pr_number": 42},
+            headers=_token_headers(),
+        )
+        run_id = response.json()["run_id"]
+        state_response = client.get(f"/runs/{run_id}/status", headers=_token_headers())
+
+    assert response.status_code == 200
+    assert response.json() == {"run_id": run_id}
+    assert calls == [(run_id, tmp_path)]
+    payload = state_response.json()
+    assert payload["id"] == run_id
+    assert payload["workflow_type"] == "repair"
+    assert payload["pr_number"] == 42
+    assert [stage["stage_name"] for stage in payload["stages"]] == ["repair", "push"]
+    assert {stage["status"] for stage in payload["stages"]} == {"pending"}
+
+
 def test_openapi_exposes_issue_grill_route(tmp_path: Path) -> None:
     settings = Settings(app_dir=tmp_path)
     _seed_token(settings)
@@ -333,6 +404,120 @@ def test_issue_status_returns_epic_confirm_setting(tmp_path: Path, monkeypatch) 
 
     assert response.status_code == 200
     assert response.json()["epic_confirm"] is True
+
+
+def test_pr_review_state_returns_changes_requested_with_mock_transport(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _seed_token(settings)
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.headers["Authorization"] == "Bearer token"
+        return httpx.Response(
+            200,
+            json=[
+                {"state": "APPROVED"},
+                {"state": "CHANGES_REQUESTED"},
+            ],
+        )
+
+    _patch_github_client(
+        monkeypatch,
+        GitHubIssueClient(
+            "token",
+            api_base="https://api.github.test",
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+
+    with TestClient(create_app(settings)) as client:
+        response = client.get(
+            "/prs/owner/repo/42/review-state",
+            headers=_token_headers(),
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"state": "changes_requested"}
+    assert [request.url.path for request in requests] == [
+        "/repos/owner/repo/pulls/42/reviews"
+    ]
+
+
+def test_pr_review_state_returns_approved_when_latest_review_approved(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _seed_token(settings)
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=[
+                {"state": "COMMENTED"},
+                {"state": "APPROVED"},
+            ],
+        )
+
+    _patch_github_client(
+        monkeypatch,
+        GitHubIssueClient(
+            "token",
+            api_base="https://api.github.test",
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+
+    with TestClient(create_app(settings)) as client:
+        response = client.get(
+            "/prs/owner/repo/42/review-state",
+            headers=_token_headers(),
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"state": "approved"}
+
+
+def test_pr_review_state_returns_open_without_terminal_review(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _seed_token(settings)
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[{"state": "COMMENTED"}])
+
+    _patch_github_client(
+        monkeypatch,
+        GitHubIssueClient(
+            "token",
+            api_base="https://api.github.test",
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+
+    with TestClient(create_app(settings)) as client:
+        response = client.get(
+            "/prs/owner/repo/42/review-state",
+            headers=_token_headers(),
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"state": "open"}
+
+
+def test_pr_review_state_requires_pairing_token(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.get("/prs/owner/repo/42/review-state")
+
+    assert response.status_code == 403
 
 
 def test_pair_rejects_wrong_origin(tmp_path: Path) -> None:
@@ -457,6 +642,11 @@ class _FakeSubIssueClient:
 
 
 def _patch_sub_issue_client(monkeypatch, client: _FakeSubIssueClient) -> None:
+    monkeypatch.setattr("pawchestrator.server.get_gh_token", lambda: "token")
+    monkeypatch.setattr("pawchestrator.server.GitHubIssueClient", lambda _token: client)
+
+
+def _patch_github_client(monkeypatch, client: GitHubIssueClient) -> None:
     monkeypatch.setattr("pawchestrator.server.get_gh_token", lambda: "token")
     monkeypatch.setattr("pawchestrator.server.GitHubIssueClient", lambda _token: client)
 

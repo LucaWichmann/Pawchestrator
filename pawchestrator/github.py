@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 import subprocess
 from collections.abc import Sequence
@@ -34,6 +35,10 @@ RUN_STAGE_LABELS = {
     "implement": "Implement",
     "verify": "Verify",
     "pr": "PR",
+    "review": "Review",
+    "post": "Post",
+    "issues": "Issues",
+    "repair": "Repair",
 }
 HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$")
 UNCHECKED_CHECKBOX_RE = re.compile(r"^\s*[-*+]\s+\[\s\]\s+(?P<text>.+?)\s*$")
@@ -275,6 +280,160 @@ class GitHubIssueClient:
             if isinstance(item, dict)
         ]
 
+    async def fetch_pr_review_state(
+        self,
+        owner: str,
+        repo: str,
+        number: int,
+    ) -> str:
+        async with httpx.AsyncClient(
+            base_url=self._api_base,
+            headers=self._headers(),
+            transport=self._transport,
+        ) as client:
+            reviews = await self._get_all_pages(
+                client,
+                f"/repos/{owner}/{repo}/pulls/{number}/reviews",
+            )
+
+        states = [str(review.get("state") or "") for review in reviews]
+        if "CHANGES_REQUESTED" in states:
+            return "changes_requested"
+        if states and states[-1] == "APPROVED":
+            return "approved"
+        return "open"
+
+    async def fetch_changes_requested_reviewers(
+        self,
+        owner: str,
+        repo: str,
+        number: int,
+    ) -> list[str]:
+        async with httpx.AsyncClient(
+            base_url=self._api_base,
+            headers=self._headers(),
+            transport=self._transport,
+        ) as client:
+            reviews = await self._get_all_pages(
+                client,
+                f"/repos/{owner}/{repo}/pulls/{number}/reviews",
+            )
+
+        reviewers: list[str] = []
+        seen: set[str] = set()
+        for review in reviews:
+            if review.get("state") != "CHANGES_REQUESTED":
+                continue
+            user = review.get("user")
+            login = user.get("login") if isinstance(user, dict) else None
+            if not isinstance(login, str) or not login or login in seen:
+                continue
+            reviewers.append(login)
+            seen.add(login)
+        return reviewers
+
+    async def request_review(
+        self,
+        owner: str,
+        repo: str,
+        number: int,
+        reviewers: Sequence[str],
+    ) -> None:
+        async with httpx.AsyncClient(
+            base_url=self._api_base,
+            headers=self._headers(),
+            transport=self._transport,
+        ) as client:
+            response = await client.post(
+                f"/repos/{owner}/{repo}/pulls/{number}/requested_reviewers",
+                json={"reviewers": list(reviewers)},
+            )
+            self._raise_for_status(response)
+
+    async def fetch_pr_head_branch(
+        self,
+        owner: str,
+        repo: str,
+        number: int,
+    ) -> str:
+        async with httpx.AsyncClient(
+            base_url=self._api_base,
+            headers=self._headers(),
+            transport=self._transport,
+        ) as client:
+            payload = await self._get_json(
+                client,
+                f"/repos/{owner}/{repo}/pulls/{number}",
+            )
+
+        head = payload.get("head")
+        if not isinstance(head, dict):
+            raise GitHubError("GitHub pull request response did not include head")
+        label = head.get("label")
+        ref = head.get("ref")
+        branch = label or ref
+        if not isinstance(branch, str) or not branch:
+            raise GitHubError("GitHub pull request head did not include a branch")
+        return branch
+
+    async def fetch_review_comments(
+        self,
+        owner: str,
+        repo: str,
+        number: int,
+    ) -> dict[str, list[dict[str, Any]]]:
+        async with httpx.AsyncClient(
+            base_url=self._api_base,
+            headers=self._headers(),
+            transport=self._transport,
+        ) as client:
+            inline_comments, top_level_comments = await asyncio.gather(
+                self._get_all_pages(
+                    client,
+                    f"/repos/{owner}/{repo}/pulls/{number}/comments",
+                ),
+                self._get_all_pages(
+                    client,
+                    f"/repos/{owner}/{repo}/issues/{number}/comments",
+                ),
+            )
+        return {
+            "inline_comments": [
+                {
+                    "author": (comment.get("user") or {}).get("login", ""),
+                    "body": comment.get("body") or "",
+                    "path": comment.get("path") or "",
+                    "line": comment.get("line") or comment.get("original_line"),
+                    "created_at": comment.get("created_at") or "",
+                }
+                for comment in inline_comments
+            ],
+            "top_level_comments": [
+                {
+                    "author": (comment.get("user") or {}).get("login", ""),
+                    "body": comment.get("body") or "",
+                    "created_at": comment.get("created_at") or "",
+                }
+                for comment in top_level_comments
+            ],
+        }
+
+    async def fetch_pr_diff(
+        self,
+        owner: str,
+        repo: str,
+        number: int,
+    ) -> str:
+        headers = {**self._headers(), "Accept": "application/vnd.github.v3.diff"}
+        async with httpx.AsyncClient(
+            base_url=self._api_base,
+            headers=headers,
+            transport=self._transport,
+        ) as client:
+            response = await client.get(f"/repos/{owner}/{repo}/pulls/{number}")
+            self._raise_for_status(response)
+            return response.text
+
     async def post_comment(
         self,
         owner: str,
@@ -296,6 +455,65 @@ class GitHubIssueClient:
         if not isinstance(payload, dict) or "id" not in payload:
             raise GitHubError("GitHub comment response did not include an id")
         return int(payload["id"])
+
+    async def post_pr_review(
+        self,
+        owner: str,
+        repo: str,
+        number: int,
+        *,
+        body: str,
+        event: str,
+        comments: Sequence[dict[str, Any]],
+    ) -> int | None:
+        async with httpx.AsyncClient(
+            base_url=self._api_base,
+            headers=self._headers(),
+            transport=self._transport,
+        ) as client:
+            response = await client.post(
+                f"/repos/{owner}/{repo}/pulls/{number}/reviews",
+                json={
+                    "body": body,
+                    "event": event,
+                    "comments": list(comments),
+                },
+            )
+            self._raise_for_status(response)
+            payload = response.json()
+        if not isinstance(payload, dict):
+            raise GitHubError("GitHub review response was not an object")
+        review_id = payload.get("id")
+        return int(review_id) if review_id is not None else None
+
+    async def create_issue(
+        self,
+        owner: str,
+        repo: str,
+        *,
+        title: str,
+        body: str | None = None,
+    ) -> str:
+        request_body: dict[str, str] = {"title": title}
+        if body is not None:
+            request_body["body"] = body
+        async with httpx.AsyncClient(
+            base_url=self._api_base,
+            headers=self._headers(),
+            transport=self._transport,
+        ) as client:
+            response = await client.post(
+                f"/repos/{owner}/{repo}/issues",
+                json=request_body,
+            )
+            self._raise_for_status(response)
+            payload = response.json()
+        if not isinstance(payload, dict):
+            raise GitHubError("GitHub issue creation response was not an object")
+        issue_url = payload.get("html_url") or payload.get("url")
+        if not isinstance(issue_url, str) or not issue_url:
+            raise GitHubError("GitHub issue creation response did not include a URL")
+        return issue_url
 
     async def fetch_admin_collaborators(self, owner: str, repo: str) -> list[str]:
         async with httpx.AsyncClient(
@@ -533,3 +751,57 @@ def _error_from_state(run_state: dict[str, Any]) -> str | None:
         if isinstance(stage, dict) and stage.get("status") == "failed" and stage.get("error"):
             return str(stage["error"])
     return None
+
+
+def parse_diff_positions(diff_text: str) -> dict[tuple[str, int], int]:
+    positions: dict[tuple[str, int], int] = {}
+    current_file: str | None = None
+    new_line: int | None = None
+    position = 0
+
+    for line in diff_text.splitlines():
+        if line.startswith("diff --git "):
+            current_file = None
+            new_line = None
+            position = 0
+            continue
+
+        if line.startswith("+++ "):
+            path = line[4:].strip()
+            if path == "/dev/null":
+                current_file = None
+            elif path.startswith("b/"):
+                current_file = path[2:]
+            else:
+                current_file = path
+            continue
+
+        if current_file is None:
+            continue
+
+        if line.startswith("@@ "):
+            hunk_match = re.search(r"\+(\d+)(?:,\d+)?", line)
+            if hunk_match is None:
+                new_line = None
+                continue
+            new_line = int(hunk_match.group(1))
+            continue
+
+        if new_line is None:
+            continue
+
+        if line.startswith("\\"):
+            continue
+
+        marker = line[:1]
+        if marker not in {" ", "+", "-"}:
+            continue
+
+        position += 1
+        if marker == "+":
+            positions[(current_file, new_line)] = position
+            new_line += 1
+        elif marker == " ":
+            new_line += 1
+
+    return positions

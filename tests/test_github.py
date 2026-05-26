@@ -10,6 +10,7 @@ from pawchestrator.github import (
     GitHubIssueClient,
     ensure_pawchestrator_labels,
     format_run_comment,
+    parse_diff_positions,
     parse_checkboxes,
     parse_issue_shorthand,
     parse_issue_url,
@@ -218,6 +219,96 @@ def test_github_issue_client_posts_comment_and_returns_id() -> None:
     assert len(requests) == 1
 
 
+def test_github_issue_client_posts_pull_request_review_payload() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.method == "POST"
+        assert request.url.path == "/repos/owner/repo/pulls/42/reviews"
+        assert json.loads(request.read()) == {
+            "body": "Summary",
+            "event": "REQUEST_CHANGES",
+            "comments": [
+                {"path": "app.py", "position": 3, "body": "Fix this."}
+            ],
+        }
+        return httpx.Response(200, json={"id": 123})
+
+    client = GitHubIssueClient(
+        "token",
+        api_base="https://api.github.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    review_id = asyncio.run(
+        client.post_pr_review(
+            "owner",
+            "repo",
+            42,
+            body="Summary",
+            event="REQUEST_CHANGES",
+            comments=[{"path": "app.py", "position": 3, "body": "Fix this."}],
+        )
+    )
+
+    assert review_id == 123
+    assert len(requests) == 1
+
+
+def test_github_issue_client_creates_issue_and_returns_html_url() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.method == "POST"
+        assert request.url.path == "/repos/owner/repo/issues"
+        assert json.loads(request.read()) == {"title": "Follow up"}
+        return httpx.Response(
+            201,
+            json={"html_url": "https://github.com/owner/repo/issues/99"},
+        )
+
+    client = GitHubIssueClient(
+        "token",
+        api_base="https://api.github.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    issue_url = asyncio.run(
+        client.create_issue("owner", "repo", title="Follow up")
+    )
+
+    assert issue_url == "https://github.com/owner/repo/issues/99"
+    assert len(requests) == 1
+
+
+def test_parse_diff_positions_maps_added_lines_to_github_positions() -> None:
+    diff = """diff --git a/app.py b/app.py
+index 1111111..2222222 100644
+--- a/app.py
++++ b/app.py
+@@ -1,3 +1,4 @@
+ one
++two
+ three
++four
+diff --git a/pkg/util.py b/pkg/util.py
+--- a/pkg/util.py
++++ b/pkg/util.py
+@@ -10,2 +10,2 @@
+-old
++new
+ context
+"""
+
+    assert parse_diff_positions(diff) == {
+        ("app.py", 2): 2,
+        ("app.py", 4): 4,
+        ("pkg/util.py", 10): 2,
+    }
+
+
 def test_github_issue_client_fetches_paginated_admin_collaborators() -> None:
     requests: list[httpx.Request] = []
 
@@ -347,6 +438,126 @@ def test_github_issue_client_fetches_sub_issues() -> None:
             "url": "https://github.com/owner/repo/issues/44",
         },
     ]
+    assert len(requests) == 1
+
+
+def test_github_issue_client_fetches_pr_head_branch() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.method == "GET"
+        assert request.url.path == "/repos/owner/repo/pulls/42"
+        return httpx.Response(200, json={"head": {"label": "owner:feature-branch"}})
+
+    client = GitHubIssueClient(
+        "token",
+        api_base="https://api.github.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert asyncio.run(client.fetch_pr_head_branch("owner", "repo", 42)) == "owner:feature-branch"
+    assert len(requests) == 1
+
+
+def test_github_issue_client_fetches_review_comments_and_pr_diff() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/repos/owner/repo/pulls/42/comments":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "user": {"login": "reviewer"},
+                        "body": "Fix inline",
+                        "path": "app.py",
+                        "line": 12,
+                        "created_at": "2026-05-26T00:00:00Z",
+                    }
+                ],
+            )
+        if request.url.path == "/repos/owner/repo/issues/42/comments":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "user": {"login": "reviewer"},
+                        "body": "Fix summary",
+                        "created_at": "2026-05-26T00:01:00Z",
+                    }
+                ],
+            )
+        if request.url.path == "/repos/owner/repo/pulls/42":
+            assert request.headers["Accept"] == "application/vnd.github.v3.diff"
+            return httpx.Response(200, text="diff --git a/app.py b/app.py\n")
+        return httpx.Response(404, json={"message": "not found"})
+
+    client = GitHubIssueClient(
+        "token",
+        api_base="https://api.github.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    comments = asyncio.run(client.fetch_review_comments("owner", "repo", 42))
+    diff = asyncio.run(client.fetch_pr_diff("owner", "repo", 42))
+
+    assert comments["inline_comments"][0]["body"] == "Fix inline"
+    assert comments["top_level_comments"][0]["body"] == "Fix summary"
+    assert diff == "diff --git a/app.py b/app.py\n"
+
+
+def test_github_issue_client_fetches_changes_requested_reviewers() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.method == "GET"
+        assert request.url.path == "/repos/owner/repo/pulls/42/reviews"
+        return httpx.Response(
+            200,
+            json=[
+                {"state": "COMMENTED", "user": {"login": "ignored"}},
+                {"state": "CHANGES_REQUESTED", "user": {"login": "alice"}},
+                {"state": "CHANGES_REQUESTED", "user": {"login": "alice"}},
+                {"state": "CHANGES_REQUESTED", "user": {"login": "bob"}},
+                {"state": "APPROVED", "user": {"login": "carol"}},
+            ],
+        )
+
+    client = GitHubIssueClient(
+        "token",
+        api_base="https://api.github.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    reviewers = asyncio.run(
+        client.fetch_changes_requested_reviewers("owner", "repo", 42)
+    )
+
+    assert reviewers == ["alice", "bob"]
+    assert len(requests) == 1
+
+
+def test_github_issue_client_requests_reviewers() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.method == "POST"
+        assert request.url.path == "/repos/owner/repo/pulls/42/requested_reviewers"
+        assert json.loads(request.read()) == {"reviewers": ["alice", "bob"]}
+        return httpx.Response(201, json={})
+
+    client = GitHubIssueClient(
+        "token",
+        api_base="https://api.github.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    asyncio.run(client.request_review("owner", "repo", 42, ["alice", "bob"]))
+
     assert len(requests) == 1
 
 

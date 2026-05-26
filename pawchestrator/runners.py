@@ -420,6 +420,7 @@ RUNNERS: dict[str, Runner] = {
     "claude": ClaudeRunner(),
     "codex": CodexRunner(),
 }
+RUNNER_IDS = frozenset(RUNNERS)
 
 
 async def get_runner_health(settings: Settings) -> dict[str, dict[str, object]]:
@@ -532,6 +533,64 @@ def resolve_runner(settings: Settings, stage_name: str, default: str) -> Runner:
     runner_id = stage_settings.runner if stage_settings is not None else None
     runner_id = runner_id or default
 
+    if runner_id == "claude":
+        return ClaudeRunner(
+            settings.runners.claude,
+            debug=settings.debug,
+            stage_overrides=settings.stages,
+        )
+    if runner_id == "codex":
+        return CodexRunner(
+            settings.runners.codex,
+            debug=settings.debug,
+            stage_overrides=settings.stages,
+        )
+    raise ValueError(f"unknown runner: {runner_id}")
+
+
+async def resolve_review_runner(
+    settings: Settings,
+    implement_runner: str | None,
+) -> Runner:
+    """Resolve the runner that should review an implementation."""
+
+    runner_id = settings.review.default_runner
+    if settings.review.cross_review and implement_runner in RUNNER_IDS:
+        health = await get_runner_health(settings)
+        opposite_runner = _opposite_runner(implement_runner)
+        if (
+            opposite_runner is not None
+            and health[implement_runner]["available"]
+            and health[opposite_runner]["available"]
+        ):
+            runner_id = opposite_runner
+
+    return _runner_from_id(settings, runner_id)
+
+
+async def resolve_repair_runner(
+    settings: Settings,
+    implement_runner: str | None,
+) -> Runner:
+    """Resolve the runner that should repair review or verification findings."""
+
+    runner_id = (
+        implement_runner
+        if implement_runner in RUNNER_IDS
+        else settings.review.default_runner
+    )
+    return _runner_from_id(settings, runner_id)
+
+
+def _opposite_runner(runner_id: str | None) -> str | None:
+    if runner_id == "claude":
+        return "codex"
+    if runner_id == "codex":
+        return "claude"
+    return None
+
+
+def _runner_from_id(settings: Settings, runner_id: str) -> Runner:
     if runner_id == "claude":
         return ClaudeRunner(
             settings.runners.claude,

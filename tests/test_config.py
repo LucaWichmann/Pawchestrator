@@ -34,6 +34,8 @@ def test_runner_settings_defaults_match_low_token_profile() -> None:
     assert settings.codegraph.sync_policy == "safe-lazy"
     assert settings.pr.draft is False
     assert settings.pr.assign is True
+    assert settings.review.default_runner == "claude"
+    assert settings.review.cross_review is True
     assert settings.pipeline.verify_repair_attempts == 1
     assert settings.pipeline.epic_fail_fast is True
     assert settings.pipeline.epic_confirm is False
@@ -94,6 +96,10 @@ sync_policy = "safe-lazy"
 draft = true
 assign = false
 
+[review]
+default_runner = "codex"
+cross_review = false
+
 [pipeline]
 verify_repair_attempts = 2
 epic_fail_fast = false
@@ -149,6 +155,8 @@ approval_policy = "never"
     assert settings.codegraph.sync_policy == "safe-lazy"
     assert settings.pr.draft is True
     assert settings.pr.assign is False
+    assert settings.review.default_runner == "codex"
+    assert settings.review.cross_review is False
     assert settings.pipeline.verify_repair_attempts == 2
     assert settings.pipeline.epic_fail_fast is False
     assert settings.pipeline.epic_confirm is True
@@ -178,6 +186,22 @@ debug = true
 
     assert settings.pr.draft is False
     assert settings.pr.assign is True
+    assert settings.review.default_runner == "claude"
+    assert settings.review.cross_review is True
+
+
+def test_load_settings_rejects_invalid_review_default_runner(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        """
+[review]
+default_runner = "unknown"
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValidationError):
+        load_settings(config_path)
 
 
 def test_load_settings_rejects_invalid_runner_effort(tmp_path: Path) -> None:
