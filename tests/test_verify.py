@@ -1,6 +1,7 @@
 import asyncio
 import json
 import sqlite3
+import subprocess
 from pathlib import Path
 
 import aiosqlite
@@ -14,6 +15,7 @@ from pawchestrator.verify import (
     CommandResult,
     ShellRunner,
     VerificationResult,
+    all_files_match_non_code,
     load_verify_commands,
     repo_verify_config_path_for,
     run_verify,
@@ -48,6 +50,58 @@ def test_load_verify_commands_skips_empty_values_and_preserves_order(tmp_path: P
         ("build", "python -m build"),
         ("test", "pytest"),
     ]
+
+
+def test_all_files_match_non_code_returns_true_for_docs_only_diff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(*args: object, **kwargs: object) -> object:
+        assert args[0] == ["git", "diff", "--name-only", "main...HEAD"]
+        assert kwargs["cwd"] == tmp_path
+        return subprocess_completed(stdout="docs/usage.md\ndocs/setup/install.md\n")
+
+    monkeypatch.setattr("pawchestrator.verify.subprocess.run", fake_run)
+
+    assert all_files_match_non_code(tmp_path, "main", ["docs/**"])
+
+
+def test_all_files_match_non_code_returns_false_for_mixed_diff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "pawchestrator.verify.subprocess.run",
+        lambda *args, **kwargs: subprocess_completed(
+            stdout="docs/usage.md\npawchestrator/verify.py\n"
+        ),
+    )
+
+    assert not all_files_match_non_code(tmp_path, "main", ["docs/**"])
+
+
+def test_all_files_match_non_code_returns_false_for_git_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(*args: object, **kwargs: object) -> object:
+        raise subprocess.CalledProcessError(128, args[0])
+
+    monkeypatch.setattr("pawchestrator.verify.subprocess.run", fake_run)
+
+    assert not all_files_match_non_code(tmp_path, "main", ["docs/**"])
+
+
+def test_all_files_match_non_code_returns_false_for_empty_diff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "pawchestrator.verify.subprocess.run",
+        lambda *args, **kwargs: subprocess_completed(stdout=""),
+    )
+
+    assert not all_files_match_non_code(tmp_path, "main", ["docs/**"])
 
 
 def test_shell_runner_captures_exit_code_stdout_stderr(tmp_path: Path) -> None:
@@ -434,3 +488,7 @@ def _write_repo_config(
         ),
         encoding="utf-8",
     )
+
+
+def subprocess_completed(stdout: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr="")

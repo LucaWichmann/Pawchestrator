@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import json
+import subprocess
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -290,6 +292,32 @@ async def run_verify(
 
 def repo_verify_config_path_for(worktree_path: Path) -> Path:
     return worktree_path / REPO_VERIFY_CONFIG_PATH
+
+
+def all_files_match_non_code(
+    worktree_path: Path,
+    base_branch: str,
+    patterns: list[str],
+) -> bool:
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--name-only", f"{base_branch}...HEAD"],
+            cwd=worktree_path,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return False
+
+    changed_files = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    if not changed_files:
+        return False
+
+    return all(
+        any(fnmatch.fnmatchcase(path, pattern) for pattern in patterns)
+        for path in changed_files
+    )
 
 
 def load_verify_commands(path: Path) -> list[CommandSpec] | None:
