@@ -109,7 +109,7 @@ def test_build_implement_prompt_includes_snapshot_plan_and_worktree(tmp_path: Pa
     assert "Keep full artifact notes out of the prompt." not in prompt
     assert "estimated_risk" not in prompt
     assert "pawchestrator.implementation_plan.v1" not in prompt
-    assert "Do not run build or test commands" in prompt
+    assert "Do not run build | test commands" in prompt
 
 
 def test_build_implement_prompt_compresses_plan_for_prompt_only(tmp_path: Path) -> None:
