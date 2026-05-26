@@ -369,7 +369,7 @@ def test_run_verify_fails_when_worktree_record_missing(tmp_path: Path) -> None:
         ).fetchone()
 
     assert stage[0] == "failed"
-    assert "worktree record not found" in stage[1]
+    assert stage[1] == "Stage failed. See local run logs."
 
 
 def test_run_verify_reports_missing_run(tmp_path: Path) -> None:

@@ -469,7 +469,7 @@ def test_run_scout_rejects_empty_findings(tmp_path: Path) -> None:
         ).fetchone()
 
     assert stage[0] == "failed"
-    assert "findings" in stage[1]
+    assert stage[1] == "Stage failed. See local run logs."
 
 
 def test_run_scout_requires_snapshot(tmp_path: Path) -> None:

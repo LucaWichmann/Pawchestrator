@@ -428,7 +428,7 @@ def test_run_pr_fails_before_create_when_empty_commit_not_allowed(
         asyncio.run(run_pr(run_id, settings))
 
     assert calls == [["git", "rev-list", "--count", "main..HEAD"]]
-    _assert_pr_failed(settings, run_id, message)
+    _assert_pr_failed(settings, run_id)
 
 
 def test_run_pr_reports_missing_run(tmp_path: Path) -> None:
@@ -445,7 +445,7 @@ def test_run_pr_records_failure_when_worktree_missing(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="worktree record not found"):
         asyncio.run(run_pr(run_id, settings))
 
-    _assert_pr_failed(settings, run_id, "worktree record not found")
+    _assert_pr_failed(settings, run_id)
 
 
 @pytest.mark.parametrize(
@@ -471,7 +471,7 @@ def test_run_pr_records_failure_when_required_artifact_missing(
     with pytest.raises(FileNotFoundError, match=message):
         asyncio.run(run_pr(run_id, settings))
 
-    _assert_pr_failed(settings, run_id, message)
+    _assert_pr_failed(settings, run_id)
 
 
 def test_run_pr_records_failure_when_gh_fails(
@@ -496,7 +496,7 @@ def test_run_pr_records_failure_when_gh_fails(
     with pytest.raises(RuntimeError, match="gh auth failed"):
         asyncio.run(run_pr(run_id, settings))
 
-    _assert_pr_failed(settings, run_id, "gh auth failed")
+    _assert_pr_failed(settings, run_id)
 
 
 def test_run_pr_command_prints_url(
@@ -742,7 +742,7 @@ def _flag_values(cmd: list[str], flag: str) -> list[str]:
     return [cmd[index + 1] for index, value in enumerate(cmd[:-1]) if value == flag]
 
 
-def _assert_pr_failed(settings: Settings, run_id: str, error: str) -> None:
+def _assert_pr_failed(settings: Settings, run_id: str) -> None:
     with sqlite3.connect(settings.database_path) as db:
         run = db.execute(
             "SELECT status, current_stage FROM workflow_runs WHERE id = ?",
@@ -758,7 +758,7 @@ def _assert_pr_failed(settings: Settings, run_id: str, error: str) -> None:
 
     assert run == ("pr_failed", "pr")
     assert stage[0] == "failed"
-    assert error in stage[1]
+    assert stage[1] == "Stage failed. See local run logs."
 
 
 class FakeAssignmentClient:

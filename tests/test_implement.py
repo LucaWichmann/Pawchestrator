@@ -667,7 +667,7 @@ def test_run_implement_records_failure_and_error_report(tmp_path: Path) -> None:
 
     assert run == ("implement_failed", "implement")
     assert stage[0] == "failed"
-    assert "implementation plan not found" in stage[1]
+    assert stage[1] == "Stage failed. See local run logs."
 
 
 def test_run_implement_continues_when_codegraph_seed_fails(
@@ -808,7 +808,7 @@ def test_run_implement_fails_when_codex_changes_no_files(
 
     assert run == ("implement_failed", "implement")
     assert stage[0] == "failed"
-    assert "without changing files" in stage[1]
+    assert stage[1] == "Stage failed. See local run logs."
 
 
 def test_run_implement_dirty_start_fails_when_runner_adds_no_new_changes(
