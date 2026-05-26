@@ -15,16 +15,23 @@ from pawchestrator.config import Settings
 from pawchestrator.skill_loader import load_skill
 from pawchestrator.db import (
     complete_implement_run,
+    complete_repair_run,
     fail_implement_run,
+    fail_repair_run,
+    get_run_by_pr_number,
     get_run_state,
+    lookup_repo_path,
     start_implement_run,
+    start_repair_run,
     upsert_worktree_record,
 )
+from pawchestrator.github import GitHubIssueClient, get_gh_token
 from pawchestrator.runners import (
     Runner,
     RunnerFailedError,
     RunnerTask,
     resolve_runner,
+    resolve_repair_runner as resolve_configured_repair_runner,
     runner_tool_mismatch_warning,
 )
 
@@ -42,6 +49,7 @@ DEFAULT_BASE_BRANCH = "main"
 DEFAULT_REMOTE = "origin"
 SLUG_MAX_LENGTH = 40
 MAX_PROMPT_APPROACH_SUMMARY_CHARS = 150
+REPAIR_REPORT_SCHEMA = "pawchestrator.repair_report.v1"
 LOGGER = logging.getLogger(__name__)
 
 
@@ -54,6 +62,16 @@ class WorktreeInfo:
 
 @dataclass(frozen=True)
 class ImplementationResult:
+    run_id: str
+    artifact_path: Path
+    log_path: Path
+    worktree_path: Path
+    branch: str
+    report: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class RepairResult:
     run_id: str
     artifact_path: Path
     log_path: Path
@@ -344,6 +362,217 @@ async def ensure_issue_worktree(
             source_repo_path,
         )
     return WorktreeInfo(path=path, branch=branch, reused=False)
+
+
+async def ensure_pr_worktree(
+    settings: Settings,
+    *,
+    source_repo_path: Path,
+    owner: str,
+    repo: str,
+    pr_number: int,
+    head_branch: str,
+    remote: str = DEFAULT_REMOTE,
+) -> WorktreeInfo:
+    branch_ref = head_branch.split(":", 1)[-1]
+    suffix = uuid_slug()
+    branch = f"paw/repair-pr-{pr_number}-{suffix}"
+    path = settings.app_dir / "worktrees" / owner / repo / f"repair-{pr_number}-{suffix}"
+    if path.exists():
+        raise RuntimeError(f"repair worktree path already exists: {path}")
+
+    await _run_git_checked(
+        ["fetch", remote, f"+refs/heads/{branch_ref}:refs/remotes/{remote}/{branch_ref}"],
+        source_repo_path,
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    await _run_git_checked(
+        [
+            "worktree",
+            "add",
+            "-b",
+            branch,
+            str(path),
+            f"refs/remotes/{remote}/{branch_ref}",
+        ],
+        source_repo_path,
+    )
+    return WorktreeInfo(path=path, branch=branch, reused=False)
+
+
+def uuid_slug() -> str:
+    from uuid import uuid4
+
+    return str(uuid4())[:8]
+
+
+async def resolve_repair_runner(
+    settings: Settings,
+    *,
+    owner: str,
+    repo: str,
+    pr_number: int,
+) -> Runner:
+    original_run = await get_run_by_pr_number(
+        settings,
+        owner=owner,
+        repo=repo,
+        pr_number=pr_number,
+    )
+    implement_runner = None
+    if original_run is not None:
+        candidate = original_run.get("implement_runner") or original_run.get("runner")
+        implement_runner = str(candidate) if candidate else None
+    return await resolve_configured_repair_runner(settings, implement_runner)
+
+
+async def run_repair(
+    run_id: str,
+    settings: Settings,
+    *,
+    client: GitHubIssueClient | None = None,
+    runner: Runner | None = None,
+) -> RepairResult:
+    state = await get_run_state(settings, run_id)
+    if state is None:
+        raise ValueError(f"run not found: {run_id}")
+
+    stage_id = await start_repair_run(settings, run_id=run_id)
+    artifact_path = _repair_report_path(settings, run_id)
+    log_path = _repair_log_path(settings, run_id)
+    owner = str(state["owner"])
+    repo = str(state["repo"])
+    pr_number = int(state["pr_number"])
+    github_client = client or GitHubIssueClient(get_gh_token())
+    worktree_info: WorktreeInfo | None = None
+
+    try:
+        repo_path = await lookup_repo_path(settings, owner=owner, repo=repo)
+        if repo_path is None:
+            raise RuntimeError(
+                "repo not registered - run `pawchestrator repo add <path>` first"
+            )
+        head_branch, comments, diff = await asyncio.gather(
+            github_client.fetch_pr_head_branch(owner, repo, pr_number),
+            github_client.fetch_review_comments(owner, repo, pr_number),
+            github_client.fetch_pr_diff(owner, repo, pr_number),
+        )
+        worktree_info = await ensure_pr_worktree(
+            settings,
+            source_repo_path=repo_path,
+            owner=owner,
+            repo=repo,
+            pr_number=pr_number,
+            head_branch=head_branch,
+        )
+        active_runner = runner or await resolve_repair_runner(
+            settings,
+            owner=owner,
+            repo=repo,
+            pr_number=pr_number,
+        )
+        healthy, message = await active_runner.check_health()
+        if not healthy:
+            raise RuntimeError(message)
+
+        base_commit = await _git_rev_parse_head(worktree_info.path)
+        result = await active_runner.run_task(
+            RunnerTask(
+                prompt=build_repair_prompt(
+                    owner=owner,
+                    repo=repo,
+                    pr_number=pr_number,
+                    worktree_path=worktree_info.path,
+                    review_comments=comments,
+                    diff=diff,
+                ),
+                cwd=worktree_info.path,
+                run_id=run_id,
+                stage_name="repair",
+            )
+        )
+        _write_implement_log(log_path, result.stdout, result.stderr)
+        diff_after = await _diff_since(worktree_info.path, base_commit)
+        if not diff_after.strip():
+            diff_after = result.diff
+        files_changed = files_changed_from_diff(diff_after)
+        report = {
+            "schema": REPAIR_REPORT_SCHEMA,
+            "status": "error" if result.exit_code != 0 else "success",
+            "head_branch": head_branch,
+            "files_changed": files_changed,
+            "diff_summary": summarize_diff(files_changed, diff_after),
+            "codex_output": f"{result.stdout}{result.stderr}",
+            "error": None,
+        }
+        _write_report(artifact_path, report)
+        if result.exit_code != 0:
+            raise RunnerFailedError(
+                public_message=f"Repair agent exited with code {result.exit_code}",
+                exit_code=result.exit_code,
+                stdout=result.stdout,
+                stderr=result.stderr,
+            )
+        await complete_repair_run(
+            settings,
+            run_id=run_id,
+            stage_id=stage_id,
+            artifact_path=artifact_path,
+        )
+    except Exception as error:
+        if not artifact_path.exists():
+            _write_report(
+                artifact_path,
+                {
+                    "schema": REPAIR_REPORT_SCHEMA,
+                    "status": "error",
+                    "files_changed": [],
+                    "diff_summary": "0 files changed",
+                    "codex_output": "",
+                    "error": str(error),
+                },
+            )
+        db_error = (
+            error.public_message
+            if isinstance(error, RunnerFailedError)
+            else "Stage failed. See local run logs."
+        )
+        await fail_repair_run(settings, run_id=run_id, stage_id=stage_id, error=db_error)
+        raise
+
+    return RepairResult(
+        run_id=run_id,
+        artifact_path=artifact_path,
+        log_path=log_path,
+        worktree_path=worktree_info.path,
+        branch=worktree_info.branch,
+        report=report,
+    )
+
+
+def build_repair_prompt(
+    *,
+    owner: str,
+    repo: str,
+    pr_number: int,
+    worktree_path: Path,
+    review_comments: dict[str, list[dict[str, Any]]],
+    diff: str,
+) -> str:
+    return f"""Repair pull request {owner}/{repo}#{pr_number}.
+
+Working directory: {worktree_path}
+
+Use the review comments and PR diff below to make the requested fixes. Commit the
+fixes to the current worktree branch using conventional commits. Do not run build
+or test commands; verification is handled separately.
+
+Review comments:
+{_prompt_json(review_comments)}
+
+PR diff:
+{diff}
+"""
 
 
 async def _prepare_base_branch(source_repo_path: Path, base_branch: str) -> None:
@@ -642,6 +871,14 @@ def _implementation_report_path(settings: Settings, run_id: str) -> Path:
 
 def _implement_log_path(settings: Settings, run_id: str) -> Path:
     return settings.app_dir / "runs" / run_id / "stdout" / "implement.log"
+
+
+def _repair_report_path(settings: Settings, run_id: str) -> Path:
+    return settings.app_dir / "runs" / run_id / "repair_report.json"
+
+
+def _repair_log_path(settings: Settings, run_id: str) -> Path:
+    return settings.app_dir / "runs" / run_id / "stdout" / "repair.log"
 
 
 def _write_implement_log(log_path: Path, stdout: str, stderr: str) -> None:

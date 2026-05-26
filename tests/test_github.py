@@ -441,6 +441,73 @@ def test_github_issue_client_fetches_sub_issues() -> None:
     assert len(requests) == 1
 
 
+def test_github_issue_client_fetches_pr_head_branch() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.method == "GET"
+        assert request.url.path == "/repos/owner/repo/pulls/42"
+        return httpx.Response(200, json={"head": {"label": "owner:feature-branch"}})
+
+    client = GitHubIssueClient(
+        "token",
+        api_base="https://api.github.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert asyncio.run(client.fetch_pr_head_branch("owner", "repo", 42)) == "owner:feature-branch"
+    assert len(requests) == 1
+
+
+def test_github_issue_client_fetches_review_comments_and_pr_diff() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/repos/owner/repo/pulls/42/comments":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "user": {"login": "reviewer"},
+                        "body": "Fix inline",
+                        "path": "app.py",
+                        "line": 12,
+                        "created_at": "2026-05-26T00:00:00Z",
+                    }
+                ],
+            )
+        if request.url.path == "/repos/owner/repo/issues/42/comments":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "user": {"login": "reviewer"},
+                        "body": "Fix summary",
+                        "created_at": "2026-05-26T00:01:00Z",
+                    }
+                ],
+            )
+        if request.url.path == "/repos/owner/repo/pulls/42":
+            assert request.headers["Accept"] == "application/vnd.github.v3.diff"
+            return httpx.Response(200, text="diff --git a/app.py b/app.py\n")
+        return httpx.Response(404, json={"message": "not found"})
+
+    client = GitHubIssueClient(
+        "token",
+        api_base="https://api.github.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    comments = asyncio.run(client.fetch_review_comments("owner", "repo", 42))
+    diff = asyncio.run(client.fetch_pr_diff("owner", "repo", 42))
+
+    assert comments["inline_comments"][0]["body"] == "Fix inline"
+    assert comments["top_level_comments"][0]["body"] == "Fix summary"
+    assert diff == "diff --git a/app.py b/app.py\n"
+
+
 def test_github_issue_client_fetch_sub_issues_returns_empty_list() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "GET"

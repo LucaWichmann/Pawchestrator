@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 import subprocess
 from collections.abc import Sequence
@@ -37,6 +38,7 @@ RUN_STAGE_LABELS = {
     "review": "Review",
     "post": "Post",
     "issues": "Issues",
+    "repair": "Repair",
 }
 HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$")
 UNCHECKED_CHECKBOX_RE = re.compile(r"^\s*[-*+]\s+\[\s\]\s+(?P<text>.+?)\s*$")
@@ -300,6 +302,90 @@ class GitHubIssueClient:
         if states and states[-1] == "APPROVED":
             return "approved"
         return "open"
+
+    async def fetch_pr_head_branch(
+        self,
+        owner: str,
+        repo: str,
+        number: int,
+    ) -> str:
+        async with httpx.AsyncClient(
+            base_url=self._api_base,
+            headers=self._headers(),
+            transport=self._transport,
+        ) as client:
+            payload = await self._get_json(
+                client,
+                f"/repos/{owner}/{repo}/pulls/{number}",
+            )
+
+        head = payload.get("head")
+        if not isinstance(head, dict):
+            raise GitHubError("GitHub pull request response did not include head")
+        label = head.get("label")
+        ref = head.get("ref")
+        branch = label or ref
+        if not isinstance(branch, str) or not branch:
+            raise GitHubError("GitHub pull request head did not include a branch")
+        return branch
+
+    async def fetch_review_comments(
+        self,
+        owner: str,
+        repo: str,
+        number: int,
+    ) -> dict[str, list[dict[str, Any]]]:
+        async with httpx.AsyncClient(
+            base_url=self._api_base,
+            headers=self._headers(),
+            transport=self._transport,
+        ) as client:
+            inline_comments, top_level_comments = await asyncio.gather(
+                self._get_all_pages(
+                    client,
+                    f"/repos/{owner}/{repo}/pulls/{number}/comments",
+                ),
+                self._get_all_pages(
+                    client,
+                    f"/repos/{owner}/{repo}/issues/{number}/comments",
+                ),
+            )
+        return {
+            "inline_comments": [
+                {
+                    "author": (comment.get("user") or {}).get("login", ""),
+                    "body": comment.get("body") or "",
+                    "path": comment.get("path") or "",
+                    "line": comment.get("line") or comment.get("original_line"),
+                    "created_at": comment.get("created_at") or "",
+                }
+                for comment in inline_comments
+            ],
+            "top_level_comments": [
+                {
+                    "author": (comment.get("user") or {}).get("login", ""),
+                    "body": comment.get("body") or "",
+                    "created_at": comment.get("created_at") or "",
+                }
+                for comment in top_level_comments
+            ],
+        }
+
+    async def fetch_pr_diff(
+        self,
+        owner: str,
+        repo: str,
+        number: int,
+    ) -> str:
+        headers = {**self._headers(), "Accept": "application/vnd.github.v3.diff"}
+        async with httpx.AsyncClient(
+            base_url=self._api_base,
+            headers=headers,
+            transport=self._transport,
+        ) as client:
+            response = await client.get(f"/repos/{owner}/{repo}/pulls/{number}")
+            self._raise_for_status(response)
+            return response.text
 
     async def post_comment(
         self,
