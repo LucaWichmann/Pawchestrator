@@ -614,6 +614,31 @@ def test_format_run_comment_includes_failure_details() -> None:
     assert "- Error: `plan exploded`" in body
 
 
+def test_format_run_comment_uses_sanitized_stage_error() -> None:
+    body = format_run_comment(
+        {
+            "id": "run-123",
+            "owner": "owner",
+            "repo": "repo",
+            "issue_number": 42,
+            "status": "failed",
+            "current_stage": "plan",
+            "created_at": "2026-05-23T00:00:00Z",
+            "updated_at": "2026-05-23T00:05:00Z",
+            "stages": [
+                {
+                    "stage_name": "plan",
+                    "status": "failed",
+                    "error": "Runner exited with code 1",
+                },
+            ],
+        }
+    )
+
+    assert "- Error: `Runner exited with code 1`" in body
+    assert "SECRET_TOKEN_FROM_STDOUT" not in body
+
+
 def test_format_run_comment_does_not_treat_repaired_failed_stage_as_terminal() -> None:
     body = format_run_comment(
         {

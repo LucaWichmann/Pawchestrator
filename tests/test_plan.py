@@ -458,6 +458,29 @@ def test_run_plan_records_failure_and_log(tmp_path: Path) -> None:
 
     assert run == ("plan_failed", "plan")
     assert stage == ("failed", "Runner exited with code 1")
+    assert "not signed in" not in stage[1]
+
+
+def test_run_plan_sanitizes_generic_exception_in_db(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    run_id = "run-123"
+    asyncio.run(_insert_scout_run(settings, run_id))
+    _write_snapshot(settings, run_id)
+
+    with pytest.raises(FileNotFoundError, match="scout report not found"):
+        asyncio.run(run_plan(run_id, settings, repo_path=tmp_path, runner=FakeRunner()))
+
+    with sqlite3.connect(tmp_path / "database.sqlite") as db:
+        stage_error = db.execute(
+            """
+            SELECT error FROM workflow_stages
+            WHERE run_id = ? AND stage_name = 'plan'
+            """,
+            (run_id,),
+        ).fetchone()[0]
+
+    assert stage_error == "Stage failed. See local run logs."
+    assert "scout report not found" not in stage_error
 
 
 def test_run_plan_reports_missing_run(tmp_path: Path) -> None:
