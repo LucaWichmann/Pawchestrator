@@ -28,4 +28,4 @@ build-backend = "hatchling.build"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-addopts = "--basetemp=.pytest_tmp"
+addopts = "--basetemp=.pytest_tmp_current"

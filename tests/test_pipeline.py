@@ -28,6 +28,12 @@ from pawchestrator.github import PAWCHESTRATOR_LABELS
 from pawchestrator.pipeline import VerificationFailedError, run_pipeline
 
 
+@pytest.fixture(autouse=True)
+def _no_network_github(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("pawchestrator.pipeline.get_gh_token", lambda: "test-token")
+    monkeypatch.setattr("pawchestrator.pipeline.GitHubIssueClient", _NoNetworkGitHubClient)
+
+
 def test_run_pipeline_runs_all_stages_and_marks_completed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -656,6 +662,56 @@ def test_run_pipeline_label_errors_do_not_abort_run(
         "pawchestrator:verifying",
         "pawchestrator:pr-ready",
     ]
+
+
+class _NoNetworkGitHubClient:
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        self.comment_id = 123
+
+    async def post_comment(
+        self,
+        owner: str,
+        repo: str,
+        issue_number: int,
+        body: str,
+    ) -> int:
+        return self.comment_id
+
+    async def edit_comment(
+        self,
+        owner: str,
+        repo: str,
+        comment_id: int,
+        body: str,
+    ) -> None:
+        return None
+
+    async def ensure_label(self, owner: str, repo: str, name: str, color: str) -> None:
+        return None
+
+    async def add_label(self, owner: str, repo: str, issue_number: int, name: str) -> None:
+        return None
+
+    async def remove_label(
+        self,
+        owner: str,
+        repo: str,
+        issue_number: int,
+        name: str,
+    ) -> None:
+        return None
+
+    async def fetch_issue_body(self, reference: object) -> str:
+        return ""
+
+    async def patch_issue_body(
+        self,
+        owner: str,
+        repo: str,
+        issue_number: int,
+        body: str,
+    ) -> None:
+        return None
 
 
 class _RecordingLabelClient:

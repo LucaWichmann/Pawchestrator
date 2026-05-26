@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import fnmatch
 import json
+import os
 import subprocess
 import tomllib
 from dataclasses import dataclass
@@ -152,11 +153,31 @@ async def _communicate_process(
 
     timed_out = wait_task not in done
     if timed_out:
-        proc.kill()
+        await _kill_process_tree(proc)
         await wait_task
 
     stdout_bytes, stderr_bytes = await asyncio.gather(stdout_task, stderr_task)
     return stdout_bytes, stderr_bytes, timed_out
+
+
+async def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
+    if proc.returncode is not None:
+        return
+
+    if os.name != "nt":
+        proc.kill()
+        return
+
+    taskkill = await asyncio.create_subprocess_exec(
+        "taskkill",
+        "/PID",
+        str(proc.pid),
+        "/T",
+        "/F",
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    await taskkill.wait()
 
 
 def _debug_print_command(run_id: str | None, name: str, command: str) -> None:
