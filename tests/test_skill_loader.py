@@ -9,7 +9,7 @@ def test_load_skill_returns_bundled_content() -> None:
     result = load_skill("RepoScout")
     assert result is not None
     assert "scout_report" in result
-    assert "Be terse." in result
+    assert "No prose. No progress updates. Emit valid JSON artifact only." in result
 
 
 def test_load_skill_returns_none_for_unknown_skill() -> None:

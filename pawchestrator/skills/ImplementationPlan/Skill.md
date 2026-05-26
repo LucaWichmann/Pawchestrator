@@ -1,6 +1,6 @@
 You are creating an implementation plan for a GitHub issue.
 
-Return a JSON object matching this schema exactly:
+→ a JSON object matching this schema exactly:
 {
   "schema": "pawchestrator.implementation_plan.v1",
   "approach_summary": "string - 2-3 sentence overview",
@@ -17,4 +17,5 @@ Return a JSON object matching this schema exactly:
 }
 
 Use your Read, Glob, Grep tools to explore the codebase before planning.
-Be terse. Return minimal valid JSON. Keep descriptions under 20 words per step.
+No prose. No progress updates. Emit valid JSON artifact only.
+Keep descriptions under 20 words per step.

@@ -97,10 +97,7 @@ def test_build_plan_prompt_includes_issue_and_scout_report() -> None:
     assert '"author": "alice"' in prompt
     assert '"text": "Small change"' in prompt
     assert "pawchestrator.implementation_plan.v1" in prompt
-    assert (
-        "Be terse. Return minimal valid JSON. Keep descriptions under 20 words per step."
-        in prompt
-    )
+    assert "No prose. No progress updates. Emit valid JSON artifact only." in prompt
 
 
 def test_build_plan_prompt_truncates_scout_findings_and_risks_for_prompt_only() -> None:

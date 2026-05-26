@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 $Repo = "https://github.com/LucaWichmann/Pawchestrator.git"
-$Dest = "$HOME\.pawchestrator-cli"
+$Package = "git+$Repo"
 
 Write-Host "Pawchestrator installer"
 Write-Host ""
@@ -16,30 +16,27 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
     exit 1
 }
 
-# Clone or update
-if (Test-Path "$Dest\.git") {
-    Write-Host "Updating existing clone at $Dest ..."
-    git -C $Dest pull --ff-only
-} else {
-    Write-Host "Cloning to $Dest ..."
-    git clone $Repo $Dest
-}
-
-# Install dependencies
+# Install CLI
 Write-Host ""
-Write-Host "Installing dependencies ..."
-Set-Location $Dest
-uv sync
+Write-Host "Installing Pawchestrator ..."
+uv tool install $Package
 
 # Run doctor
 Write-Host ""
 Write-Host "Running doctor ..."
 Write-Host ""
-uv run pawchestrator doctor
+pawchestrator doctor
 
 Write-Host ""
 Write-Host "Done. To start Pawchestrator:"
-Write-Host "  cd $Dest; uv run pawchestrator serve"
+Write-Host "  pawchestrator serve"
+Write-Host ""
+Write-Host "To update later:"
+Write-Host "  uv tool upgrade pawchestrator"
+Write-Host ""
+Write-Host "Contributor install path:"
+Write-Host "  git clone $Repo"
+Write-Host "  cd Pawchestrator; uv tool install --editable ."
 Write-Host ""
 Write-Host "Press Enter to exit ..."
 $null = Read-Host

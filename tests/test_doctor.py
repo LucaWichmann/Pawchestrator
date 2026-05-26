@@ -16,6 +16,7 @@ from pawchestrator.doctor import (
     STATUS_WARN,
     CheckResult,
     check_backend_routes,
+    check_binary,
     check_claude_runner,
     check_codex_runner,
     check_cross_review_runners,
@@ -24,8 +25,14 @@ from pawchestrator.doctor import (
     check_sqlite_writable,
     check_wsl,
     has_required_failures,
+    run_checks,
 )
 from pawchestrator.sessions import save_sessions
+
+PAWCHESTRATOR_PATH_HINT = (
+    "pawchestrator not on PATH — run: uv tool install "
+    "git+https://github.com/LucaWichmann/Pawchestrator.git"
+)
 
 
 def test_sqlite_check_initializes_database(tmp_path: Path) -> None:
@@ -42,6 +49,104 @@ def test_required_failures_make_doctor_fail() -> None:
             CheckResult("required", STATUS_FAIL, "broken", required=True),
         ]
     ) is True
+
+
+def test_pawchestrator_binary_check_warns_when_missing(monkeypatch) -> None:
+    monkeypatch.setattr("pawchestrator.doctor.shutil.which", lambda name: None)
+
+    result = check_binary(
+        "pawchestrator",
+        required=False,
+        hint=PAWCHESTRATOR_PATH_HINT,
+    )
+
+    assert result.label == "pawchestrator"
+    assert result.status == STATUS_WARN
+    assert result.message == PAWCHESTRATOR_PATH_HINT
+    assert result.required is False
+    assert has_required_failures([result]) is False
+
+
+def test_pawchestrator_binary_check_passes_when_on_path(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "pawchestrator.doctor.shutil.which",
+        lambda name: "C:\\bin\\pawchestrator.exe" if name == "pawchestrator" else None,
+    )
+
+    result = check_binary(
+        "pawchestrator",
+        required=False,
+        hint=PAWCHESTRATOR_PATH_HINT,
+    )
+
+    assert result.label == "pawchestrator"
+    assert result.status == STATUS_PASS
+    assert result.message == "found at C:\\bin\\pawchestrator.exe"
+    assert result.required is False
+
+
+def test_run_checks_includes_optional_pawchestrator_binary_check(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        "pawchestrator.doctor.check_binary",
+        lambda name, *, required, hint=None: CheckResult(
+            name,
+            STATUS_WARN if name == "pawchestrator" else STATUS_PASS,
+            hint or "found",
+            required=required,
+        ),
+    )
+    monkeypatch.setattr(
+        "pawchestrator.doctor.check_gh_auth",
+        lambda: CheckResult("gh auth", STATUS_PASS, "authenticated"),
+    )
+    monkeypatch.setattr(
+        "pawchestrator.doctor.check_wsl",
+        lambda settings: CheckResult("WSL", STATUS_PASS, "ok", required=False),
+    )
+    monkeypatch.setattr(
+        "pawchestrator.doctor.check_claude_runner",
+        lambda settings: CheckResult("claude", STATUS_PASS, "ok", required=False),
+    )
+    monkeypatch.setattr(
+        "pawchestrator.doctor.check_codex_runner",
+        lambda settings: CheckResult("codex", STATUS_PASS, "ok", required=False),
+    )
+    monkeypatch.setattr(
+        "pawchestrator.doctor.check_cross_review_runners",
+        lambda settings: CheckResult("cross review", STATUS_PASS, "ok", required=False),
+    )
+    monkeypatch.setattr(
+        "pawchestrator.doctor.check_port_available",
+        lambda port: CheckResult("backend port", STATUS_PASS, "ok"),
+    )
+    monkeypatch.setattr(
+        "pawchestrator.doctor.check_stage_tool_mismatches",
+        lambda settings: [],
+    )
+    monkeypatch.setattr(
+        "pawchestrator.doctor.check_backend_routes",
+        lambda settings, port: CheckResult("backend routes", STATUS_PASS, "ok"),
+    )
+    monkeypatch.setattr(
+        "pawchestrator.doctor.check_sqlite_writable",
+        lambda settings: CheckResult("SQLite", STATUS_PASS, "ok"),
+    )
+    monkeypatch.setattr(
+        "pawchestrator.doctor.check_repo_registry",
+        lambda settings: CheckResult("repo registry", STATUS_PASS, "ok", required=False),
+    )
+
+    results = run_checks(Settings(app_dir=tmp_path), port=12345)
+
+    pawchestrator_result = next(
+        result for result in results if result.label == "pawchestrator"
+    )
+    assert pawchestrator_result.status == STATUS_WARN
+    assert pawchestrator_result.message == PAWCHESTRATOR_PATH_HINT
+    assert pawchestrator_result.required is False
 
 
 def test_port_check_fails_for_occupied_port() -> None:
