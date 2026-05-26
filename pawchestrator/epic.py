@@ -57,6 +57,7 @@ async def run_epic(
         (parent_state or {}).get("epic_branch_mode")
         or settings.pipeline.epic_branch_mode
     )
+    is_resume = (parent_state or {}).get("status") == "epic_failed"
     parent_pr_url = str((parent_state or {}).get("pr_url") or "")
     epic_branch = f"paw/epic-{reference.number}-{slugify(title)}"
     epic_path = (
@@ -82,6 +83,7 @@ async def run_epic(
             branch_override=epic_branch,
             path_override=epic_path,
             base_branch=DEFAULT_BASE_BRANCH,
+            allow_dirty_existing_worktree=is_resume and mode == "epic",
         )
         await upsert_worktree_record(
             settings,

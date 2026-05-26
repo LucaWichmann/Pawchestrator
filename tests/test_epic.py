@@ -37,7 +37,7 @@ def test_run_epic_mode_runs_sub_issues_on_shared_branch_then_final_pr(
             ]
         ),
     )
-    _patch_epic_worktree(monkeypatch, tmp_path)
+    _patch_epic_worktree(monkeypatch, tmp_path, expected_allow_dirty=False)
     _patch_pipeline(monkeypatch, calls)
     _patch_epic_pr(monkeypatch, pr_calls)
 
@@ -103,7 +103,7 @@ def test_run_epic_with_sub_issues_creates_draft_epic_pr_then_child_prs(
             [{"number": 43, "url": "https://github.com/owner/repo/issues/43"}]
         ),
     )
-    _patch_epic_worktree(monkeypatch, tmp_path)
+    _patch_epic_worktree(monkeypatch, tmp_path, expected_allow_dirty=False)
     _patch_pipeline(monkeypatch, calls)
     _patch_epic_pr(monkeypatch, pr_calls)
 
@@ -158,7 +158,7 @@ def test_run_epic_stops_on_first_pipeline_failure(
             ]
         ),
     )
-    _patch_epic_worktree(monkeypatch, tmp_path)
+    _patch_epic_worktree(monkeypatch, tmp_path, expected_allow_dirty=False)
     _patch_pipeline(monkeypatch, calls, failures={44})
 
     with pytest.raises(RuntimeError, match="pipeline failed for 44"):
@@ -204,7 +204,7 @@ def test_run_epic_continues_on_failure_when_fail_fast_false(
             ]
         ),
     )
-    _patch_epic_worktree(monkeypatch, tmp_path)
+    _patch_epic_worktree(monkeypatch, tmp_path, expected_allow_dirty=False)
     _patch_pipeline(monkeypatch, calls, failures={44})
     _patch_epic_pr(monkeypatch, pr_calls)
 
@@ -253,7 +253,7 @@ def test_run_epic_resume_skips_completed_sub_issue_and_reruns_failed(
             ]
         ),
     )
-    _patch_epic_worktree(monkeypatch, tmp_path)
+    _patch_epic_worktree(monkeypatch, tmp_path, expected_allow_dirty=True)
     _patch_pipeline(monkeypatch, calls)
     _patch_epic_pr(monkeypatch, pr_calls)
 
@@ -301,7 +301,7 @@ def test_run_epic_resume_all_children_complete_creates_final_pr(
             ]
         ),
     )
-    _patch_epic_worktree(monkeypatch, tmp_path)
+    _patch_epic_worktree(monkeypatch, tmp_path, expected_allow_dirty=True)
     _patch_pipeline(monkeypatch, calls)
     _patch_epic_pr(monkeypatch, pr_calls)
 
@@ -347,7 +347,7 @@ def test_run_epic_with_sub_issues_resume_reuses_existing_draft_pr(
             [{"number": 43, "url": "https://github.com/owner/repo/issues/43"}]
         ),
     )
-    _patch_epic_worktree(monkeypatch, tmp_path)
+    _patch_epic_worktree(monkeypatch, tmp_path, expected_allow_dirty=False)
     _patch_pipeline(monkeypatch, calls)
     _patch_epic_pr(monkeypatch, pr_calls)
 
@@ -442,12 +442,18 @@ def _patch_client(monkeypatch: pytest.MonkeyPatch, client: _FakeSubIssueClient) 
     monkeypatch.setattr("pawchestrator.epic.GitHubIssueClient", lambda _token: client)
 
 
-def _patch_epic_worktree(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def _patch_epic_worktree(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    expected_allow_dirty: bool | None = None,
+) -> None:
     async def fake_ensure_issue_worktree(
         settings: Settings,
         *,
         snapshot,
         source_repo_path,
+        allow_dirty_existing_worktree,
         branch_override,
         path_override,
         base_branch,
@@ -455,6 +461,8 @@ def _patch_epic_worktree(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
         assert branch_override == "paw/epic-42-big-epic"
         assert path_override == tmp_path / "worktrees" / "owner" / "repo" / "epic-42"
         assert base_branch == "main"
+        if expected_allow_dirty is not None:
+            assert allow_dirty_existing_worktree is expected_allow_dirty
         return WorktreeInfo(path=path_override, branch=branch_override, reused=False)
 
     monkeypatch.setattr("pawchestrator.epic.ensure_issue_worktree", fake_ensure_issue_worktree)
