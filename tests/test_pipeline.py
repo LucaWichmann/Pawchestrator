@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,6 +22,7 @@ from pawchestrator.db import (
     start_pr_run,
     start_scout_run,
     start_verify_run,
+    upsert_worktree_record,
 )
 from pawchestrator.github import PAWCHESTRATOR_LABELS
 from pawchestrator.pipeline import VerificationFailedError, run_pipeline
@@ -75,6 +77,114 @@ def test_run_pipeline_runs_all_stages_and_marks_completed(
         ("verify", "complete"),
         ("pr", "complete"),
     ]
+
+
+def test_run_pipeline_skips_verify_for_non_code_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    calls: list[str] = []
+    progress: list[str] = []
+    _patch_successful_stages(monkeypatch, calls)
+    _patch_implement_with_worktree(monkeypatch, calls, tmp_path / "worktree")
+    monkeypatch.setattr(
+        "pawchestrator.pipeline.all_files_match_non_code",
+        lambda worktree_path, base_branch, patterns: True,
+    )
+    monkeypatch.setattr(
+        "pawchestrator.pipeline._changed_files",
+        lambda worktree_path, base_branch: ["docs/usage.md"],
+    )
+
+    result = asyncio.run(
+        run_pipeline(
+            "https://github.com/owner/repo/issues/42",
+            settings,
+            repo_path=tmp_path,
+            progress=progress.append,
+        )
+    )
+
+    assert calls == ["snapshot", "scout", "plan", "implement", "pr"]
+    assert result.pr_url == "https://github.com/owner/repo/pull/99"
+    assert "[verify] skipped - no code files changed" in progress
+    artifact_path = settings.app_dir / "runs" / result.run_id / "verification_report.json"
+    report = json.loads(artifact_path.read_text(encoding="utf-8"))
+    assert report == {
+        "schema": "pawchestrator.verification_report.v1",
+        "status": "skipped",
+        "skip_reason": (
+            "Verification skipped - only non-code files changed: docs/usage.md"
+        ),
+        "commands": [],
+    }
+    with sqlite3.connect(settings.database_path) as db:
+        verify_stage = db.execute(
+            """
+            SELECT status, error
+            FROM workflow_stages
+            WHERE run_id = ? AND stage_name = 'verify'
+            """,
+            (result.run_id,),
+        ).fetchone()
+
+    assert verify_stage == (
+        "skipped",
+        "Verification skipped - only non-code files changed: docs/usage.md",
+    )
+
+
+def test_run_pipeline_verify_non_code_changes_forces_verify(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(
+        app_dir=tmp_path,
+        pipeline=PipelineSettings(verify_non_code_changes=True),
+    )
+    calls: list[str] = []
+    diff_checks: list[str] = []
+    _patch_successful_stages(monkeypatch, calls)
+    monkeypatch.setattr(
+        "pawchestrator.pipeline.all_files_match_non_code",
+        lambda worktree_path, base_branch, patterns: diff_checks.append("checked") or True,
+    )
+
+    asyncio.run(
+        run_pipeline(
+            "https://github.com/owner/repo/issues/42",
+            settings,
+            repo_path=tmp_path,
+        )
+    )
+
+    assert calls == ["snapshot", "scout", "plan", "implement", "verify", "pr"]
+    assert diff_checks == []
+
+
+def test_run_pipeline_git_diff_error_falls_back_to_verify(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    calls: list[str] = []
+    _patch_successful_stages(monkeypatch, calls)
+    _patch_implement_with_worktree(monkeypatch, calls, tmp_path / "worktree")
+    monkeypatch.setattr(
+        "pawchestrator.pipeline.all_files_match_non_code",
+        lambda worktree_path, base_branch, patterns: False,
+    )
+
+    asyncio.run(
+        run_pipeline(
+            "https://github.com/owner/repo/issues/42",
+            settings,
+            repo_path=tmp_path,
+        )
+    )
+
+    assert calls == ["snapshot", "scout", "plan", "implement", "verify", "pr"]
 
 
 def test_run_pipeline_stops_on_failure_and_marks_run_failed(
@@ -701,6 +811,46 @@ def _patch_successful_stages(
     monkeypatch.setattr("pawchestrator.pipeline.run_implement", fake_implement)
     monkeypatch.setattr("pawchestrator.pipeline.run_verify", fake_verify)
     monkeypatch.setattr("pawchestrator.pipeline.run_pr", fake_pr)
+
+
+def _patch_implement_with_worktree(
+    monkeypatch: pytest.MonkeyPatch,
+    calls: list[str],
+    worktree_path: Path,
+) -> None:
+    async def fake_implement(
+        run_id: str,
+        settings: Settings,
+        *,
+        repo_path: Path | None = None,
+        repair_context: dict[str, object] | None = None,
+        repair_attempt: int | None = None,
+        allow_dirty_existing_worktree: bool = False,
+    ):
+        calls.append("implement")
+        worktree_path.mkdir(parents=True, exist_ok=True)
+        await upsert_worktree_record(
+            settings,
+            run_id=run_id,
+            owner="owner",
+            repo="repo",
+            issue_number=42,
+            branch="issue-42",
+            path=worktree_path,
+        )
+        stage_id = await start_implement_run(settings, run_id=run_id)
+        artifact_path = settings.app_dir / "runs" / run_id / "implementation_report.json"
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        artifact_path.write_text("{}", encoding="utf-8")
+        await complete_implement_run(
+            settings,
+            run_id=run_id,
+            stage_id=stage_id,
+            artifact_path=artifact_path,
+        )
+        return SimpleNamespace(report={})
+
+    monkeypatch.setattr("pawchestrator.pipeline.run_implement", fake_implement)
 
 
 def _patch_verify_results(
