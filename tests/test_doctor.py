@@ -18,6 +18,7 @@ from pawchestrator.doctor import (
     check_backend_routes,
     check_claude_runner,
     check_codex_runner,
+    check_cross_review_runners,
     check_port_available,
     check_stage_tool_mismatches,
     check_sqlite_writable,
@@ -194,6 +195,50 @@ def test_codex_runner_check_warns_for_explicit_wsl_health_failure(monkeypatch) -
     assert result.label == "codex"
     assert result.status == STATUS_WARN
     assert "not runnable in WSL" in result.message
+    assert result.required is False
+
+
+def test_cross_review_check_warns_when_only_one_runner_is_available(monkeypatch) -> None:
+    async def fake_claude_check_health(self) -> tuple[bool, str]:
+        return True, "found at C:\\bin\\claude.exe (claude 1.0.0)"
+
+    async def fake_codex_check_health(self) -> tuple[bool, str]:
+        return False, "codex not found"
+
+    monkeypatch.setattr(
+        "pawchestrator.doctor.ClaudeRunner.check_health",
+        fake_claude_check_health,
+    )
+    monkeypatch.setattr(
+        "pawchestrator.doctor.CodexRunner.check_health",
+        fake_codex_check_health,
+    )
+
+    result = check_cross_review_runners(Settings())
+
+    assert result.label == "cross review"
+    assert result.status == STATUS_WARN
+    assert result.required is False
+    assert "only one runner is available" in result.message
+
+
+def test_cross_review_check_passes_when_disabled(monkeypatch) -> None:
+    async def fail_check_health(self) -> tuple[bool, str]:
+        raise AssertionError("health check should not run")
+
+    monkeypatch.setattr(
+        "pawchestrator.doctor.ClaudeRunner.check_health",
+        fail_check_health,
+    )
+    monkeypatch.setattr(
+        "pawchestrator.doctor.CodexRunner.check_health",
+        fail_check_health,
+    )
+
+    result = check_cross_review_runners(Settings(review={"cross_review": False}))
+
+    assert result.label == "cross review"
+    assert result.status == STATUS_PASS
     assert result.required is False
 
 

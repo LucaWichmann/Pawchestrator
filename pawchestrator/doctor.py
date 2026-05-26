@@ -52,6 +52,7 @@ def run_checks(settings: Settings, port: int = DEFAULT_PORT) -> list[CheckResult
         check_wsl(settings),
         check_claude_runner(settings),
         check_codex_runner(settings),
+        check_cross_review_runners(settings),
         check_port_available(port),
         *check_stage_tool_mismatches(settings),
         check_backend_routes(settings, port),
@@ -96,6 +97,50 @@ def check_codex_runner(settings: Settings | None = None) -> CheckResult:
     )
     status = STATUS_PASS if healthy else STATUS_WARN
     return CheckResult("codex", status, message, required=False)
+
+
+def check_cross_review_runners(settings: Settings) -> CheckResult:
+    if not settings.review.cross_review:
+        return CheckResult(
+            "cross review",
+            STATUS_PASS,
+            "disabled",
+            required=False,
+        )
+
+    claude_healthy, _ = asyncio.run(
+        ClaudeRunner(
+            settings.runners.claude,
+            debug=settings.debug,
+        ).check_health()
+    )
+    codex_healthy, _ = asyncio.run(
+        CodexRunner(
+            settings.runners.codex,
+            debug=settings.debug,
+        ).check_health()
+    )
+    healthy_count = int(claude_healthy) + int(codex_healthy)
+    if healthy_count == 1:
+        return CheckResult(
+            "cross review",
+            STATUS_WARN,
+            "cross_review is enabled but only one runner is available",
+            required=False,
+        )
+    if healthy_count == 0:
+        return CheckResult(
+            "cross review",
+            STATUS_WARN,
+            "cross_review is enabled but no runners are available",
+            required=False,
+        )
+    return CheckResult(
+        "cross review",
+        STATUS_PASS,
+        "both runners available",
+        required=False,
+    )
 
 
 def check_stage_tool_mismatches(settings: Settings) -> list[CheckResult]:
