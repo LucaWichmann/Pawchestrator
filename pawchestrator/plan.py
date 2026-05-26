@@ -153,10 +153,10 @@ Issue: #{snapshot.get("number")} - {snapshot.get("title", "")}
 Repository: {snapshot.get("owner", "")}/{snapshot.get("repo", "")}
 
 IssueSnapshot JSON:
-{json.dumps(snapshot, indent=2, sort_keys=True)}
+{_prompt_json(snapshot)}
 
 ScoutReport JSON:
-{json.dumps(prompt_scout_report, indent=2, sort_keys=True)}
+{_prompt_json(prompt_scout_report)}
 
 Return a JSON object matching this schema exactly:
 {{
@@ -177,6 +177,10 @@ Return a JSON object matching this schema exactly:
 Use your Read, Glob, Grep tools to explore the codebase before planning.
 Be terse. Return minimal valid JSON. Keep descriptions under 20 words per step.
 """
+
+
+def _prompt_json(value: dict[str, Any]) -> str:
+    return json.dumps(value, sort_keys=True)
 
 
 def normalize_implementation_plan(artifact: dict[str, Any] | None) -> dict[str, Any]:
