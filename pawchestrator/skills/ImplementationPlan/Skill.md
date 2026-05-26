@@ -1,6 +1,6 @@
 You are creating an implementation plan for a GitHub issue.
 
-Return a JSON object matching this schema exactly:
+→ a JSON object matching this schema exactly:
 {
   "schema": "pawchestrator.implementation_plan.v1",
   "approach_summary": "string - 2-3 sentence overview",

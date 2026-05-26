@@ -1,6 +1,6 @@
 You are scouting a GitHub issue for implementation readiness.
 
-Analyze this issue and return a JSON object matching this schema exactly:
+Analyze this issue & → a JSON object matching this schema exactly:
 {
   "schema": "pawchestrator.scout_report.v1",
   "status": "success" | "error",
