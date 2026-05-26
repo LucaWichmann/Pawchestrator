@@ -21,6 +21,12 @@ from pawchestrator.runners import (
     resolve_runner,
     runner_tool_mismatch_warning,
 )
+from pawchestrator.stage_fallback import (
+    runner_failure_detail,
+    run_checked_runner,
+    run_task_with_usage_limit_fallback,
+    usage_limit_fallback_runner,
+)
 
 IMPLEMENTATION_PLAN_SCHEMA = "pawchestrator.implementation_plan.v1"
 REQUIRED_TOOLS: list[str] = ["Read", "Glob", "Grep"]
@@ -63,27 +69,39 @@ async def run_plan(
     stage_id = await start_plan_run(settings, run_id=run_id)
     active_runner = runner or resolve_runner(settings, "plan", "claude")
     _log_tool_mismatch(active_runner)
+    fallback_runner = usage_limit_fallback_runner(settings, "plan", active_runner)
     log_path = _plan_log_path(settings, run_id)
     artifact_path = _plan_artifact_path(settings, run_id)
+    task = RunnerTask(
+        prompt=build_plan_prompt(snapshot, scout_report),
+        cwd=local_repo_path,
+        run_id=run_id,
+        stage_name="plan",
+    )
 
     try:
-        healthy, message = await active_runner.check_health()
-        if not healthy:
-            raise RuntimeError(message)
-
-        result = await active_runner.run_task(
-            RunnerTask(
-                prompt=build_plan_prompt(snapshot, scout_report),
-                cwd=local_repo_path,
+        if fallback_runner is None:
+            result = await run_checked_runner(active_runner, task)
+            _write_plan_attempt_log(
+                log_path,
+                active_runner.id,
+                result,
+                append=False,
+            )
+            if result.exit_code != 0:
+                raise RuntimeError(runner_failure_detail(result, active_runner.id))
+        else:
+            result = await run_task_with_usage_limit_fallback(
+                settings=settings,
                 run_id=run_id,
                 stage_name="plan",
+                active_runner=active_runner,
+                fallback_runner=fallback_runner,
+                task=task,
+                log_path=log_path,
+                write_attempt_log=_write_plan_attempt_log,
+                logger=LOGGER,
             )
-        )
-        _write_plan_log(log_path, result.stdout, result.stderr)
-
-        if result.exit_code != 0:
-            detail = result.stderr.strip() or result.stdout.strip() or "Claude runner failed"
-            raise RuntimeError(detail)
 
         plan = normalize_implementation_plan(result.artifact)
         artifact_path.parent.mkdir(parents=True, exist_ok=True)
@@ -264,3 +282,22 @@ def _write_plan_log(log_path: Path, stdout: str, stderr: str) -> None:
         f"[stdout]\n{stdout}\n[stderr]\n{stderr}\n",
         encoding="utf-8",
     )
+
+
+def _write_plan_attempt_log(
+    log_path: Path,
+    runner_id: str,
+    result: RunnerResult,
+    *,
+    append: bool,
+) -> None:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    chunk = (
+        f"[{runner_id} stdout]\n{result.stdout}\n"
+        f"[{runner_id} stderr]\n{result.stderr}\n"
+    )
+    if append:
+        with log_path.open("a", encoding="utf-8") as log_file:
+            log_file.write(chunk)
+        return
+    log_path.write_text(chunk, encoding="utf-8")
