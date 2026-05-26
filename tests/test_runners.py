@@ -12,7 +12,6 @@ from pawchestrator.config import (
     StageSettings,
 )
 from pawchestrator.runners import (
-    CLAUDE_TERSE_SYSTEM_PROMPT,
     RUNNERS,
     ClaudeRunner,
     CodexRunner,
@@ -394,8 +393,6 @@ def test_claude_runner_invokes_expected_command_and_parses_result(
         "json",
         "--allowedTools",
         "Read,Glob,Grep",
-        "--append-system-prompt",
-        CLAUDE_TERSE_SYSTEM_PROMPT,
     ]
     assert calls["cwd"] == str(tmp_path)
     assert result.exit_code == 0
@@ -673,8 +670,6 @@ def test_claude_runner_wsl_mode_invokes_wsl_and_preserves_tools(
         "json",
         "--allowedTools",
         "Read",
-        "--append-system-prompt",
-        CLAUDE_TERSE_SYSTEM_PROMPT,
     ]
 
 

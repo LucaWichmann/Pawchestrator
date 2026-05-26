@@ -58,12 +58,6 @@ class RunnerHealth:
 _RUNNER_HEALTH_TTL_SECONDS = 60.0
 _runner_health_cache: dict[str, tuple[float, RunnerHealth]] = {}
 _runner_health_lock = asyncio.Lock()
-CLAUDE_TERSE_SYSTEM_PROMPT = (
-    "Suppress narrative progress updates such as 'I have now implemented X', "
-    "'I will next do Y', and 'I am at a turning point'. Emit only necessary tool "
-    "calls and the final structured JSON artifact requested by the prompt. Do not "
-    "omit or alter the required JSON artifact; it must remain valid and parseable."
-)
 
 
 class Runner(ABC):
@@ -134,8 +128,6 @@ class ClaudeRunner(Runner):
             "json",
             "--allowedTools",
             ",".join(config.allowed_tools),
-            "--append-system-prompt",
-            CLAUDE_TERSE_SYSTEM_PROMPT,
         ]
         if config.bypass_permissions:
             cmd.append("--dangerously-skip-permissions")
@@ -780,8 +772,7 @@ def _codex_command(
     bypass: bool,
     cwd_arg: str | None = None,
 ) -> list[str]:
-    # Codex has no Claude-style --append-system-prompt hook here; stage prompts carry
-    # any required terse-output guidance for Codex runs.
+    # Stage prompts carry any required terse-output guidance for agent runs.
     cmd = [
         codex_path,
         "exec",
