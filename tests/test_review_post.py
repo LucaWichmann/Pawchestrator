@@ -79,8 +79,13 @@ def test_run_review_post_submits_review_and_warns_for_unmapped_lines(
     assert state is not None
     assert state["status"] == "post_complete"
     assert state["current_stage"] == "post"
-    assert [stage["stage_name"] for stage in state["stages"]] == ["review", "post"]
+    assert [stage["stage_name"] for stage in state["stages"]] == [
+        "review",
+        "post",
+        "issues",
+    ]
     assert state["stages"][1]["status"] == "complete"
+    assert state["stages"][2]["status"] == "pending"
     warnings = asyncio.run(get_run_warnings(settings, run_id))
     assert len(warnings) == 1
     assert warnings[0]["stage_name"] == "post"
@@ -103,7 +108,11 @@ def test_review_run_status_includes_pending_post_stage(tmp_path: Path) -> None:
     state = asyncio.run(get_run_state(settings, "run-123"))
 
     assert state is not None
-    assert [stage["stage_name"] for stage in state["stages"]] == ["review", "post"]
+    assert [stage["stage_name"] for stage in state["stages"]] == [
+        "review",
+        "post",
+        "issues",
+    ]
 
 
 def test_run_review_post_marks_stage_failed_on_submission_error(tmp_path: Path) -> None:

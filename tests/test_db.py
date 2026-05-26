@@ -241,6 +241,7 @@ def test_review_and_repair_runs_use_pr_number(tmp_path: Path) -> None:
     assert [stage["stage_name"] for stage in review_state["stages"]] == [
         "review",
         "post",
+        "issues",
     ]
 
 

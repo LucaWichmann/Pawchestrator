@@ -256,6 +256,33 @@ def test_github_issue_client_posts_pull_request_review_payload() -> None:
     assert len(requests) == 1
 
 
+def test_github_issue_client_creates_issue_and_returns_html_url() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.method == "POST"
+        assert request.url.path == "/repos/owner/repo/issues"
+        assert json.loads(request.read()) == {"title": "Follow up"}
+        return httpx.Response(
+            201,
+            json={"html_url": "https://github.com/owner/repo/issues/99"},
+        )
+
+    client = GitHubIssueClient(
+        "token",
+        api_base="https://api.github.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    issue_url = asyncio.run(
+        client.create_issue("owner", "repo", title="Follow up")
+    )
+
+    assert issue_url == "https://github.com/owner/repo/issues/99"
+    assert len(requests) == 1
+
+
 def test_parse_diff_positions_maps_added_lines_to_github_positions() -> None:
     diff = """diff --git a/app.py b/app.py
 index 1111111..2222222 100644
