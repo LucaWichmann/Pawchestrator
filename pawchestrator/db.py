@@ -1996,6 +1996,7 @@ async def get_run_state(settings: Settings, run_id: str) -> dict[str, object] | 
     payload["stages"] = [dict(stage) for stage in stages]
     payload["artifacts"] = [dict(artifact) for artifact in artifacts]
     payload["warnings"] = await get_run_warnings(settings, str(run["id"]))
+    payload["review_report"] = _read_latest_artifact(payload, "review_report")
     payload["created_issue_urls"] = _created_issue_urls(payload)
     return payload
 

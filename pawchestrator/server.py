@@ -25,6 +25,7 @@ from pawchestrator.db import (
     get_latest_epic_run_by_issue,
     get_latest_grill_run_by_issue,
     get_latest_run_by_issue,
+    get_run_by_pr_number,
     get_run_state,
     init_db,
     is_repo_registered,
@@ -212,6 +213,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         client = GitHubIssueClient(get_gh_token())
         state = await client.fetch_pr_review_state(owner, repo, number)
         return {"state": state}
+
+    @app.get("/pr/{owner}/{repo}/{number}/status")
+    async def pr_status(owner: str, repo: str, number: int) -> dict[str, object]:
+        review, repair = await asyncio.gather(
+            get_run_by_pr_number(
+                runtime_settings,
+                owner=owner,
+                repo=repo,
+                pr_number=number,
+                workflow_type="review",
+            ),
+            get_run_by_pr_number(
+                runtime_settings,
+                owner=owner,
+                repo=repo,
+                pr_number=number,
+                workflow_type="repair",
+            ),
+        )
+        return {
+            "review": None if review is None else await get_run_state(runtime_settings, str(review["id"])),
+            "repair": None if repair is None else await get_run_state(runtime_settings, str(repair["id"])),
+        }
 
     @app.post("/issue/start")
     async def issue_start(
