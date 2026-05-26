@@ -516,6 +516,10 @@
     return el?.dataset.status === "issueOpened";
   }
 
+  function isPrMerged() {
+    return Boolean(document.querySelector('[data-status="pullMerged"]'));
+  }
+
   function isIssuePage() {
     const [, owner, repo, type, number, extra] = window.location.pathname.split("/");
     const issueNumber = Number.parseInt(number, 10);
@@ -1596,7 +1600,7 @@
     if (body) {
       body.textContent = "";
     }
-    document.getElementById(PR_REVIEW_ID)?.removeAttribute("disabled");
+    updatePrActionButtons();
     document.getElementById(PR_REPAIR_ID)?.remove();
   }
 
@@ -1983,9 +1987,16 @@
 
   function updatePrActionButtons(run = latestPrRun) {
     const active = isPrRunActive(run);
+    const merged = isPrMerged();
+    const disableMessage = "Pull request is merged";
     const reviewButton = document.getElementById(PR_REVIEW_ID);
     if (reviewButton) {
-      reviewButton.toggleAttribute("disabled", active);
+      reviewButton.toggleAttribute("disabled", active || merged);
+      if (merged) {
+        reviewButton.title = disableMessage;
+      } else {
+        reviewButton.removeAttribute("title");
+      }
     }
 
     let repairButton = document.getElementById(PR_REPAIR_ID);
@@ -2006,7 +2017,12 @@
         }
       }
     }
-    repairButton.toggleAttribute("disabled", active);
+    repairButton.toggleAttribute("disabled", active || merged);
+    if (merged) {
+      repairButton.title = disableMessage;
+    } else {
+      repairButton.removeAttribute("title");
+    }
   }
 
   function grillButtonLabel(grill) {
