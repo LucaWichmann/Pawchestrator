@@ -135,6 +135,15 @@ class PrSettings(BaseSettings):
     assign: bool = True
 
 
+class ReviewSettings(BaseSettings):
+    """Review and repair runner selection settings."""
+
+    model_config = SettingsConfigDict(extra="ignore")
+
+    default_runner: Literal["claude", "codex"] = "claude"
+    cross_review: bool = True
+
+
 class PipelineSettings(BaseSettings):
     """Pipeline orchestration settings."""
 
@@ -169,6 +178,7 @@ class Settings(BaseSettings):
     runners: RunnerSettings = Field(default_factory=RunnerSettings)
     codegraph: CodeGraphSettings = Field(default_factory=CodeGraphSettings)
     pr: PrSettings = Field(default_factory=PrSettings)
+    review: ReviewSettings = Field(default_factory=ReviewSettings)
     pipeline: PipelineSettings = Field(default_factory=PipelineSettings)
     checkboxes: CheckboxSettings = Field(default_factory=CheckboxSettings)
     stages: dict[str, StageSettings] = Field(default_factory=dict)
@@ -200,6 +210,7 @@ def load_settings(config_path: Path | None = None) -> Settings:
     runners_data = data.get("runners", {})
     codegraph_data = data.get("codegraph", {})
     pr_data = data.get("pr", {})
+    review_data = data.get("review", {})
     pipeline_data = data.get("pipeline", {})
     checkboxes_data = data.get("checkboxes", {})
     stages_data = data.get("stages", {})
@@ -211,6 +222,7 @@ def load_settings(config_path: Path | None = None) -> Settings:
         runners=RunnerSettings(**runners_data),
         codegraph=CodeGraphSettings(**codegraph_data),
         pr=PrSettings(**pr_data),
+        review=ReviewSettings(**review_data),
         pipeline=PipelineSettings(**pipeline_data),
         checkboxes=CheckboxSettings(**checkboxes_data),
         stages={name: StageSettings(**stage) for name, stage in stages_data.items()},
