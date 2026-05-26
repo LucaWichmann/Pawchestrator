@@ -158,6 +158,7 @@ async def _rebuild_workflow_runs_for_nullable_issue_number(
           status TEXT NOT NULL DEFAULT 'pending',
           current_stage TEXT,
           pr_url TEXT,
+          github_comment_id TEXT,
           epic_branch_mode TEXT,
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL
@@ -935,7 +936,7 @@ async def get_runs_by_group_id(settings: Settings, group_id: str) -> list[dict]:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
             """
-            SELECT id, owner, repo, issue_number, pr_number, group_id, workflow_type, status,
+            SELECT id, owner, repo, issue_number, group_id, workflow_type, status,
                    current_stage, pr_url, created_at, updated_at
             FROM workflow_runs
             WHERE group_id = ?
