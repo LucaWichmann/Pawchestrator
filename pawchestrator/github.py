@@ -36,6 +36,7 @@ RUN_STAGE_LABELS = {
     "pr": "PR",
     "review": "Review",
     "post": "Post",
+    "issues": "Issues",
 }
 HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$")
 UNCHECKED_CHECKBOX_RE = re.compile(r"^\s*[-*+]\s+\[\s\]\s+(?P<text>.+?)\s*$")
@@ -351,6 +352,35 @@ class GitHubIssueClient:
             raise GitHubError("GitHub review response was not an object")
         review_id = payload.get("id")
         return int(review_id) if review_id is not None else None
+
+    async def create_issue(
+        self,
+        owner: str,
+        repo: str,
+        *,
+        title: str,
+        body: str | None = None,
+    ) -> str:
+        request_body: dict[str, str] = {"title": title}
+        if body is not None:
+            request_body["body"] = body
+        async with httpx.AsyncClient(
+            base_url=self._api_base,
+            headers=self._headers(),
+            transport=self._transport,
+        ) as client:
+            response = await client.post(
+                f"/repos/{owner}/{repo}/issues",
+                json=request_body,
+            )
+            self._raise_for_status(response)
+            payload = response.json()
+        if not isinstance(payload, dict):
+            raise GitHubError("GitHub issue creation response was not an object")
+        issue_url = payload.get("html_url") or payload.get("url")
+        if not isinstance(issue_url, str) or not issue_url:
+            raise GitHubError("GitHub issue creation response did not include a URL")
+        return issue_url
 
     async def fetch_admin_collaborators(self, owner: str, repo: str) -> list[str]:
         async with httpx.AsyncClient(
