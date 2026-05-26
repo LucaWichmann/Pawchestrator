@@ -18,6 +18,7 @@ from pawchestrator.db import (
     start_pr_run,
 )
 from pawchestrator.github import GitHubIssueClient, get_gh_token
+from pawchestrator.runners import RunnerFailedError
 
 PR_DRAFT_SCHEMA = "pawchestrator.pr_draft.v1"
 DEFAULT_BASE_BRANCH = "main"
@@ -151,11 +152,15 @@ async def run_pr(
             pr_url=pr_url,
         )
     except Exception as error:
+        if isinstance(error, RunnerFailedError):
+            db_error = error.public_message
+        else:
+            db_error = "Stage failed. See local run logs."
         await fail_pr_run(
             settings,
             run_id=run_id,
             stage_id=stage_id,
-            error=str(error),
+            error=db_error,
         )
         raise
 

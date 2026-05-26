@@ -12,13 +12,11 @@ from pawchestrator.runners import (
     ClaudeRunner,
     CodexRunner,
     Runner,
+    RunnerFailedError,
     RunnerResult,
     RunnerTask,
     claude_usage_limit_exhausted,
 )
-
-ORIGINAL_CLAUDE_FAILURE = "Original Claude usage-limit failure"
-
 
 def usage_limit_fallback_runner(
     settings: Settings,
@@ -72,9 +70,13 @@ async def run_task_with_usage_limit_fallback(
     if result.exit_code == 0:
         return result
 
-    detail = runner_failure_detail(result, active_runner.id)
     if fallback_runner is None or not claude_usage_limit_exhausted(result):
-        raise RuntimeError(detail)
+        raise RunnerFailedError(
+            public_message=f"Runner exited with code {result.exit_code}",
+            exit_code=result.exit_code,
+            stderr=result.stderr,
+            stdout=result.stdout,
+        )
 
     warning_message = f"Claude usage limit exhausted; using Codex for {stage_name}."
     await insert_run_warning(
@@ -86,22 +88,25 @@ async def run_task_with_usage_limit_fallback(
     )
     logger.warning(warning_message)
 
-    try:
-        fallback_result = await run_checked_runner(fallback_runner, task)
-        write_attempt_log(log_path, fallback_runner.id, fallback_result, append=True)
-        if fallback_result.exit_code != 0:
-            fallback_detail = runner_failure_detail(
-                fallback_result,
-                fallback_runner.id,
-            )
-            raise RuntimeError(f"{fallback_detail}\n{ORIGINAL_CLAUDE_FAILURE}: {detail}")
-        return fallback_result
-    except Exception as fallback_error:
-        if ORIGINAL_CLAUDE_FAILURE in str(fallback_error):
-            raise
-        raise RuntimeError(
-            f"{fallback_error}\n{ORIGINAL_CLAUDE_FAILURE}: {detail}"
-        ) from fallback_error
+    fallback_result = await run_checked_runner(fallback_runner, task)
+    write_attempt_log(log_path, fallback_runner.id, fallback_result, append=True)
+    if fallback_result.exit_code != 0:
+        raise RunnerFailedError(
+            public_message=(
+                f"Claude exited with code {result.exit_code}; "
+                f"Codex fallback exited with code {fallback_result.exit_code}"
+            ),
+            exit_code=fallback_result.exit_code,
+            stderr=(
+                f"[claude stderr]\n{result.stderr}\n"
+                f"[codex stderr]\n{fallback_result.stderr}"
+            ),
+            stdout=(
+                f"[claude stdout]\n{result.stdout}\n"
+                f"[codex stdout]\n{fallback_result.stdout}"
+            ),
+        )
+    return fallback_result
 
 
 async def run_checked_runner(runner: Runner, task: RunnerTask) -> RunnerResult:
@@ -109,11 +114,3 @@ async def run_checked_runner(runner: Runner, task: RunnerTask) -> RunnerResult:
     if not healthy:
         raise RuntimeError(message)
     return await runner.run_task(task)
-
-
-def runner_failure_detail(result: RunnerResult, runner_id: str) -> str:
-    return (
-        result.stderr.strip()
-        or result.stdout.strip()
-        or f"{runner_id.capitalize()} runner failed"
-    )

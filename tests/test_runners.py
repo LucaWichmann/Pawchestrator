@@ -17,6 +17,7 @@ from pawchestrator.runners import (
     ClaudeRunner,
     CodexRunner,
     Runner,
+    RunnerFailedError,
     RunnerResult,
     RunnerTask,
     claude_usage_limit_exhausted,
@@ -44,6 +45,17 @@ def test_runner_registry_contains_both_agent_runners() -> None:
     assert isinstance(RUNNERS["claude"], ClaudeRunner)
     assert isinstance(RUNNERS["codex"], CodexRunner)
     assert all(isinstance(runner, Runner) for runner in RUNNERS.values())
+
+
+def test_runner_failed_error_str_returns_public_message() -> None:
+    error = RunnerFailedError(
+        public_message="Runner exited with code 1",
+        exit_code=1,
+        stderr="err",
+        stdout="out",
+    )
+
+    assert str(error) == "Runner exited with code 1"
 
 
 def test_resolve_runner_uses_default_without_stage_override() -> None:

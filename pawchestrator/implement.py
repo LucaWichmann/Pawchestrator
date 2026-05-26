@@ -21,6 +21,7 @@ from pawchestrator.db import (
 )
 from pawchestrator.runners import (
     Runner,
+    RunnerFailedError,
     RunnerTask,
     resolve_runner,
     runner_tool_mismatch_warning,
@@ -191,7 +192,12 @@ async def run_implement(
             report["error"] = detail
             report["status"] = "error"
             _write_report(artifact_path, report)
-            raise RuntimeError(detail)
+            raise RunnerFailedError(
+                public_message=f"Runner exited with code {result.exit_code}",
+                exit_code=result.exit_code,
+                stderr=result.stderr,
+                stdout=result.stdout,
+            )
 
         await complete_implement_run(
             settings,
@@ -218,11 +224,15 @@ async def run_implement(
                     error=str(error),
                 ),
             )
+        if isinstance(error, RunnerFailedError):
+            db_error = error.public_message
+        else:
+            db_error = "Stage failed. See local run logs."
         await fail_implement_run(
             settings,
             run_id=run_id,
             stage_id=stage_id,
-            error=str(error),
+            error=db_error,
         )
         raise
 

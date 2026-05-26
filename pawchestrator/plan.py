@@ -17,12 +17,12 @@ from pawchestrator.db import (
 )
 from pawchestrator.runners import (
     Runner,
+    RunnerFailedError,
     RunnerTask,
     resolve_runner,
     runner_tool_mismatch_warning,
 )
 from pawchestrator.stage_fallback import (
-    runner_failure_detail,
     run_checked_runner,
     run_task_with_usage_limit_fallback,
     usage_limit_fallback_runner,
@@ -59,12 +59,7 @@ async def run_plan(
     if not snapshot_path.exists():
         raise FileNotFoundError(f"issue snapshot not found: {snapshot_path}")
 
-    scout_path = _scout_artifact_path(settings, run_id)
-    if not scout_path.exists():
-        raise FileNotFoundError(f"scout report not found: {scout_path}")
-
     snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
-    scout_report = json.loads(scout_path.read_text(encoding="utf-8"))
     local_repo_path = (repo_path or Path.cwd()).resolve()
     stage_id = await start_plan_run(settings, run_id=run_id)
     active_runner = runner or resolve_runner(settings, "plan", "claude")
@@ -72,14 +67,20 @@ async def run_plan(
     fallback_runner = usage_limit_fallback_runner(settings, "plan", active_runner)
     log_path = _plan_log_path(settings, run_id)
     artifact_path = _plan_artifact_path(settings, run_id)
-    task = RunnerTask(
-        prompt=build_plan_prompt(snapshot, scout_report),
-        cwd=local_repo_path,
-        run_id=run_id,
-        stage_name="plan",
-    )
 
     try:
+        scout_path = _scout_artifact_path(settings, run_id)
+        if not scout_path.exists():
+            raise FileNotFoundError(f"scout report not found: {scout_path}")
+
+        scout_report = json.loads(scout_path.read_text(encoding="utf-8"))
+        task = RunnerTask(
+            prompt=build_plan_prompt(snapshot, scout_report),
+            cwd=local_repo_path,
+            run_id=run_id,
+            stage_name="plan",
+        )
+
         if fallback_runner is None:
             result = await run_checked_runner(active_runner, task)
             _write_plan_attempt_log(
@@ -89,7 +90,12 @@ async def run_plan(
                 append=False,
             )
             if result.exit_code != 0:
-                raise RuntimeError(runner_failure_detail(result, active_runner.id))
+                raise RunnerFailedError(
+                    public_message=f"Runner exited with code {result.exit_code}",
+                    exit_code=result.exit_code,
+                    stderr=result.stderr,
+                    stdout=result.stdout,
+                )
         else:
             result = await run_task_with_usage_limit_fallback(
                 settings=settings,
@@ -118,11 +124,15 @@ async def run_plan(
     except Exception as error:
         if not log_path.exists():
             _write_plan_log(log_path, "", str(error))
+        if isinstance(error, RunnerFailedError):
+            db_error = error.public_message
+        else:
+            db_error = "Stage failed. See local run logs."
         await fail_plan_run(
             settings,
             run_id=run_id,
             stage_id=stage_id,
-            error=str(error),
+            error=db_error,
         )
         raise
 

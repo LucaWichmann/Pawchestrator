@@ -29,6 +29,17 @@ class RunnerTask:
     stage_name: str
 
 
+@dataclass
+class RunnerFailedError(Exception):
+    public_message: str
+    exit_code: int
+    stderr: str
+    stdout: str
+
+    def __str__(self) -> str:
+        return self.public_message
+
+
 @dataclass(frozen=True)
 class RunnerResult:
     exit_code: int
