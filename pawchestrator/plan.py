@@ -17,12 +17,12 @@ from pawchestrator.db import (
 )
 from pawchestrator.runners import (
     Runner,
+    RunnerFailedError,
     RunnerTask,
     resolve_runner,
     runner_tool_mismatch_warning,
 )
 from pawchestrator.stage_fallback import (
-    runner_failure_detail,
     run_checked_runner,
     run_task_with_usage_limit_fallback,
     usage_limit_fallback_runner,
@@ -89,7 +89,12 @@ async def run_plan(
                 append=False,
             )
             if result.exit_code != 0:
-                raise RuntimeError(runner_failure_detail(result, active_runner.id))
+                raise RunnerFailedError(
+                    public_message=f"Runner exited with code {result.exit_code}",
+                    exit_code=result.exit_code,
+                    stderr=result.stderr,
+                    stdout=result.stdout,
+                )
         else:
             result = await run_task_with_usage_limit_fallback(
                 settings=settings,
