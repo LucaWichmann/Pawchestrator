@@ -18,6 +18,7 @@ from pawchestrator.db import (
 )
 from pawchestrator.github import (
     GitHubIssueClient,
+    PAWCHESTRATOR_LABELS,
     get_gh_token,
     parse_commentable_added_lines,
 )
@@ -67,14 +68,48 @@ async def run_review_post(
             commentable_lines=commentable_lines,
         )
         active_client = client or GitHubIssueClient(get_gh_token())
+        review_body = str(report["summary"])
+        review_event = str(report["verdict"])
+        downgraded_verdict: str | None = None
+        if review_event in {"REQUEST_CHANGES", "APPROVE"}:
+            author, authenticated_user = await _fetch_review_identities(
+                active_client,
+                owner=owner,
+                repo=repo,
+                pr_number=pr_number,
+            )
+            if author.lower() == authenticated_user.lower():
+                downgraded_verdict = review_event
+                review_event = "COMMENT"
+                review_body = f"Pawchestrator verdict: {downgraded_verdict}\n\n{review_body}"
+                await insert_run_warning(
+                    settings,
+                    run_id=run_id,
+                    stage_name="post",
+                    code="review_verdict_downgraded_for_self_pr",
+                    message=(
+                        f"Submitted {downgraded_verdict} review as COMMENT because "
+                        "GitHub rejects approving or requesting changes on your own PR."
+                    ),
+                )
         review_id = await active_client.post_pr_review(
             owner,
             repo,
             pr_number,
-            body=str(report["summary"]),
-            event=str(report["verdict"]),
+            body=review_body,
+            event=review_event,
             comments=comments,
         )
+        if downgraded_verdict is not None:
+            await _sync_self_review_labels(
+                settings,
+                active_client,
+                run_id=run_id,
+                owner=owner,
+                repo=repo,
+                pr_number=pr_number,
+                verdict=downgraded_verdict,
+            )
         await complete_review_post_run(
             settings,
             run_id=run_id,
@@ -95,6 +130,47 @@ async def run_review_post(
         skipped_comments=skipped,
         review_id=review_id,
     )
+
+
+async def _fetch_review_identities(
+    client: GitHubIssueClient,
+    *,
+    owner: str,
+    repo: str,
+    pr_number: int,
+) -> tuple[str, str]:
+    return await client.fetch_pr_author_login(
+        owner,
+        repo,
+        pr_number,
+    ), await client.fetch_authenticated_user_login()
+
+
+async def _sync_self_review_labels(
+    settings: Settings,
+    client: GitHubIssueClient,
+    *,
+    run_id: str,
+    owner: str,
+    repo: str,
+    pr_number: int,
+    verdict: str,
+) -> None:
+    changes_label = PAWCHESTRATOR_LABELS["review-changes-requested"][0]
+    approved_label = PAWCHESTRATOR_LABELS["review-approved"][0]
+    add_label = changes_label if verdict == "REQUEST_CHANGES" else approved_label
+    remove_label = approved_label if verdict == "REQUEST_CHANGES" else changes_label
+    try:
+        await client.add_label(owner, repo, pr_number, add_label)
+        await client.remove_label(owner, repo, pr_number, remove_label)
+    except Exception as error:
+        await insert_run_warning(
+            settings,
+            run_id=run_id,
+            stage_name="post",
+            code="review_verdict_label_sync_failed",
+            message=f"Could not sync self-review verdict labels: {error}",
+        )
 
 
 def read_review_report(path: Path) -> dict[str, Any]:

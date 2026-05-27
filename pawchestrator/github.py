@@ -27,6 +27,8 @@ PAWCHESTRATOR_LABELS = {
     "failed": ("pawchestrator:failed", "cf222e"),
     "blocked": ("pawchestrator:blocked", "57606a"),
     "needs-info": ("pawchestrator:needs-info", "d29922"),
+    "review-changes-requested": ("pawchestrator:changes-requested", "cf222e"),
+    "review-approved": ("pawchestrator:approved", "0e8a16"),
 }
 RUN_STAGE_LABELS = {
     "snapshot": "Snapshot",
@@ -295,11 +297,26 @@ class GitHubIssueClient:
                 client,
                 f"/repos/{owner}/{repo}/pulls/{number}/reviews",
             )
+            labels = await self._get_all_pages(
+                client,
+                f"/repos/{owner}/{repo}/issues/{number}/labels",
+            )
 
         states = [str(review.get("state") or "") for review in reviews]
+        label_names = {
+            str(label.get("name") or "")
+            for label in labels
+            if isinstance(label, dict)
+        }
+        changes_label = PAWCHESTRATOR_LABELS["review-changes-requested"][0]
+        approved_label = PAWCHESTRATOR_LABELS["review-approved"][0]
         if "CHANGES_REQUESTED" in states:
             return "changes_requested"
+        if changes_label in label_names:
+            return "changes_requested"
         if states and states[-1] == "APPROVED":
+            return "approved"
+        if approved_label in label_names:
             return "approved"
         return "open"
 
@@ -375,6 +392,60 @@ class GitHubIssueClient:
         if not isinstance(branch, str) or not branch:
             raise GitHubError("GitHub pull request head did not include a branch")
         return branch
+
+    async def fetch_authenticated_user_login(self) -> str:
+        async with httpx.AsyncClient(
+            base_url=self._api_base,
+            headers=self._headers(),
+            transport=self._transport,
+        ) as client:
+            payload = await self._get_json(client, "/user")
+        login = payload.get("login")
+        if not isinstance(login, str) or not login:
+            raise GitHubError("GitHub authenticated user response did not include login")
+        return login
+
+    async def fetch_pr_author_login(
+        self,
+        owner: str,
+        repo: str,
+        number: int,
+    ) -> str:
+        async with httpx.AsyncClient(
+            base_url=self._api_base,
+            headers=self._headers(),
+            transport=self._transport,
+        ) as client:
+            payload = await self._get_json(
+                client,
+                f"/repos/{owner}/{repo}/pulls/{number}",
+            )
+        user = payload.get("user")
+        login = user.get("login") if isinstance(user, dict) else None
+        if not isinstance(login, str) or not login:
+            raise GitHubError("GitHub pull request response did not include author login")
+        return login
+
+    async def fetch_issue_labels(
+        self,
+        owner: str,
+        repo: str,
+        number: int,
+    ) -> list[str]:
+        async with httpx.AsyncClient(
+            base_url=self._api_base,
+            headers=self._headers(),
+            transport=self._transport,
+        ) as client:
+            labels = await self._get_all_pages(
+                client,
+                f"/repos/{owner}/{repo}/issues/{number}/labels",
+            )
+        return [
+            str(label.get("name") or "")
+            for label in labels
+            if isinstance(label, dict) and label.get("name")
+        ]
 
     async def fetch_review_comments(
         self,

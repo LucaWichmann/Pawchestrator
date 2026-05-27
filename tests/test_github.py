@@ -567,6 +567,72 @@ def test_github_issue_client_fetches_pr_head_branch() -> None:
     assert len(requests) == 1
 
 
+def test_github_issue_client_fetches_authenticated_user_login() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.method == "GET"
+        assert request.url.path == "/user"
+        return httpx.Response(200, json={"login": "alice"})
+
+    client = GitHubIssueClient(
+        "token",
+        api_base="https://api.github.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert asyncio.run(client.fetch_authenticated_user_login()) == "alice"
+    assert len(requests) == 1
+
+
+def test_github_issue_client_fetches_pr_author_login() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.method == "GET"
+        assert request.url.path == "/repos/owner/repo/pulls/42"
+        return httpx.Response(200, json={"user": {"login": "alice"}})
+
+    client = GitHubIssueClient(
+        "token",
+        api_base="https://api.github.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert asyncio.run(client.fetch_pr_author_login("owner", "repo", 42)) == "alice"
+    assert len(requests) == 1
+
+
+def test_github_issue_client_fetches_issue_labels() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.method == "GET"
+        assert request.url.path == "/repos/owner/repo/issues/42/labels"
+        return httpx.Response(
+            200,
+            json=[
+                {"name": "pawchestrator:changes-requested"},
+                {"name": "enhancement"},
+            ],
+        )
+
+    client = GitHubIssueClient(
+        "token",
+        api_base="https://api.github.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert asyncio.run(client.fetch_issue_labels("owner", "repo", 42)) == [
+        "pawchestrator:changes-requested",
+        "enhancement",
+    ]
+    assert len(requests) == 1
+
+
 def test_github_issue_client_fetches_review_comments_and_pr_diff() -> None:
     requests: list[httpx.Request] = []
 
@@ -645,6 +711,54 @@ def test_github_issue_client_fetches_changes_requested_reviewers() -> None:
 
     assert reviewers == ["alice", "bob"]
     assert len(requests) == 1
+
+
+def test_github_issue_client_review_state_uses_changes_requested_label() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.method == "GET"
+        if request.url.path == "/repos/owner/repo/pulls/42/reviews":
+            return httpx.Response(200, json=[{"state": "COMMENTED"}])
+        if request.url.path == "/repos/owner/repo/issues/42/labels":
+            return httpx.Response(
+                200,
+                json=[{"name": PAWCHESTRATOR_LABELS["review-changes-requested"][0]}],
+            )
+        return httpx.Response(404, json={"message": "not found"})
+
+    client = GitHubIssueClient(
+        "token",
+        api_base="https://api.github.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert asyncio.run(client.fetch_pr_review_state("owner", "repo", 42)) == "changes_requested"
+    assert [request.url.path for request in requests] == [
+        "/repos/owner/repo/pulls/42/reviews",
+        "/repos/owner/repo/issues/42/labels",
+    ]
+
+
+def test_github_issue_client_review_state_uses_approved_label() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/repos/owner/repo/pulls/42/reviews":
+            return httpx.Response(200, json=[{"state": "COMMENTED"}])
+        if request.url.path == "/repos/owner/repo/issues/42/labels":
+            return httpx.Response(
+                200,
+                json=[{"name": PAWCHESTRATOR_LABELS["review-approved"][0]}],
+            )
+        return httpx.Response(404, json={"message": "not found"})
+
+    client = GitHubIssueClient(
+        "token",
+        api_base="https://api.github.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert asyncio.run(client.fetch_pr_review_state("owner", "repo", 42)) == "approved"
 
 
 def test_github_issue_client_requests_reviewers() -> None:
