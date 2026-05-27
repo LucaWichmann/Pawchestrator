@@ -9,6 +9,7 @@ import pytest
 from pawchestrator.config import PipelineSettings, Settings
 from pawchestrator.db import (
     get_run_warnings,
+    set_run_pr_url,
     upsert_worktree_record,
 )
 from pawchestrator.github import PAWCHESTRATOR_LABELS
@@ -808,7 +809,13 @@ def _patch_successful_stages(
         async def body(log_path: Path):
             return {"pr_url": "https://github.com/owner/repo/pull/99"}, artifact_path
 
-        return await run_stage_lifecycle(settings, run_id, "pr", body)
+        result = await run_stage_lifecycle(settings, run_id, "pr", body)
+        await set_run_pr_url(
+            settings,
+            run_id=run_id,
+            pr_url=str(result.report["pr_url"]),
+        )
+        return result
 
     monkeypatch.setattr("pawchestrator.pipeline.snapshot_issue", fake_snapshot)
     monkeypatch.setattr("pawchestrator.pipeline.run_scout", fake_scout)
