@@ -503,6 +503,7 @@ async def _create_review_issues(settings: Settings, run_id: str) -> dict[str, ob
             inline_comments=inline_comments,
             artifact_path=artifact_path,
             write_created_issues_report=_write_created_issues_report,
+            created_issue_urls=created_issue_urls,
             repo_path=repo_path,
         )
 

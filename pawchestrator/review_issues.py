@@ -46,6 +46,7 @@ async def format_and_create_issues(
     inline_comments: list[dict[str, Any]],
     artifact_path: Path,
     write_created_issues_report,
+    created_issue_urls: list[str] | None = None,
     repo_path: Path | None = None,
     client: GitHubIssueClient | None = None,
 ) -> list[str]:
@@ -77,7 +78,8 @@ async def format_and_create_issues(
 
     formatted_issues = await asyncio.gather(*format_tasks)
     github_client = client or GitHubIssueClient(get_gh_token())
-    created_issue_urls: list[str] = []
+    if created_issue_urls is None:
+        created_issue_urls = []
     for issue in formatted_issues:
         issue_url = await github_client.create_issue(
             owner,
