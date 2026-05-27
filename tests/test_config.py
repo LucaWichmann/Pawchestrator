@@ -36,7 +36,7 @@ def test_runner_settings_defaults_match_low_token_profile() -> None:
     assert settings.pr.assign is True
     assert settings.review.default_runner == "claude"
     assert settings.review.cross_review is True
-    assert settings.pipeline.verify_repair_attempts == 1
+    assert settings.pipeline.verify_repair_attempts == 3
     assert settings.pipeline.epic_fail_fast is True
     assert settings.pipeline.epic_confirm is False
     assert settings.pipeline.verify_non_code_changes is False

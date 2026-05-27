@@ -30,7 +30,7 @@ directory = ".codegraph"
 sync_policy = "safe-lazy"
 
 [pipeline]
-verify_repair_attempts = 1
+verify_repair_attempts = 3
 epic_fail_fast = true
 epic_confirm = false
 epic_branch_mode = "epic"

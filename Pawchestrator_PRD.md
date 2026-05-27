@@ -1358,7 +1358,7 @@ If verification fails:
 Default max repair attempts:
 
 ```text
-2
+3
 ```
 
 ---
@@ -2045,4 +2045,3 @@ These sources were consulted to ground implementation assumptions:
 - Tampermonkey documentation: userscript headers and APIs such as `@match`, `@run-at`, and `GM_addStyle`.
 - MDN WebSocket documentation: browser WebSocket constructor behavior.
 - GitHub OAuth and REST documentation: device flow, issue data, issue comments, labels/assignees, and pull request creation.
-

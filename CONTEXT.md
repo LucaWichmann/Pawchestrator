@@ -487,5 +487,5 @@ cross_review = true         # flip runner for paw PRs; doctor warns if only one 
 - Desktop app framework: decision deferred. Python + userscript is the active mode.
 - Skill files format and loading
 - GitHub REST API direct PR creation (replacing `gh` dependency)
-- Failure repair loop (max 2 attempts)
+- Failure repair loop (max 3 attempts)
 - SQLite migration strategy

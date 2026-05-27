@@ -116,7 +116,7 @@ model = "gpt-5.5"
 reasoning_effort = "low"
 
 [pipeline]
-verify_repair_attempts = 1
+verify_repair_attempts = 3
 ```
 
 Full reference - runners, per-stage overrides, epic workflow, CodeGraph, verify commands: [docs/configuration.md](docs/configuration.md)
