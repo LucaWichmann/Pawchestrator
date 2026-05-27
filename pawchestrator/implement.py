@@ -185,6 +185,8 @@ async def run_implement(
             diff = ""
         if not diff.strip() and not no_dirty_delta:
             diff = result.diff
+        if not diff.strip():
+            diff = await _committed_diff_against_base(worktree_info.path, base_branch)
         files_changed = files_changed_from_diff(diff)
         no_changes_error = _no_changes_error(
             exit_code=result.exit_code,
@@ -858,6 +860,13 @@ async def _git_rev_parse_head(cwd: Path) -> str:
 
 async def _diff_since(cwd: Path, base_commit: str) -> str:
     stdout, _, exit_code = await _run_git(["diff", base_commit], cwd)
+    if exit_code != 0:
+        return ""
+    return stdout
+
+
+async def _committed_diff_against_base(cwd: Path, base_branch: str) -> str:
+    stdout, _, exit_code = await _run_git(["diff", f"{base_branch}...HEAD"], cwd)
     if exit_code != 0:
         return ""
     return stdout
