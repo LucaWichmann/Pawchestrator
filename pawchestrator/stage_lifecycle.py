@@ -151,7 +151,7 @@ class StageSkipped(Exception):
         self.artifact_path = artifact_path
 
 
-class StageFailedWithArtifact(Exception):
+class StageFailedWithArtifact(RuntimeError):
     def __init__(
         self,
         message: str,
