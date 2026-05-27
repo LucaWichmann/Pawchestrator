@@ -235,7 +235,7 @@ def test_run_pipeline_stops_on_failure_and_marks_run_failed(
         ).fetchall()
 
     assert run[1:] == ("failed", "plan")
-    assert ("plan", "failed", "plan exploded") in stages
+    assert ("plan", "failed", "Stage failed. See local run logs.") in stages
     assert ("implement", "pending", None) in stages
 
 
