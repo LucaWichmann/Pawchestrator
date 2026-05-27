@@ -40,7 +40,6 @@ from pawchestrator.github import (
     GitHubIssueClient,
     get_gh_token,
     parse_issue_url,
-    with_generated_attribution,
 )
 from pawchestrator.grill import run_grill
 from pawchestrator.implement import run_repair
@@ -48,6 +47,7 @@ from pawchestrator.lifecycle import fail_stale_runs_on_startup
 from pawchestrator.pipeline import run_pipeline
 from pawchestrator.review import run_review
 from pawchestrator.review import review_report_path
+from pawchestrator.review_issues import format_and_create_issues
 from pawchestrator.runners import get_runner_health
 from pawchestrator.sessions import (
     _pair_lock,
@@ -448,12 +448,28 @@ async def _create_review_issues(settings: Settings, run_id: str) -> dict[str, ob
 
     report = _load_review_report(settings, run_id)
     suggested_issues = report.get("suggested_issues")
+    inline_comments = report.get("inline_comments")
     if not isinstance(suggested_issues, list) or not all(
-        isinstance(issue, str) for issue in suggested_issues
+        isinstance(issue, dict)
+        and isinstance(issue.get("hint"), str)
+        and isinstance(issue.get("file"), str)
+        and isinstance(issue.get("line"), int)
+        for issue in suggested_issues
     ):
         raise HTTPException(
             status_code=500,
-            detail="review report suggested_issues must be a list of strings",
+            detail="review report suggested_issues must be a list of issue objects",
+        )
+    if not isinstance(inline_comments, list) or not all(
+        isinstance(comment, dict)
+        and isinstance(comment.get("file"), str)
+        and isinstance(comment.get("line"), int)
+        and isinstance(comment.get("body"), str)
+        for comment in inline_comments
+    ):
+        raise HTTPException(
+            status_code=500,
+            detail="review report inline_comments must be a list of comment objects",
         )
 
     stage_id = await start_review_issues_run(settings, run_id=run_id)
@@ -472,18 +488,24 @@ async def _create_review_issues(settings: Settings, run_id: str) -> dict[str, ob
             result = await get_run_state(settings, run_id)
             return result or {}
 
-        client = GitHubIssueClient(get_gh_token())
         owner = str(state["owner"])
         repo = str(state["repo"])
-        for title in suggested_issues:
-            issue_url = await client.create_issue(
-                owner,
-                repo,
-                title=title,
-                body=with_generated_attribution(""),
-            )
-            created_issue_urls.append(issue_url)
-            _write_created_issues_report(artifact_path, created_issue_urls)
+        repo_path = await lookup_repo_path(settings, owner=owner, repo=repo)
+        cwd = repo_path or Path.cwd()
+        created_issue_urls = await format_and_create_issues(
+            settings,
+            run_id=run_id,
+            cwd=cwd,
+            owner=owner,
+            repo=repo,
+            pr_summary=str(report.get("summary") or ""),
+            suggested_issues=suggested_issues,
+            inline_comments=inline_comments,
+            artifact_path=artifact_path,
+            write_created_issues_report=_write_created_issues_report,
+            created_issue_urls=created_issue_urls,
+            repo_path=repo_path,
+        )
 
         await complete_review_issues_run(
             settings,
