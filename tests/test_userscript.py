@@ -77,7 +77,8 @@ def test_userscript_renders_pipeline_timeline_section() -> None:
     assert 'section.className = "pawchestrator-pipeline"' in source
     assert 'timeline.className = "pawchestrator-timeline"' in source
     assert 'item.dataset.status = status' in source
-    assert 'item.dataset.active = String(index === activeIndex && pipeline.status !== "completed")' in source
+    assert "function renderPipelineTimeline(parent, pipeline, options = {})" in source
+    assert "!options.suppressActive && index === activeIndex && pipeline.status !== \"completed\"" in source
     assert 'status === "done" ? "\\u2713" : status === "failed" ? "\\u00D7" : "\\u2022"' in source
     assert '`${name} (repair ${repairCount}/${repairTotal || repairCount})`' in source
     assert "renderPipeline(body, status.pipeline)" in source
@@ -103,7 +104,7 @@ def test_userscript_renders_epic_section_with_sub_run_timelines() -> None:
     assert 'title.textContent = `Epic: ${epicStatus(epic)}`' in source
     assert 'row.className = "pawchestrator-epic-run"' in source
     assert 'rowTitle.textContent = `#${subRun.issue_number}${titleText}`' in source
-    assert "renderPipelineTimeline(row, subRun)" in source
+    assert "renderPipelineTimeline(row, subRun, { suppressActive: epicDone })" in source
     assert "renderEpicSection(body, status.epic)" in source
     assert source.index("renderPipeline(body, status.pipeline)") < source.index("renderEpicSection(body, status.epic)")
     assert source.index("renderEpicSection(body, status.epic)") < source.index("renderGrillSection(body, status.grill)")
@@ -117,6 +118,7 @@ def test_userscript_epic_updates_panel_status_and_auto_expand() -> None:
     assert "const runs = [epicSummaryRun(status.epic), status.pipeline, status.grill].filter(Boolean)" in source
     assert "function epicStatus(epic)" in source
     assert "function isRunDone(run)" in source
+    assert "function isEpicDone(epic)" in source
     assert 'RUN_DONE.has(status) || /_failed$/.test(status)' in source
     assert 'run.status === "running" || /_running$/.test(run.status || "")' in source
     assert "epicSubRuns(status.epic).some((run) => !isRunDone(run))" in source
@@ -127,9 +129,20 @@ def test_userscript_failed_epic_child_runs_do_not_block_restart() -> None:
     source = _read_userscript()
 
     assert "function isRunDone(run)" in source
+    assert "function isEpicDone(epic)" in source
     assert "RUN_DONE.has(status) || /_failed$/.test(status)" in source
-    assert "epicSubRuns(status.epic).some((run) => !isRunDone(run))" in source
+    assert "(!isEpicDone(status.epic) && epicSubRuns(status.epic).some((run) => !isRunDone(run)))" in source
     assert "epicSubRuns(status.epic).some((run) => !RUN_DONE.has(run.status))" not in source
+
+
+def test_userscript_terminal_epic_suppresses_child_activity() -> None:
+    source = _read_userscript()
+
+    assert 'if (run.status === "epic_failed")' in source
+    assert 'return "failed"' in source
+    assert "const epicDone = isEpicDone(epic)" in source
+    assert "renderPipelineTimeline(row, subRun, { suppressActive: epicDone })" in source
+    assert "!options.suppressActive && index === activeIndex" in source
 
 
 def test_userscript_renders_grill_status_outcome_and_failures() -> None:

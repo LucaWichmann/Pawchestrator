@@ -654,6 +654,10 @@
     return Boolean(status && (RUN_DONE.has(status) || /_failed$/.test(status)));
   }
 
+  function isEpicDone(epic) {
+    return Boolean(epic && isRunDone(epic.status || epicStatus(epic)));
+  }
+
   function summarizeError(run) {
     const failedStage = (run.stages || []).find((stage) => stage.status === "failed");
     if (!failedStage) {
@@ -727,6 +731,12 @@
   function panelStatusForRun(run) {
     if (!run) {
       return "idle";
+    }
+    if (run.status === "epic_complete") {
+      return "done";
+    }
+    if (run.status === "epic_failed") {
+      return "failed";
     }
     if (
       run.status === "completed" ||
@@ -867,7 +877,7 @@
     return -1;
   }
 
-  function renderPipelineTimeline(parent, pipeline) {
+  function renderPipelineTimeline(parent, pipeline, options = {}) {
     const steps = collapseStages(pipeline.stages);
     const activeIndex = activeStageIndex(pipeline, steps);
     const timeline = document.createElement("div");
@@ -877,7 +887,9 @@
       const item = document.createElement("div");
       item.className = "pawchestrator-step";
       item.dataset.status = status;
-      item.dataset.active = String(index === activeIndex && pipeline.status !== "completed");
+      item.dataset.active = String(
+        !options.suppressActive && index === activeIndex && pipeline.status !== "completed"
+      );
 
       const indicator = document.createElement("span");
       indicator.className = "pawchestrator-step-indicator";
@@ -1023,6 +1035,7 @@
 
     const list = document.createElement("div");
     list.className = "pawchestrator-epic-runs";
+    const epicDone = isEpicDone(epic);
     epicSubRuns(epic).forEach((subRun) => {
       const row = document.createElement("div");
       row.className = "pawchestrator-epic-run";
@@ -1033,7 +1046,7 @@
       rowTitle.textContent = `#${subRun.issue_number}${titleText}`;
 
       row.append(rowTitle);
-      renderPipelineTimeline(row, subRun);
+      renderPipelineTimeline(row, subRun, { suppressActive: epicDone });
       list.append(row);
     });
     section.append(list);
@@ -1685,8 +1698,8 @@
     const anyActive = Boolean(
       (status.pipeline && !isRunDone(status.pipeline)) ||
       (status.grill && !isRunDone(status.grill)) ||
-      (status.epic && !isRunDone(status.epic.status || epicStatus(status.epic))) ||
-      epicSubRuns(status.epic).some((run) => !isRunDone(run))
+      (status.epic && !isEpicDone(status.epic)) ||
+      (!isEpicDone(status.epic) && epicSubRuns(status.epic).some((run) => !isRunDone(run)))
     );
     const shouldDisable = !issueOpen || anyActive;
     const closedTitle = !issueOpen ? "Issue is closed" : "";
