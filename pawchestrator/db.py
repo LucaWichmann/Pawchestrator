@@ -806,18 +806,6 @@ async def fail_snapshot_run(
         await db.commit()
 
 
-async def start_scout_run(settings: Settings, *, run_id: str) -> str:
-    await init_db(settings)
-    now = utc_now_iso()
-    return await start_stage(
-        settings.database_path,
-        run_id=run_id,
-        stage_name="scout",
-        status="scout_running",
-        now=now,
-    )
-
-
 async def start_grill_run(settings: Settings, *, run_id: str) -> str:
     await init_db(settings)
     now = utc_now_iso()
@@ -890,104 +878,6 @@ async def set_grill_waiting(settings: Settings, *, run_id: str) -> None:
             WHERE id = ?
             """,
             (now, run_id),
-        )
-        await db.commit()
-
-
-async def complete_scout_run(
-    settings: Settings,
-    *,
-    run_id: str,
-    stage_id: str,
-    artifact_path: Path,
-) -> None:
-    now = utc_now_iso()
-    async with aiosqlite.connect(settings.database_path) as db:
-        await complete_stage(
-            db,
-            run_id=run_id,
-            stage_id=stage_id,
-            stage_name="scout",
-            run_status="scout_complete",
-            artifact_type="scout_report",
-            artifact_path=artifact_path,
-            now=now,
-        )
-        await db.commit()
-
-
-async def fail_scout_run(
-    settings: Settings,
-    *,
-    run_id: str,
-    stage_id: str,
-    error: str,
-) -> None:
-    now = utc_now_iso()
-    async with aiosqlite.connect(settings.database_path) as db:
-        await fail_stage(
-            db,
-            run_id=run_id,
-            stage_id=stage_id,
-            stage_name="scout",
-            run_status="scout_failed",
-            error=error,
-            now=now,
-        )
-        await db.commit()
-
-
-async def start_plan_run(settings: Settings, *, run_id: str) -> str:
-    await init_db(settings)
-    now = utc_now_iso()
-    return await start_stage(
-        settings.database_path,
-        run_id=run_id,
-        stage_name="plan",
-        status="plan_running",
-        now=now,
-    )
-
-
-async def complete_plan_run(
-    settings: Settings,
-    *,
-    run_id: str,
-    stage_id: str,
-    artifact_path: Path,
-) -> None:
-    now = utc_now_iso()
-    async with aiosqlite.connect(settings.database_path) as db:
-        await complete_stage(
-            db,
-            run_id=run_id,
-            stage_id=stage_id,
-            stage_name="plan",
-            run_status="plan_complete",
-            artifact_type="implementation_plan",
-            artifact_path=artifact_path,
-            now=now,
-        )
-        await db.commit()
-
-
-async def fail_plan_run(
-    settings: Settings,
-    *,
-    run_id: str,
-    stage_id: str,
-    error: str,
-) -> None:
-    now = utc_now_iso()
-    async with aiosqlite.connect(settings.database_path) as db:
-        await fail_stage(
-            db,
-            run_id=run_id,
-            stage_id=stage_id,
-            stage_name="plan",
-            run_status="plan_failed",
-            error=error,
-            now=now,
         )
         await db.commit()
 

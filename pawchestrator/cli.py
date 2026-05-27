@@ -381,8 +381,8 @@ def run_plan_command(run_id: str) -> None:
         typer.secho(f"Plan failed: {error}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from error
 
-    typer.echo(result.plan["approach_summary"])
-    for step in result.plan["steps"]:
+    typer.echo(result.report["approach_summary"])
+    for step in result.report["steps"]:
         typer.echo(f"{step['order']}. {step['description']}")
 
 

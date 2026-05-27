@@ -37,9 +37,10 @@ from pawchestrator.github import (
 )
 from pawchestrator.implement import run_implement
 from pawchestrator.issues import SnapshotResult, snapshot_issue
-from pawchestrator.plan import ImplementationPlanResult, run_plan
+from pawchestrator.plan import run_plan
 from pawchestrator.pr import PrDraftResult, run_pr
-from pawchestrator.scout import ScoutResult, run_scout
+from pawchestrator.scout import run_scout
+from pawchestrator.stage_lifecycle import StageResult
 from pawchestrator.verify import (
     VERIFICATION_REPORT_SCHEMA,
     VerificationResult,
@@ -107,10 +108,10 @@ async def run_pipeline(
     async def snapshot_stage() -> SnapshotResult:
         return await snapshot_issue(issue_url, settings, run_id=active_run_id)
 
-    async def scout_stage() -> ScoutResult:
+    async def scout_stage() -> StageResult:
         return await run_scout(active_run_id, settings, repo_path=resolved_repo_path)
 
-    async def plan_stage() -> ImplementationPlanResult:
+    async def plan_stage() -> StageResult:
         return await run_plan(active_run_id, settings, repo_path=resolved_repo_path)
 
     async def implement_stage(
