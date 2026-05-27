@@ -11,7 +11,7 @@ from typing import Any
 import aiosqlite
 
 from pawchestrator.db import init_db, utc_now_iso
-from pawchestrator.lifecycle import complete_stage, fail_stage
+from pawchestrator.lifecycle import complete_stage, fail_stage, skip_stage
 from pawchestrator.run_lifecycle import start_stage
 from pawchestrator.runners import RunnerFailedError
 
@@ -24,8 +24,9 @@ class StageLifecycleConfig:
     run_status_running: str
     run_status_complete: str
     run_status_failed: str
-    artifact_type: str
+    artifact_type: str | None
     workflow_kind: str | None = None
+    run_status_skipped: str | None = None
 
 
 STAGE_CONFIGS: dict[str, StageLifecycleConfig] = {
@@ -77,18 +78,22 @@ STAGE_CONFIGS: dict[str, StageLifecycleConfig] = {
         "review_complete",
         "review_failed",
         "review_report",
+        "review",
     ),
     "post": StageLifecycleConfig(
         "post_running",
         "post_complete",
         "post_failed",
-        "review_post_report",
+        None,
+        "review",
     ),
     "issues": StageLifecycleConfig(
         "issues_running",
         "issues_complete",
         "issues_failed",
         "created_issues_report",
+        "review",
+        "issues_skipped",
     ),
     "repair": StageLifecycleConfig(
         "repair_running",
@@ -108,12 +113,42 @@ STAGE_CONFIGS: dict[str, StageLifecycleConfig] = {
 @dataclass(frozen=True)
 class StageResult:
     run_id: str
-    artifact_path: Path
+    artifact_path: Path | None
     log_path: Path
     report: dict[str, Any]
 
 
-StageFn = Callable[[Path], Awaitable[tuple[dict[str, Any], Path]]]
+class StageSkipped(Exception):
+    def __init__(self, reason: str, report: dict[str, Any], artifact_path: Path | None):
+        super().__init__(reason)
+        self.reason = reason
+        self.report = report
+        self.artifact_path = artifact_path
+
+
+class StageFailedWithArtifact(Exception):
+    def __init__(
+        self,
+        message: str,
+        report: dict[str, Any],
+        artifact_path: Path | None,
+    ):
+        super().__init__(message)
+        self.report = report
+        self.artifact_path = artifact_path
+
+
+StageFn = Callable[[Path], Awaitable[tuple[dict[str, Any], Path | None]]]
+
+
+def _write_stage_artifact(report: dict[str, Any], artifact_path: Path | None) -> None:
+    if artifact_path is None:
+        return
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    artifact_path.write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 async def run_stage_lifecycle(
@@ -137,11 +172,7 @@ async def run_stage_lifecycle(
 
     try:
         report, artifact_path = await body(log_path)
-        artifact_path.parent.mkdir(parents=True, exist_ok=True)
-        artifact_path.write_text(
-            json.dumps(report, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+        _write_stage_artifact(report, artifact_path)
         async with aiosqlite.connect(settings.database_path) as db:
             await complete_stage(
                 db,
@@ -161,6 +192,48 @@ async def run_stage_lifecycle(
             log_path=log_path,
             report=report,
         )
+    except StageSkipped as skipped:
+        _write_stage_artifact(skipped.report, skipped.artifact_path)
+        async with aiosqlite.connect(settings.database_path) as db:
+            await skip_stage(
+                db,
+                run_id=run_id,
+                stage_id=stage_id,
+                stage_name=stage_name,
+                run_status=config.run_status_skipped,
+                reason=skipped.reason,
+                artifact_type=config.artifact_type,
+                artifact_path=skipped.artifact_path,
+                workflow_type=config.workflow_kind,
+                now=utc_now_iso(),
+            )
+            await db.commit()
+        return StageResult(
+            run_id=run_id,
+            artifact_path=skipped.artifact_path,
+            log_path=log_path,
+            report=skipped.report,
+        )
+    except StageFailedWithArtifact as exc:
+        _write_stage_artifact(exc.report, exc.artifact_path)
+        if not log_path.exists():
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_path.write_text(f"{GENERIC_STAGE_ERROR}\n", encoding="utf-8")
+        async with aiosqlite.connect(settings.database_path) as db:
+            await fail_stage(
+                db,
+                run_id=run_id,
+                stage_id=stage_id,
+                stage_name=stage_name,
+                run_status=config.run_status_failed,
+                error=GENERIC_STAGE_ERROR,
+                artifact_type=config.artifact_type,
+                artifact_path=exc.artifact_path,
+                workflow_type=config.workflow_kind,
+                now=utc_now_iso(),
+            )
+            await db.commit()
+        raise
     except Exception as exc:
         error = (
             exc.public_message
