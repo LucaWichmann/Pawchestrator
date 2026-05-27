@@ -117,7 +117,7 @@ async def run_epic(
                     allow_empty_commit=True,
                     sub_runs=[],
                 )
-                parent_pr_url = str(epic_pr.report["pr_url"])
+                parent_pr_url = _stage_pr_url(epic_pr)
                 await set_run_pr_url(
                     settings,
                     run_id=parent_run_id,
@@ -198,7 +198,7 @@ async def run_epic(
                 allow_empty_commit=False,
                 sub_runs=sub_runs,
             )
-            epic_pr_url = str(epic_pr.report["pr_url"])
+            epic_pr_url = _stage_pr_url(epic_pr)
             progress(f"[epic] PR ready - {epic_pr_url}")
         await complete_epic_run(settings, run_id=parent_run_id, pr_url=epic_pr_url)
     except Exception:
@@ -216,6 +216,12 @@ async def _fetch_epic_title(
         return await client.fetch_issue_title(reference)
     except AttributeError:
         return "epic"
+
+
+def _stage_pr_url(result: Any) -> str:
+    if hasattr(result, "pr_url"):
+        return str(result.pr_url)
+    return str(result.report["pr_url"])
 
 
 async def _create_epic_pr(

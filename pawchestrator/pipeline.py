@@ -38,7 +38,7 @@ from pawchestrator.issues import snapshot_issue
 from pawchestrator.plan import run_plan
 from pawchestrator.pr import run_pr
 from pawchestrator.scout import run_scout
-from pawchestrator.stage_lifecycle import StageResult
+from pawchestrator.stage_lifecycle import StageResult, StageSkipped, run_stage_lifecycle
 from pawchestrator.verify import run_verify
 
 all_files_match_non_code = verify_module.all_files_match_non_code
@@ -134,6 +134,38 @@ async def run_pipeline(
         verify_module._changed_files = _changed_files
         return await run_verify(active_run_id, settings, base_branch=base_branch)
 
+    async def maybe_skip_verify_stage() -> StageResult | None:
+        if settings.pipeline.verify_non_code_changes:
+            return None
+        worktree = await get_worktree_record(settings, run_id=active_run_id)
+        if worktree is None:
+            return None
+        worktree_path = Path(str(worktree["path"]))
+        if not all_files_match_non_code(
+            worktree_path,
+            base_branch,
+            settings.pipeline.non_code_patterns,
+        ):
+            return None
+        changed_files = _changed_files(worktree_path, base_branch)
+        if changed_files is None:
+            return None
+
+        file_list = ", ".join(changed_files)
+        reason = f"Verification skipped - only non-code files changed: {file_list}"
+        report = verify_module.build_verification_report(
+            status="skipped",
+            commands=[],
+            skip_reason=reason,
+        )
+        artifact_path = settings.app_dir / "runs" / active_run_id / "verification_report.json"
+
+        async def skip_body(log_path: Path):
+            verify_module._write_verify_log(log_path, reason + "\n", [])
+            raise StageSkipped(reason, report, artifact_path)
+
+        return await run_stage_lifecycle(settings, active_run_id, "verify", skip_body)
+
     async def pr_stage() -> StageResult:
         pr_kwargs: dict[str, Any] = {"allow_empty_commit": allow_empty_commit}
         if pr_base_branch != "main":
@@ -165,12 +197,16 @@ async def run_pipeline(
         await reconcile_marks("implement")
         await _edit_run_comment(settings, active_run_id, comment_client)
         await _swap_stage_label(settings, active_run_id, comment_client, "verifying")
-        verification = await _run_stage("verify", verify_stage, progress)
-        _print_done(
-            progress,
-            "verify",
-            f"status: {verification.report.get('status', 'unknown')}",
-        )
+        verification = await maybe_skip_verify_stage()
+        if verification is None:
+            verification = await _run_stage("verify", verify_stage, progress)
+            _print_done(
+                progress,
+                "verify",
+                f"status: {verification.report.get('status', 'unknown')}",
+            )
+        else:
+            progress("[verify] skipped - no code files changed")
         await _edit_run_comment(settings, active_run_id, comment_client)
         repair_attempt = 0
         max_repair_attempts = settings.pipeline.verify_repair_attempts
