@@ -21,7 +21,6 @@ from pawchestrator.db import (
     lookup_repo_path,
     mark_run_completed,
     mark_run_failed,
-    set_run_pr_url,
     skip_pr_stage,
     store_github_comment_id,
 )
@@ -245,7 +244,6 @@ async def run_pipeline(
         if create_pr:
             pr = await _run_stage("pr", pr_stage, progress)
             pr_url = str(pr.report["pr_url"])
-            await set_run_pr_url(settings, run_id=active_run_id, pr_url=pr_url)
             _print_done(progress, "pr", pr_url)
             await _edit_run_comment(settings, active_run_id, comment_client)
     except Exception:
