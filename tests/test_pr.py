@@ -11,6 +11,7 @@ from typer.testing import CliRunner
 from pawchestrator import cli
 from pawchestrator.config import PrSettings, Settings
 from pawchestrator.db import get_run_warnings, init_db
+from pawchestrator.github import GENERATED_BY_FOOTER
 from pawchestrator.pr import PrDraftResult, build_pr_body, resolve_pr_assignees, run_pr
 
 
@@ -26,6 +27,7 @@ def test_build_pr_body_includes_required_sections_for_passed_verification() -> N
     assert "- Create draft PR." in body
     assert "All checks passed." in body
     assert "Internal artifacts are stored locally under run `run-123`" in body
+    assert body.endswith(GENERATED_BY_FOOTER)
 
 
 def test_build_pr_body_reports_skipped_verification() -> None:

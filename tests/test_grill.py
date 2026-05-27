@@ -19,6 +19,7 @@ from pawchestrator.grill import (
     dedupe_criteria,
     run_grill,
 )
+from pawchestrator.github import GENERATED_BY_FOOTER
 from pawchestrator.runners import (
     ClaudeRunner,
     CodexRunner,
@@ -140,15 +141,16 @@ def test_append_suggested_criteria_appends_new_round_criteria() -> None:
     assert "- [ ] First" in second_body
     assert "- [ ] Second" in second_body
     assert "- [ ] Third" in second_body
+    assert second_body.index("- [ ] Third") < second_body.index(GENERATED_BY_FOOTER)
 
 
-def test_append_suggested_criteria_skips_exact_duplicates() -> None:
+def test_append_suggested_criteria_adds_attribution_for_exact_duplicates() -> None:
     body = "Original\n\n## Pawchestrator Suggested Criteria\n\n- [ ] First\n- [x] Second\n"
 
     updated_body, updated = append_suggested_criteria(body, ["First", "Second"])
 
-    assert updated is False
-    assert updated_body == body
+    assert updated is True
+    assert updated_body.endswith(f"{GENERATED_BY_FOOTER}\n")
 
 
 def test_dedupe_criteria_filters_normalized_duplicates_before_runner(
@@ -450,6 +452,7 @@ def test_append_suggested_criteria_inserts_before_following_section() -> None:
 
     assert updated is True
     assert updated_body.index("- [ ] New") < updated_body.index("## Notes")
+    assert updated_body.index(GENERATED_BY_FOOTER) < updated_body.index("## Notes")
     assert "Keep this section after criteria." in updated_body
 
 
@@ -518,8 +521,12 @@ def test_run_grill_posts_comment_and_applies_label_for_questions(tmp_path: Path)
     assert fake_client.patched_body is not None
     assert "- [ ] Existing" in fake_client.patched_body
     assert "- [ ] New" in fake_client.patched_body
+    assert fake_client.patched_body.index("- [ ] New") < fake_client.patched_body.index(
+        GENERATED_BY_FOOTER
+    )
     assert len(fake_client.comments) == 1
     assert "Which command verifies this?" in fake_client.comments[0]
+    assert fake_client.comments[0].endswith(GENERATED_BY_FOOTER)
     assert fake_client.added_labels == ["pawchestrator:needs-info"]
     assert fake_client.removed_labels == []
     assert result.report.comment_posted is True

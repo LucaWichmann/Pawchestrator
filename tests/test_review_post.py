@@ -6,7 +6,11 @@ from typing import Any
 
 from pawchestrator.config import Settings
 from pawchestrator.db import create_review_run, get_run_state, get_run_warnings
-from pawchestrator.github import PAWCHESTRATOR_LABELS
+from pawchestrator.github import (
+    GENERATED_BY_FOOTER,
+    PAWCHESTRATOR_LABELS,
+    with_generated_attribution,
+)
 from pawchestrator.review import review_report_path
 from pawchestrator.review_post import run_review_post
 
@@ -69,10 +73,15 @@ def test_run_review_post_submits_review_and_warns_for_unmapped_lines(
             "owner": "owner",
             "repo": "repo",
             "number": 42,
-            "body": "One blocking issue.",
+            "body": with_generated_attribution("One blocking issue."),
             "event": "REQUEST_CHANGES",
             "comments": [
-                {"path": "app.py", "line": 2, "side": "RIGHT", "body": "Fix this."}
+                {
+                    "path": "app.py",
+                    "line": 2,
+                    "side": "RIGHT",
+                    "body": with_generated_attribution("Fix this."),
+                }
             ],
         }
     ]
@@ -198,7 +207,7 @@ def test_run_review_post_uses_source_line_not_diff_position_for_new_file(
             "path": "pawchestrator/lifecycle.py",
             "line": 38,
             "side": "RIGHT",
-            "body": "Duplicate time helper.",
+            "body": with_generated_attribution("Duplicate time helper."),
         }
     ]
 
@@ -272,7 +281,7 @@ def test_run_review_post_submits_approve_review_without_inline_comments(
             "owner": "owner",
             "repo": "repo",
             "number": 42,
-            "body": "Clean change.",
+            "body": with_generated_attribution("Clean change."),
             "event": "APPROVE",
             "comments": [],
         }
@@ -380,7 +389,12 @@ def test_run_review_post_downgrades_self_request_changes_to_comment(
         "Pawchestrator verdict: REQUEST_CHANGES\n\n"
     )
     assert client.payloads[0]["comments"] == [
-        {"path": "app.py", "line": 2, "side": "RIGHT", "body": "Fix this."}
+        {
+            "path": "app.py",
+            "line": 2,
+            "side": "RIGHT",
+            "body": with_generated_attribution("Fix this."),
+        }
     ]
     assert client.labels_added == [
         ("owner", "repo", 42, PAWCHESTRATOR_LABELS["review-changes-requested"][0])
@@ -429,6 +443,7 @@ def test_run_review_post_downgrades_self_approval_to_comment(
     assert result.submitted_comments == 0
     assert client.payloads[0]["event"] == "COMMENT"
     assert client.payloads[0]["body"].startswith("Pawchestrator verdict: APPROVE\n\n")
+    assert client.payloads[0]["body"].endswith(GENERATED_BY_FOOTER)
     assert client.labels_added == [
         ("owner", "repo", 42, PAWCHESTRATOR_LABELS["review-approved"][0])
     ]
@@ -470,7 +485,7 @@ def test_run_review_post_keeps_non_self_request_changes_event(
     )
 
     assert client.payloads[0]["event"] == "REQUEST_CHANGES"
-    assert client.payloads[0]["body"] == "One blocking issue."
+    assert client.payloads[0]["body"] == with_generated_attribution("One blocking issue.")
     assert client.labels_added == []
     assert client.labels_removed == []
 

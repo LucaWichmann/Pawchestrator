@@ -9,6 +9,7 @@ import pytest
 from pawchestrator.config import PipelineSettings, Settings
 from pawchestrator.db import create_epic_run, get_latest_epic_run_by_issue
 from pawchestrator.epic import run_epic
+from pawchestrator.github import GENERATED_BY_FOOTER
 from pawchestrator.implement import WorktreeInfo
 
 
@@ -280,6 +281,7 @@ def test_run_epic_resume_skips_completed_sub_issue_and_reruns_failed(
     ]
     assert len(pr_calls) == 1
     assert "Sub-issues completed: #43, #44, #45" in str(pr_calls[0]["body"])
+    assert str(pr_calls[0]["body"]).endswith(GENERATED_BY_FOOTER)
 
 
 def test_run_epic_resume_all_children_complete_creates_final_pr(

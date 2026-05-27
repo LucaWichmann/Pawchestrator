@@ -37,7 +37,12 @@ from pawchestrator.db import (
     start_review_issues_run,
 )
 from pawchestrator.epic import run_epic
-from pawchestrator.github import GitHubIssueClient, get_gh_token, parse_issue_url
+from pawchestrator.github import (
+    GitHubIssueClient,
+    get_gh_token,
+    parse_issue_url,
+    with_generated_attribution,
+)
 from pawchestrator.grill import run_grill
 from pawchestrator.implement import run_repair
 from pawchestrator.pipeline import run_pipeline
@@ -471,7 +476,12 @@ async def _create_review_issues(settings: Settings, run_id: str) -> dict[str, ob
         owner = str(state["owner"])
         repo = str(state["repo"])
         for title in suggested_issues:
-            issue_url = await client.create_issue(owner, repo, title=title)
+            issue_url = await client.create_issue(
+                owner,
+                repo,
+                title=title,
+                body=with_generated_attribution(""),
+            )
             created_issue_urls.append(issue_url)
             _write_created_issues_report(artifact_path, created_issue_urls)
 

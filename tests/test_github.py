@@ -5,6 +5,7 @@ import httpx
 import pytest
 
 from pawchestrator.github import (
+    GENERATED_BY_FOOTER,
     PAWCHESTRATOR_LABELS,
     GitHubError,
     GitHubIssueClient,
@@ -15,6 +16,7 @@ from pawchestrator.github import (
     parse_checkboxes,
     parse_issue_shorthand,
     parse_issue_url,
+    with_generated_attribution,
 )
 
 
@@ -877,6 +879,24 @@ def test_github_issue_client_ensure_label_noops_when_label_exists() -> None:
     assert len(requests) == 1
 
 
+def test_with_generated_attribution_appends_footer_to_body() -> None:
+    assert with_generated_attribution("Body") == f"Body\n\n{GENERATED_BY_FOOTER}"
+
+
+def test_with_generated_attribution_handles_empty_body() -> None:
+    assert with_generated_attribution("") == GENERATED_BY_FOOTER
+
+
+def test_with_generated_attribution_does_not_duplicate_footer() -> None:
+    body = f"Body\n\n{GENERATED_BY_FOOTER}"
+
+    assert with_generated_attribution(body) == body
+
+
+def test_with_generated_attribution_normalizes_trailing_whitespace() -> None:
+    assert with_generated_attribution("Body\n\n") == f"Body\n\n{GENERATED_BY_FOOTER}"
+
+
 def test_github_issue_client_ensure_label_creates_missing_label() -> None:
     requests: list[httpx.Request] = []
 
@@ -1023,6 +1043,7 @@ def test_format_run_comment_includes_structured_run_state() -> None:
     assert "- Current stage: `pr`" in body
     assert "- PR: https://github.com/owner/repo/pull/99" in body
     assert "| Snapshot | `complete` |" in body
+    assert body.endswith(GENERATED_BY_FOOTER)
 
 
 def test_format_run_comment_includes_failure_details() -> None:

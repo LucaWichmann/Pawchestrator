@@ -17,7 +17,11 @@ from pawchestrator.db import (
     insert_run_warning,
     start_pr_run,
 )
-from pawchestrator.github import GitHubIssueClient, get_gh_token
+from pawchestrator.github import (
+    GitHubIssueClient,
+    get_gh_token,
+    with_generated_attribution,
+)
 from pawchestrator.runners import RunnerFailedError
 
 PR_DRAFT_SCHEMA = "pawchestrator.pr_draft.v1"
@@ -223,7 +227,7 @@ def build_pr_body(
     verify_section = _verification_section(verify)
     run_id = str(run["id"])
     issue_number = int(run["issue_number"])
-    return f"""## Summary
+    body = f"""## Summary
 
 {plan.get("approach_summary") or "Pawchestrator implemented the issue plan."}
 
@@ -243,6 +247,7 @@ Fixes #{issue_number}
 
 Internal artifacts are stored locally under run `{run_id}` and were not posted publicly.
 """
+    return with_generated_attribution(body)
 
 
 def build_pr_draft(*, pr_url: str, branch: str, base: str, title: str) -> dict[str, Any]:

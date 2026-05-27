@@ -21,6 +21,7 @@ from pawchestrator.github import (
     PAWCHESTRATOR_LABELS,
     get_gh_token,
     parse_commentable_added_lines,
+    with_generated_attribution,
 )
 from pawchestrator.review import REVIEW_VERDICTS, fetch_pr_diff, review_report_path
 
@@ -92,6 +93,7 @@ async def run_review_post(
                         "GitHub rejects approving or requesting changes on your own PR."
                     ),
                 )
+        review_body = with_generated_attribution(review_body)
         review_id = await active_client.post_pr_review(
             owner,
             repo,
@@ -235,7 +237,7 @@ async def build_review_comments(
                 "path": file_path,
                 "line": line,
                 "side": "RIGHT",
-                "body": body,
+                "body": with_generated_attribution(body),
             }
         )
     return comments, skipped
