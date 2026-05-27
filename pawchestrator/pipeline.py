@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 from uuid import uuid4
 
+import pawchestrator.verify as verify_module
 from pawchestrator.checkbox import reconcile_checkbox_marks
 from pawchestrator.config import Settings
 from pawchestrator.db import (
@@ -20,6 +21,7 @@ from pawchestrator.db import (
     lookup_repo_path,
     mark_run_completed,
     mark_run_failed,
+    set_run_pr_url,
     skip_pr_stage,
     store_github_comment_id,
 )
@@ -38,6 +40,9 @@ from pawchestrator.pr import run_pr
 from pawchestrator.scout import run_scout
 from pawchestrator.stage_lifecycle import StageResult
 from pawchestrator.verify import run_verify
+
+all_files_match_non_code = verify_module.all_files_match_non_code
+_changed_files = verify_module._changed_files
 
 ProgressFn = Callable[[str], None]
 LOGGER = logging.getLogger(__name__)
@@ -125,6 +130,8 @@ async def run_pipeline(
         return await run_implement(active_run_id, settings, **implement_kwargs)
 
     async def verify_stage() -> StageResult:
+        verify_module.all_files_match_non_code = all_files_match_non_code
+        verify_module._changed_files = _changed_files
         return await run_verify(active_run_id, settings, base_branch=base_branch)
 
     async def pr_stage() -> StageResult:
@@ -202,6 +209,7 @@ async def run_pipeline(
         if create_pr:
             pr = await _run_stage("pr", pr_stage, progress)
             pr_url = str(pr.report["pr_url"])
+            await set_run_pr_url(settings, run_id=active_run_id, pr_url=pr_url)
             _print_done(progress, "pr", pr_url)
             await _edit_run_comment(settings, active_run_id, comment_client)
     except Exception:

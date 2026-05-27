@@ -176,6 +176,44 @@ def _write_stage_artifact(report: dict[str, Any], artifact_path: Path | None) ->
     )
 
 
+def _failed_verify_error(report: dict[str, Any], log_path: Path) -> str:
+    explicit = report.get("error")
+    if explicit:
+        return str(explicit)
+
+    command_names = _verify_log_command_names(log_path)
+    commands = report.get("commands")
+    if isinstance(commands, list):
+        for index, command in enumerate(commands):
+            if not isinstance(command, dict) or command.get("exit_code") == 0:
+                continue
+            if index < len(command_names):
+                command_name = command_names[index]
+            else:
+                command_name = command.get("command")
+            detail = str(
+                command.get("stderr_summary") or command.get("stdout_summary") or ""
+            )
+            message = f"{command_name} exited {command.get('exit_code')}"
+            if detail:
+                return f"{message}: {detail}"
+            return message
+    return GENERIC_STAGE_ERROR
+
+
+def _verify_log_command_names(log_path: Path) -> list[str]:
+    try:
+        lines = log_path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return []
+    names: list[str] = []
+    for line in lines:
+        if not line.startswith("[command] ") or ": " not in line:
+            continue
+        names.append(line.removeprefix("[command] ").split(": ", 1)[0])
+    return names
+
+
 async def run_stage_lifecycle(
     settings: Any,
     run_id: str,
@@ -199,6 +237,7 @@ async def run_stage_lifecycle(
         report, artifact_path = await body(log_path)
         _write_stage_artifact(report, artifact_path)
         if stage_name == "verify" and report.get("status") == "failed":
+            error = _failed_verify_error(report, log_path)
             async with aiosqlite.connect(settings.database_path) as db:
                 await fail_stage(
                     db,
@@ -206,7 +245,7 @@ async def run_stage_lifecycle(
                     stage_id=stage_id,
                     stage_name=stage_name,
                     run_status=config.run_status_failed,
-                    error=str(report.get("error") or GENERIC_STAGE_ERROR),
+                    error=error,
                     artifact_type=config.artifact_type,
                     artifact_path=artifact_path,
                     workflow_type=config.workflow_kind,
