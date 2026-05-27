@@ -71,7 +71,7 @@ def test_run_review_post_submits_review_and_warns_for_unmapped_lines(
             "body": "One blocking issue.",
             "event": "REQUEST_CHANGES",
             "comments": [
-                {"path": "app.py", "position": 2, "body": "Fix this."}
+                {"path": "app.py", "line": 2, "side": "RIGHT", "body": "Fix this."}
             ],
         }
     ]
@@ -91,6 +91,115 @@ def test_run_review_post_submits_review_and_warns_for_unmapped_lines(
     assert warnings[0]["stage_name"] == "post"
     assert warnings[0]["code"] == "review_comment_line_not_in_diff"
     assert "app.py:3" in warnings[0]["message"]
+
+
+def test_run_review_post_uses_source_line_not_diff_position_for_new_file(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    run_id = "run-123"
+    asyncio.run(
+        create_review_run(
+            settings,
+            run_id=run_id,
+            owner="owner",
+            repo="repo",
+            pr_number=42,
+        )
+    )
+    report_path = review_report_path(settings, run_id)
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema": "pawchestrator.review_report.v1",
+                "inline_comments": [
+                    {
+                        "file": "pawchestrator/lifecycle.py",
+                        "line": 38,
+                        "body": "Duplicate time helper.",
+                    }
+                ],
+                "summary": "One non-blocking issue.",
+                "verdict": "COMMENT",
+                "suggested_issues": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    client = FakeReviewClient()
+    added_lines = [
+        '"""Lifecycle transitions for workflow stages."""',
+        "",
+        "from __future__ import annotations",
+        "",
+        "from datetime import UTC, datetime",
+        "from pathlib import Path",
+        "from typing import TYPE_CHECKING",
+        "from uuid import uuid4",
+        "",
+        "import aiosqlite",
+        "",
+        "from pawchestrator.run_lifecycle import PIPELINE_STAGES, REPAIR_STAGES, REVIEW_STAGES",
+        "",
+        "if TYPE_CHECKING:",
+        "    from pawchestrator.config import Settings",
+        "",
+        "",
+        "TERMINAL_RUN_STATUSES = (",
+        '    "completed",',
+        '    "failed",',
+        '    "grill_complete",',
+        '    "grill_failed",',
+        '    "epic_complete",',
+        '    "epic_failed",',
+        '    "post_complete",',
+        '    "post_failed",',
+        '    "issues_complete",',
+        '    "issues_failed",',
+        '    "issues_skipped",',
+        '    "review_failed",',
+        '    "repair_complete",',
+        '    "repair_failed",',
+        '    "push_complete",',
+        '    "push_failed",',
+        ")",
+        'STALE_RUN_ERROR = "Run aborted: Pawchestrator stopped before this run finished."',
+        "",
+        "def _utc_now_iso() -> str:",
+        '    return datetime.now(UTC).isoformat().replace("+00:00", "Z")',
+    ]
+    diff = "\n".join(
+        [
+            "diff --git a/pawchestrator/lifecycle.py b/pawchestrator/lifecycle.py",
+            "new file mode 100644",
+            "--- /dev/null",
+            "+++ b/pawchestrator/lifecycle.py",
+            "@@ -0,0 +1,39 @@",
+            *(f"+{line}" for line in added_lines),
+            "",
+        ]
+    )
+
+    result = asyncio.run(
+        run_review_post(
+            run_id,
+            settings,
+            client=client,  # type: ignore[arg-type]
+            diff_text=diff,
+        )
+    )
+
+    assert result.submitted_comments == 1
+    assert result.skipped_comments == 0
+    assert client.payloads[0]["comments"] == [
+        {
+            "path": "pawchestrator/lifecycle.py",
+            "line": 38,
+            "side": "RIGHT",
+            "body": "Duplicate time helper.",
+        }
+    ]
 
 
 def test_review_run_status_includes_pending_post_stage(tmp_path: Path) -> None:

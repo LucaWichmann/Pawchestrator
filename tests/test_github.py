@@ -10,6 +10,7 @@ from pawchestrator.github import (
     GitHubIssueClient,
     ensure_pawchestrator_labels,
     format_run_comment,
+    parse_commentable_added_lines,
     parse_diff_positions,
     parse_checkboxes,
     parse_issue_shorthand,
@@ -230,7 +231,7 @@ def test_github_issue_client_posts_pull_request_review_payload() -> None:
             "body": "Summary",
             "event": "REQUEST_CHANGES",
             "comments": [
-                {"path": "app.py", "position": 3, "body": "Fix this."}
+                {"path": "app.py", "line": 3, "side": "RIGHT", "body": "Fix this."}
             ],
         }
         return httpx.Response(200, json={"id": 123})
@@ -248,7 +249,9 @@ def test_github_issue_client_posts_pull_request_review_payload() -> None:
             42,
             body="Summary",
             event="REQUEST_CHANGES",
-            comments=[{"path": "app.py", "position": 3, "body": "Fix this."}],
+            comments=[
+                {"path": "app.py", "line": 3, "side": "RIGHT", "body": "Fix this."}
+            ],
         )
     )
 
@@ -341,6 +344,32 @@ diff --git a/pkg/util.py b/pkg/util.py
         ("app.py", 4): 4,
         ("pkg/util.py", 10): 2,
     }
+
+
+def test_parse_commentable_added_lines_maps_added_lines_to_file_lines() -> None:
+    diff = """diff --git a/app.py b/app.py
+index 1111111..2222222 100644
+--- a/app.py
++++ b/app.py
+@@ -1,3 +1,4 @@
+ one
++two
+ three
++four
+diff --git a/pkg/util.py b/pkg/util.py
+--- a/pkg/util.py
++++ b/pkg/util.py
+@@ -10,2 +10,2 @@
+-old
++new
+ context
+"""
+
+    assert parse_commentable_added_lines(diff) == [
+        {"path": "app.py", "line": 2, "text": "two"},
+        {"path": "app.py", "line": 4, "text": "four"},
+        {"path": "pkg/util.py", "line": 10, "text": "new"},
+    ]
 
 
 def test_github_issue_client_fetches_paginated_admin_collaborators() -> None:

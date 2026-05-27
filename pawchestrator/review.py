@@ -22,9 +22,23 @@ from pawchestrator.runners import (
     RunnerTask,
     resolve_review_runner,
 )
+from pawchestrator.github import parse_commentable_added_lines
+from pawchestrator.skill_loader import load_skill
 
 REVIEW_REPORT_SCHEMA = "pawchestrator.review_report.v1"
 REVIEW_VERDICTS = frozenset({"REQUEST_CHANGES", "APPROVE", "COMMENT"})
+_REVIEW_FALLBACK = """Review GitHub PR -> JSON only:
+{
+  "inline_comments": [{"file": "path/to/file", "line": 123, "body": "comment"}],
+  "summary": "short review summary",
+  "verdict": "REQUEST_CHANGES|APPROVE|COMMENT",
+  "suggested_issues": ["optional follow-up issue titles"]
+}
+
+Rules: inline_comments changed lines only. Copy `file` + `line` exactly from Commentable added lines. Do not use diff positions, hunk offsets, or raw-diff line counts as `line`.
+
+Verdict: REQUEST_CHANGES = correctness | safety | data-loss | test-blocking. APPROVE = no actionable issues. COMMENT = non-blocking feedback.
+No prose. No progress updates. Emit valid JSON artifact only."""
 
 
 @dataclass(frozen=True)
@@ -79,6 +93,7 @@ async def run_review(
                     pr_number=pr_number,
                     description=context.description,
                     diff=context.diff,
+                    app_dir=settings.app_dir,
                 ),
                 cwd=cwd,
                 run_id=run_id,
@@ -188,31 +203,22 @@ def build_review_prompt(
     pr_number: int,
     description: str,
     diff: str,
+    app_dir: Path | None = None,
 ) -> str:
-    return f"""Review pull request {owner}/{repo}#{pr_number}.
-
-Use the PR description and diff below. Produce only a valid JSON object with this
-exact shape:
-{{
-  "inline_comments": [{{"file": "path/to/file", "line": 123, "body": "comment"}}],
-  "summary": "short review summary",
-  "verdict": "REQUEST_CHANGES|APPROVE|COMMENT",
-  "suggested_issues": ["optional follow-up issue titles"]
-}}
-
-Rules:
-- `verdict` must be one of `REQUEST_CHANGES`, `APPROVE`, or `COMMENT`.
-- `inline_comments` must contain review comments tied to changed file lines only.
-- Use `REQUEST_CHANGES` for correctness, safety, data-loss, or test-blocking problems.
-- Use `APPROVE` only when no actionable issues remain.
-- Use `COMMENT` for non-blocking feedback.
+    commentable_lines = _render_commentable_added_lines(diff)
+    instructions = load_skill("PullRequestReview", app_dir) or _REVIEW_FALLBACK
+    data_section = f"""Pull request: {owner}/{repo}#{pr_number}
 
 PR description:
 {description}
 
+Commentable added lines:
+{commentable_lines}
+
 PR diff:
 {diff}
 """
+    return f"{instructions}\n\n{data_section}"
 
 
 def parse_review_artifact(artifact: dict[str, Any] | None) -> dict[str, Any]:
@@ -273,6 +279,16 @@ def write_review_report(path: Path, report: dict[str, Any]) -> None:
 
 def review_report_path(settings: Settings, run_id: str) -> Path:
     return settings.app_dir / "runs" / run_id / "review_report.json"
+
+
+def _render_commentable_added_lines(diff: str) -> str:
+    lines = parse_commentable_added_lines(diff)
+    if not lines:
+        return "(none)"
+    rendered: list[str] = []
+    for line in lines:
+        rendered.append(f"{line['path']}:{line['line']} | {line['text']}")
+    return "\n".join(rendered)
 
 
 async def _run_gh_checked(cmd: list[str], cwd: Path) -> str:

@@ -428,7 +428,7 @@ When a run starts via browser trigger, the pipeline looks up `(owner, repo)` in 
 }
 ```
 
-`suggested_issues` only populated when `verdict = "APPROVE"`. Inline comments use file line numbers; Pawchestrator backend translates to GitHub diff positions before submitting via API. GitHub review posted as one `POST /pulls/{number}/reviews` call with inline comments + summary body + event field.
+`suggested_issues` only populated when `verdict = "APPROVE"`. Inline comments use file line numbers copied from the prompt's Commentable added lines section; Pawchestrator validates those lines against the PR diff and submits GitHub review comments with `line` + `side = RIGHT`. GitHub review posted as one `POST /pulls/{number}/reviews` call with inline comments + summary body + event field.
 
 ### Runner assignment
 

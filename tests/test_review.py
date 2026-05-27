@@ -23,7 +23,13 @@ def test_build_review_prompt_requires_structured_artifact() -> None:
         repo="repo",
         pr_number=42,
         description="PR body",
-        diff="diff --git a/app.py b/app.py",
+        diff="""diff --git a/app.py b/app.py
+--- a/app.py
++++ b/app.py
+@@ -1,1 +1,2 @@
+ existing
++added
+""",
     )
 
     assert (
@@ -38,6 +44,34 @@ def test_build_review_prompt_requires_structured_artifact() -> None:
     assert "COMMENT" in prompt
     assert "PR body" in prompt
     assert "diff --git a/app.py b/app.py" in prompt
+    assert "Commentable added lines:" in prompt
+    assert "app.py:2 | added" in prompt
+    assert "Do not use diff positions" in prompt
+
+
+def test_build_review_prompt_fallback_keeps_line_anchor_rules(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("pawchestrator.review.load_skill", lambda *_args: None)
+
+    prompt = build_review_prompt(
+        owner="owner",
+        repo="repo",
+        pr_number=42,
+        description="PR body",
+        diff="""diff --git a/app.py b/app.py
+--- a/app.py
++++ b/app.py
+@@ -1,1 +1,2 @@
+ existing
++added
+""",
+    )
+
+    assert '"inline_comments": [{"file": "path/to/file", "line": 123' in prompt
+    assert "Commentable added lines:" in prompt
+    assert "app.py:2 | added" in prompt
+    assert "Do not use diff positions" in prompt
 
 
 def test_parse_review_artifact_validates_and_normalizes_report() -> None:

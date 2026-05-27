@@ -19,7 +19,7 @@ from pawchestrator.db import (
 from pawchestrator.github import (
     GitHubIssueClient,
     get_gh_token,
-    parse_diff_positions,
+    parse_commentable_added_lines,
 )
 from pawchestrator.review import REVIEW_VERDICTS, fetch_pr_diff, review_report_path
 
@@ -59,12 +59,12 @@ async def run_review_post(
                 pr_number=pr_number,
                 cwd=cwd,
             )
-        position_map = parse_diff_positions(diff)
+        commentable_lines = parse_commentable_added_lines(diff)
         comments, skipped = await build_review_comments(
             settings,
             run_id=run_id,
             report=report,
-            position_map=position_map,
+            commentable_lines=commentable_lines,
         )
         active_client = client or GitHubIssueClient(get_gh_token())
         review_id = await active_client.post_pr_review(
@@ -124,9 +124,14 @@ async def build_review_comments(
     *,
     run_id: str,
     report: dict[str, Any],
-    position_map: dict[tuple[str, int], int],
+    commentable_lines: list[dict[str, object]],
 ) -> tuple[list[dict[str, Any]], int]:
     comments: list[dict[str, Any]] = []
+    commentable = {
+        (str(line.get("path") or ""), line.get("line"))
+        for line in commentable_lines
+        if isinstance(line, dict)
+    }
     skipped = 0
     for raw_comment in report.get("inline_comments", []):
         if not isinstance(raw_comment, dict):
@@ -136,8 +141,7 @@ async def build_review_comments(
         body = str(raw_comment.get("body") or "")
         if not file_path or not isinstance(line, int) or not body:
             continue
-        position = position_map.get((file_path, line))
-        if position is None:
+        if (file_path, line) not in commentable:
             skipped += 1
             await insert_run_warning(
                 settings,
@@ -153,7 +157,8 @@ async def build_review_comments(
         comments.append(
             {
                 "path": file_path,
-                "position": position,
+                "line": line,
+                "side": "RIGHT",
                 "body": body,
             }
         )

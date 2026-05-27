@@ -837,3 +837,57 @@ def parse_diff_positions(diff_text: str) -> dict[tuple[str, int], int]:
             new_line += 1
 
     return positions
+
+
+def parse_commentable_added_lines(diff_text: str) -> list[dict[str, object]]:
+    lines: list[dict[str, object]] = []
+    current_file: str | None = None
+    new_line: int | None = None
+
+    for line in diff_text.splitlines():
+        if line.startswith("diff --git "):
+            current_file = None
+            new_line = None
+            continue
+
+        if line.startswith("+++ "):
+            path = line[4:].strip()
+            if path == "/dev/null":
+                current_file = None
+            elif path.startswith("b/"):
+                current_file = path[2:]
+            else:
+                current_file = path
+            continue
+
+        if current_file is None:
+            continue
+
+        if line.startswith("@@ "):
+            hunk_match = re.search(r"\+(\d+)(?:,\d+)?", line)
+            if hunk_match is None:
+                new_line = None
+                continue
+            new_line = int(hunk_match.group(1))
+            continue
+
+        if new_line is None:
+            continue
+
+        if line.startswith("\\"):
+            continue
+
+        marker = line[:1]
+        if marker == "+":
+            lines.append(
+                {
+                    "path": current_file,
+                    "line": new_line,
+                    "text": line[1:],
+                }
+            )
+            new_line += 1
+        elif marker == " ":
+            new_line += 1
+
+    return lines
