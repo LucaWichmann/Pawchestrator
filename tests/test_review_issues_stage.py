@@ -44,7 +44,10 @@ def test_review_issues_stage_creates_suggested_issues(
     _seed_token(settings)
     _prepare_post_complete_review_run(
         settings,
-        suggested_issues=["First follow-up", "Second follow-up"],
+        suggested_issues=[
+            {"hint": "First follow-up", "file": "app.py", "line": 4},
+            {"hint": "Second follow-up", "file": "app.py", "line": 8},
+        ],
     )
     fake_client = FakeCreateIssueClient()
     _patch_github_client(monkeypatch, fake_client)
@@ -81,7 +84,10 @@ def test_review_issues_stage_marks_failed_after_partial_creation(
     _seed_token(settings)
     _prepare_post_complete_review_run(
         settings,
-        suggested_issues=["First follow-up", "Second follow-up"],
+        suggested_issues=[
+            {"hint": "First follow-up", "file": "app.py", "line": 4},
+            {"hint": "Second follow-up", "file": "app.py", "line": 8},
+        ],
     )
     fake_client = FakeCreateIssueClient(fail_after=1)
     _patch_github_client(monkeypatch, fake_client)
@@ -112,7 +118,10 @@ def test_review_issues_endpoint_requires_complete_post_stage(tmp_path: Path) -> 
             pr_number=42,
         )
     )
-    _write_review_report(settings, suggested_issues=["Follow-up"])
+    _write_review_report(
+        settings,
+        suggested_issues=[{"hint": "Follow-up", "file": "app.py", "line": 4}],
+    )
 
     with TestClient(create_app(settings)) as client:
         response = client.post(
@@ -145,7 +154,7 @@ class FakeCreateIssueClient:
 def _prepare_post_complete_review_run(
     settings: Settings,
     *,
-    suggested_issues: list[str],
+    suggested_issues: list[dict[str, object]],
 ) -> None:
     asyncio.run(
         create_review_run(
@@ -167,14 +176,21 @@ def _prepare_post_complete_review_run(
     _write_review_report(settings, suggested_issues=suggested_issues)
 
 
-def _write_review_report(settings: Settings, *, suggested_issues: list[str]) -> None:
+def _write_review_report(
+    settings: Settings,
+    *,
+    suggested_issues: list[dict[str, object]],
+) -> None:
     report_path = review_report_path(settings, "run-123")
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(
         json.dumps(
             {
                 "schema": "pawchestrator.review_report.v1",
-                "inline_comments": [],
+                "inline_comments": [
+                    {"file": "app.py", "line": 4, "body": "First comment."},
+                    {"file": "app.py", "line": 8, "body": "Second comment."},
+                ],
                 "summary": "Summary.",
                 "verdict": "COMMENT",
                 "suggested_issues": suggested_issues,

@@ -449,11 +449,15 @@ async def _create_review_issues(settings: Settings, run_id: str) -> dict[str, ob
     report = _load_review_report(settings, run_id)
     suggested_issues = report.get("suggested_issues")
     if not isinstance(suggested_issues, list) or not all(
-        isinstance(issue, str) for issue in suggested_issues
+        isinstance(issue, dict)
+        and isinstance(issue.get("hint"), str)
+        and isinstance(issue.get("file"), str)
+        and isinstance(issue.get("line"), int)
+        for issue in suggested_issues
     ):
         raise HTTPException(
             status_code=500,
-            detail="review report suggested_issues must be a list of strings",
+            detail="review report suggested_issues must be a list of issue objects",
         )
 
     stage_id = await start_review_issues_run(settings, run_id=run_id)
@@ -475,11 +479,11 @@ async def _create_review_issues(settings: Settings, run_id: str) -> dict[str, ob
         client = GitHubIssueClient(get_gh_token())
         owner = str(state["owner"])
         repo = str(state["repo"])
-        for title in suggested_issues:
+        for issue in suggested_issues:
             issue_url = await client.create_issue(
                 owner,
                 repo,
-                title=title,
+                title=issue["hint"],
                 body=with_generated_attribution(""),
             )
             created_issue_urls.append(issue_url)
