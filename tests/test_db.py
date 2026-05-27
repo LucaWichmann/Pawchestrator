@@ -5,13 +5,11 @@ from uuid import UUID
 
 from pawchestrator.config import Settings
 from pawchestrator.db import (
-    complete_verify_run,
     create_epic_run,
     create_pipeline_run,
     create_grill_run,
     create_repair_run,
     create_review_run,
-    fail_verify_run,
     get_github_comment_id,
     get_latest_grill_run_by_issue,
     get_runs_by_group_id,
@@ -21,8 +19,6 @@ from pawchestrator.db import (
     insert_run_warning,
     list_tables,
     set_grill_waiting,
-    skip_verify_run,
-    start_verify_run,
     store_github_comment_id,
     upsert_worktree_record,
 )
@@ -31,6 +27,7 @@ from pawchestrator.lifecycle import (
     TERMINAL_RUN_STATUSES,
     fail_stale_runs_on_startup,
 )
+from pawchestrator.stage_lifecycle import StageSkipped, run_stage_lifecycle
 
 
 def test_init_db_creates_mvp0_tables(tmp_path: Path) -> None:
@@ -293,17 +290,16 @@ def test_skip_verify_run_writes_skipped_status_and_reason(tmp_path: Path) -> Non
             issue_number=42,
         )
     )
-    stage_id = asyncio.run(start_verify_run(settings, run_id="run-123"))
+    artifact_path = tmp_path / "runs" / "run-123" / "verification.json"
 
-    asyncio.run(
-        skip_verify_run(
-            settings,
-            run_id="run-123",
-            stage_id=stage_id,
-            artifact_path=tmp_path / "runs" / "run-123" / "verification.json",
-            reason="verification intentionally bypassed",
+    async def body(log_path: Path):
+        raise StageSkipped(
+            "verification intentionally bypassed",
+            {"status": "skipped"},
+            artifact_path,
         )
-    )
+
+    asyncio.run(run_stage_lifecycle(settings, "run-123", "verify", body))
 
     with sqlite3.connect(tmp_path / "database.sqlite") as db:
         run = db.execute(
@@ -317,9 +313,8 @@ def test_skip_verify_run_writes_skipped_status_and_reason(tmp_path: Path) -> Non
             """
             SELECT status, error, completed_at
             FROM workflow_stages
-            WHERE id = ?
+            WHERE run_id = 'run-123' AND stage_name = 'verify'
             """,
-            (stage_id,),
         ).fetchone()
         artifact = db.execute(
             """
@@ -334,7 +329,7 @@ def test_skip_verify_run_writes_skipped_status_and_reason(tmp_path: Path) -> Non
     assert stage[2].endswith("Z")
     assert artifact == (
         "verification_report",
-        str(tmp_path / "runs" / "run-123" / "verification.json"),
+        str(artifact_path),
     )
 
 
@@ -358,28 +353,20 @@ def test_verify_complete_and_fail_paths_are_unchanged(tmp_path: Path) -> None:
             issue_number=43,
         )
     )
-    complete_stage_id = asyncio.run(
-        start_verify_run(settings, run_id="complete-run")
-    )
-    failed_stage_id = asyncio.run(start_verify_run(settings, run_id="failed-run"))
+    async def complete_body(log_path: Path):
+        return (
+            {"status": "passed"},
+            tmp_path / "runs" / "complete-run" / "verification.json",
+        )
 
-    asyncio.run(
-        complete_verify_run(
-            settings,
-            run_id="complete-run",
-            stage_id=complete_stage_id,
-            artifact_path=tmp_path / "runs" / "complete-run" / "verification.json",
-            passed=True,
+    async def failed_body(log_path: Path):
+        return (
+            {"status": "failed", "error": "verification failed"},
+            tmp_path / "runs" / "failed-run" / "verification.json",
         )
-    )
-    asyncio.run(
-        fail_verify_run(
-            settings,
-            run_id="failed-run",
-            stage_id=failed_stage_id,
-            error="verification failed",
-        )
-    )
+
+    asyncio.run(run_stage_lifecycle(settings, "complete-run", "verify", complete_body))
+    asyncio.run(run_stage_lifecycle(settings, "failed-run", "verify", failed_body))
 
     complete_run, complete_stages = _fetch_run_and_stages(tmp_path, "complete-run")
     failed_run, failed_stages = _fetch_run_and_stages(tmp_path, "failed-run")
