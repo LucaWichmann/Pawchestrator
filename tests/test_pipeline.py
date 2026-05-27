@@ -8,24 +8,12 @@ import pytest
 
 from pawchestrator.config import PipelineSettings, Settings
 from pawchestrator.db import (
-    complete_implement_run,
-    complete_plan_run,
-    complete_pr_run,
-    complete_scout_run,
-    complete_snapshot_run,
-    complete_verify_run,
-    create_snapshot_run,
-    fail_plan_run,
     get_run_warnings,
-    start_implement_run,
-    start_plan_run,
-    start_pr_run,
-    start_scout_run,
-    start_verify_run,
     upsert_worktree_record,
 )
 from pawchestrator.github import PAWCHESTRATOR_LABELS
 from pawchestrator.pipeline import VerificationFailedError, run_pipeline
+from pawchestrator.stage_lifecycle import run_stage_lifecycle
 
 
 @pytest.fixture(autouse=True)
@@ -204,13 +192,10 @@ def test_run_pipeline_stops_on_failure_and_marks_run_failed(
 
     async def fake_plan(run_id: str, settings: Settings, *, repo_path: Path | None = None):
         calls.append("plan")
-        stage_id = await start_plan_run(settings, run_id=run_id)
-        await fail_plan_run(
-            settings,
-            run_id=run_id,
-            stage_id=stage_id,
-            error="plan exploded",
-        )
+        async def body(log_path: Path):
+            raise RuntimeError("plan exploded")
+
+        await run_stage_lifecycle(settings, run_id, "plan", body)
         raise RuntimeError("plan exploded")
 
     monkeypatch.setattr("pawchestrator.pipeline.run_plan", fake_plan)
@@ -242,7 +227,7 @@ def test_run_pipeline_stops_on_failure_and_marks_run_failed(
         ).fetchall()
 
     assert run[1:] == ("failed", "plan")
-    assert ("plan", "failed", "plan exploded") in stages
+    assert ("plan", "failed", "Stage failed. See local run logs.") in stages
     assert ("implement", "pending", None) in stages
 
 
@@ -603,13 +588,10 @@ def test_run_pipeline_sets_failed_label_on_failure(
 
     async def fake_plan(run_id: str, settings: Settings, *, repo_path: Path | None = None):
         calls.append("plan")
-        stage_id = await start_plan_run(settings, run_id=run_id)
-        await fail_plan_run(
-            settings,
-            run_id=run_id,
-            stage_id=stage_id,
-            error="plan exploded",
-        )
+        async def body(log_path: Path):
+            raise RuntimeError("plan exploded")
+
+        await run_stage_lifecycle(settings, run_id, "plan", body)
         raise RuntimeError("plan exploded")
 
     monkeypatch.setattr("pawchestrator.pipeline.run_plan", fake_plan)
@@ -752,51 +734,30 @@ def _patch_successful_stages(
 ) -> None:
     async def fake_snapshot(issue_url: str, settings: Settings, *, run_id: str):
         calls.append("snapshot")
-        stage_id = await create_snapshot_run(
-            settings,
-            run_id=run_id,
-            owner="owner",
-            repo="repo",
-            issue_number=42,
-        )
         artifact_path = settings.app_dir / "runs" / run_id / "issue.snapshot.json"
-        artifact_path.parent.mkdir(parents=True, exist_ok=True)
-        artifact_path.write_text("{}", encoding="utf-8")
-        await complete_snapshot_run(
-            settings,
-            run_id=run_id,
-            stage_id=stage_id,
-            artifact_path=artifact_path,
-        )
-        return SimpleNamespace(run_id=run_id, artifact_path=artifact_path, issue_number=42, title="Issue")
+
+        async def body(log_path: Path):
+            return {"number": 42, "title": "Issue"}, artifact_path
+
+        return await run_stage_lifecycle(settings, run_id, "snapshot", body)
 
     async def fake_scout(run_id: str, settings: Settings, *, repo_path: Path | None = None):
         calls.append("scout")
-        stage_id = await start_scout_run(settings, run_id=run_id)
         artifact_path = settings.app_dir / "runs" / run_id / "scout_report.json"
-        artifact_path.parent.mkdir(parents=True, exist_ok=True)
-        artifact_path.write_text("{}", encoding="utf-8")
-        await complete_scout_run(
-            settings,
-            run_id=run_id,
-            stage_id=stage_id,
-            artifact_path=artifact_path,
-        )
-        return SimpleNamespace(report={"readiness": "ready"})
+
+        async def body(log_path: Path):
+            return {"readiness": "ready"}, artifact_path
+
+        return await run_stage_lifecycle(settings, run_id, "scout", body)
 
     async def fake_plan(run_id: str, settings: Settings, *, repo_path: Path | None = None):
         calls.append("plan")
-        stage_id = await start_plan_run(settings, run_id=run_id)
         artifact_path = settings.app_dir / "runs" / run_id / "implementation_plan.json"
-        artifact_path.parent.mkdir(parents=True, exist_ok=True)
-        artifact_path.write_text("{}", encoding="utf-8")
-        await complete_plan_run(
-            settings,
-            run_id=run_id,
-            stage_id=stage_id,
-            artifact_path=artifact_path,
-        )
-        return SimpleNamespace(plan={})
+
+        async def body(log_path: Path):
+            return {}, artifact_path
+
+        return await run_stage_lifecycle(settings, run_id, "plan", body)
 
     async def fake_implement(
         run_id: str,
@@ -812,32 +773,26 @@ def _patch_successful_stages(
             repair_contexts.append((repair_context, repair_attempt))
         if allow_dirty_existing_worktree_values is not None:
             allow_dirty_existing_worktree_values.append(allow_dirty_existing_worktree)
-        stage_id = await start_implement_run(settings, run_id=run_id)
         artifact_path = settings.app_dir / "runs" / run_id / "implementation_report.json"
-        artifact_path.parent.mkdir(parents=True, exist_ok=True)
-        artifact_path.write_text("{}", encoding="utf-8")
-        await complete_implement_run(
-            settings,
-            run_id=run_id,
-            stage_id=stage_id,
-            artifact_path=artifact_path,
-        )
-        return SimpleNamespace(report={})
 
-    async def fake_verify(run_id: str, settings: Settings):
+        async def body(log_path: Path):
+            return {}, artifact_path
+
+        return await run_stage_lifecycle(settings, run_id, "implement", body)
+
+    async def fake_verify(
+        run_id: str,
+        settings: Settings,
+        *,
+        base_branch: str = "main",
+    ):
         calls.append("verify")
-        stage_id = await start_verify_run(settings, run_id=run_id)
         artifact_path = settings.app_dir / "runs" / run_id / "verification_report.json"
-        artifact_path.parent.mkdir(parents=True, exist_ok=True)
-        artifact_path.write_text("{}", encoding="utf-8")
-        await complete_verify_run(
-            settings,
-            run_id=run_id,
-            stage_id=stage_id,
-            artifact_path=artifact_path,
-            passed=True,
-        )
-        return SimpleNamespace(report={"status": "passed"})
+
+        async def body(log_path: Path):
+            return {"status": "passed"}, artifact_path
+
+        return await run_stage_lifecycle(settings, run_id, "verify", body)
 
     async def fake_pr(
         run_id: str,
@@ -848,18 +803,12 @@ def _patch_successful_stages(
         calls.append("pr")
         if allow_empty_commit_values is not None:
             allow_empty_commit_values.append(allow_empty_commit)
-        stage_id = await start_pr_run(settings, run_id=run_id)
         artifact_path = settings.app_dir / "runs" / run_id / "pr_draft.json"
-        artifact_path.parent.mkdir(parents=True, exist_ok=True)
-        artifact_path.write_text("{}", encoding="utf-8")
-        await complete_pr_run(
-            settings,
-            run_id=run_id,
-            stage_id=stage_id,
-            artifact_path=artifact_path,
-            pr_url="https://github.com/owner/repo/pull/99",
-        )
-        return SimpleNamespace(pr_url="https://github.com/owner/repo/pull/99")
+
+        async def body(log_path: Path):
+            return {"pr_url": "https://github.com/owner/repo/pull/99"}, artifact_path
+
+        return await run_stage_lifecycle(settings, run_id, "pr", body)
 
     monkeypatch.setattr("pawchestrator.pipeline.snapshot_issue", fake_snapshot)
     monkeypatch.setattr("pawchestrator.pipeline.run_scout", fake_scout)
@@ -894,17 +843,12 @@ def _patch_implement_with_worktree(
             branch="issue-42",
             path=worktree_path,
         )
-        stage_id = await start_implement_run(settings, run_id=run_id)
         artifact_path = settings.app_dir / "runs" / run_id / "implementation_report.json"
-        artifact_path.parent.mkdir(parents=True, exist_ok=True)
-        artifact_path.write_text("{}", encoding="utf-8")
-        await complete_implement_run(
-            settings,
-            run_id=run_id,
-            stage_id=stage_id,
-            artifact_path=artifact_path,
-        )
-        return SimpleNamespace(report={})
+
+        async def body(log_path: Path):
+            return {}, artifact_path
+
+        return await run_stage_lifecycle(settings, run_id, "implement", body)
 
     monkeypatch.setattr("pawchestrator.pipeline.run_implement", fake_implement)
 
@@ -916,15 +860,18 @@ def _patch_verify_results(
 ) -> None:
     remaining = list(statuses)
 
-    async def fake_verify(run_id: str, settings: Settings):
+    async def fake_verify(
+        run_id: str,
+        settings: Settings,
+        *,
+        base_branch: str = "main",
+    ):
         calls.append("verify")
         if not remaining:
             raise AssertionError("unexpected verify call")
         status = remaining.pop(0)
         passed = status == "passed"
-        stage_id = await start_verify_run(settings, run_id=run_id)
         artifact_path = settings.app_dir / "runs" / run_id / "verification_report.json"
-        artifact_path.parent.mkdir(parents=True, exist_ok=True)
         report = {
             "schema": "pawchestrator.verification_report.v1",
             "status": status,
@@ -938,32 +885,21 @@ def _patch_verify_results(
             ],
             "skip_reason": None,
         }
-        artifact_path.write_text("{}", encoding="utf-8")
-        log_path = settings.app_dir / "runs" / run_id / "stdout" / "verify.log"
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_path.write_text(
-            (
-                "[command] test: pytest\n"
-                f"[exit_code] {0 if passed else 1}\n"
-                "[stdout]\n\n"
-                "[stderr]\n"
-                f"{'' if passed else 'assertion failed'}\n"
-            ),
-            encoding="utf-8",
-        )
-        await complete_verify_run(
-            settings,
-            run_id=run_id,
-            stage_id=stage_id,
-            artifact_path=artifact_path,
-            passed=passed,
-            error=None if passed else "test exited 1: assertion failed",
-        )
-        return SimpleNamespace(
-            run_id=run_id,
-            artifact_path=artifact_path,
-            log_path=log_path,
-            report=report,
-        )
+
+        async def body(log_path: Path):
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_path.write_text(
+                (
+                    "[command] test: pytest\n"
+                    f"[exit_code] {0 if passed else 1}\n"
+                    "[stdout]\n\n"
+                    "[stderr]\n"
+                    f"{'' if passed else 'assertion failed'}\n"
+                ),
+                encoding="utf-8",
+            )
+            return report, artifact_path
+
+        return await run_stage_lifecycle(settings, run_id, "verify", body)
 
     monkeypatch.setattr("pawchestrator.pipeline.run_verify", fake_verify)

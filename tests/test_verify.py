@@ -14,12 +14,12 @@ from pawchestrator.db import init_db
 from pawchestrator.verify import (
     CommandResult,
     ShellRunner,
-    VerificationResult,
     all_files_match_non_code,
     load_verify_commands,
     repo_verify_config_path_for,
     run_verify,
 )
+from pawchestrator.stage_lifecycle import StageResult
 
 
 class FakeShellRunner:
@@ -384,10 +384,10 @@ def test_run_verify_command_prints_summary(
 ) -> None:
     monkeypatch.setattr(cli, "load_settings", lambda: Settings(app_dir=tmp_path))
 
-    async def fake_run_verify(run_id: str, settings: Settings) -> VerificationResult:
+    async def fake_run_verify(run_id: str, settings: Settings) -> StageResult:
         assert run_id == "run-123"
         assert settings.app_dir == tmp_path
-        return VerificationResult(
+        return StageResult(
             run_id=run_id,
             artifact_path=tmp_path / "runs" / run_id / "verification_report.json",
             log_path=tmp_path / "runs" / run_id / "stdout" / "verify.log",

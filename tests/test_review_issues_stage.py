@@ -5,17 +5,13 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from pawchestrator.config import Settings
-from pawchestrator.db import (
-    complete_review_post_run,
-    create_review_run,
-    get_run_state,
-    start_review_post_run,
-)
+from pawchestrator.db import create_review_run, get_run_state
 from pawchestrator.github import GENERATED_BY_FOOTER
 from pawchestrator.review import review_report_path
 from pawchestrator.review_issues import FormattedReviewIssue
 from pawchestrator.server import create_app
 from pawchestrator.sessions import save_sessions
+from pawchestrator.stage_lifecycle import run_stage_lifecycle
 
 
 def test_review_issues_stage_skips_empty_suggestions(tmp_path: Path) -> None:
@@ -286,15 +282,19 @@ def _prepare_post_complete_review_run(
             pr_number=42,
         )
     )
-    stage_id = asyncio.run(start_review_post_run(settings, run_id="run-123"))
     asyncio.run(
-        complete_review_post_run(
+        run_stage_lifecycle(
             settings,
-            run_id="run-123",
-            stage_id=stage_id,
+            "run-123",
+            "post",
+            lambda _log_path: _post_stage_body(),
         )
     )
     _write_review_report(settings, suggested_issues=suggested_issues)
+
+
+async def _post_stage_body() -> tuple[dict[str, object], None]:
+    return {}, None
 
 
 def _write_review_report(

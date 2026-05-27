@@ -7,15 +7,15 @@ from pathlib import Path
 import json
 from typing import Any, Callable
 
+import aiosqlite
+
 from pawchestrator.config import Settings
 from pawchestrator.db import (
-    complete_epic_run,
-    fail_epic_run,
     get_latest_pipeline_runs_by_group_issue,
     get_run_state,
     set_run_pr_url,
-    start_epic_run,
     upsert_worktree_record,
+    utc_now_iso,
 )
 from pawchestrator.github import (
     GitHubIssueClient,
@@ -26,7 +26,8 @@ from pawchestrator.github import (
 )
 from pawchestrator.implement import DEFAULT_BASE_BRANCH, ensure_issue_worktree, slugify
 from pawchestrator.pipeline import run_pipeline
-from pawchestrator.pr import PrDraftResult, create_worktree_pr
+from pawchestrator.pr import create_worktree_pr
+from pawchestrator.stage_lifecycle import StageResult
 
 ProgressFn = Callable[[str], None]
 
@@ -75,7 +76,7 @@ async def run_epic(
     )
     sub_runs: list[SubRunResult] = []
 
-    await start_epic_run(settings, run_id=parent_run_id)
+    await _mark_epic_status(settings, run_id=parent_run_id, status="epic_running")
     try:
         epic_worktree = await ensure_issue_worktree(
             settings,
@@ -116,13 +117,13 @@ async def run_epic(
                     allow_empty_commit=True,
                     sub_runs=[],
                 )
-                parent_pr_url = epic_pr.pr_url
+                parent_pr_url = _stage_pr_url(epic_pr)
                 await set_run_pr_url(
                     settings,
                     run_id=parent_run_id,
-                    pr_url=epic_pr.pr_url,
+                    pr_url=parent_pr_url,
                 )
-                progress(f"[epic] draft PR ready - {epic_pr.pr_url}")
+                progress(f"[epic] draft PR ready - {parent_pr_url}")
 
         latest_child_runs = await get_latest_pipeline_runs_by_group_issue(
             settings,
@@ -197,14 +198,40 @@ async def run_epic(
                 allow_empty_commit=False,
                 sub_runs=sub_runs,
             )
-            epic_pr_url = epic_pr.pr_url
+            epic_pr_url = _stage_pr_url(epic_pr)
             progress(f"[epic] PR ready - {epic_pr_url}")
-        await complete_epic_run(settings, run_id=parent_run_id, pr_url=epic_pr_url)
+        await _mark_epic_status(
+            settings,
+            run_id=parent_run_id,
+            status="epic_complete",
+            pr_url=epic_pr_url,
+        )
     except Exception:
-        await fail_epic_run(settings, run_id=parent_run_id)
+        await _mark_epic_status(settings, run_id=parent_run_id, status="epic_failed")
         raise
 
     return EpicResult(group_id=group_id, sub_runs=sub_runs)
+
+
+async def _mark_epic_status(
+    settings: Settings,
+    *,
+    run_id: str,
+    status: str,
+    pr_url: str | None = None,
+) -> None:
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET status = ?, current_stage = 'epic',
+                pr_url = COALESCE(?, pr_url), updated_at = ?
+            WHERE id = ?
+            """,
+            (status, pr_url, now, run_id),
+        )
+        await db.commit()
 
 
 async def _fetch_epic_title(
@@ -215,6 +242,12 @@ async def _fetch_epic_title(
         return await client.fetch_issue_title(reference)
     except AttributeError:
         return "epic"
+
+
+def _stage_pr_url(result: Any) -> str:
+    if hasattr(result, "pr_url"):
+        return str(result.pr_url)
+    return str(result.report["pr_url"])
 
 
 async def _create_epic_pr(
@@ -228,7 +261,7 @@ async def _create_epic_pr(
     draft: bool,
     allow_empty_commit: bool,
     sub_runs: list[SubRunResult],
-) -> PrDraftResult:
+) -> StageResult:
     return await create_worktree_pr(
         settings=settings,
         run_id=run_id,

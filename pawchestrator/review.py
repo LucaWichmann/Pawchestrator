@@ -10,11 +10,8 @@ from typing import Any
 
 from pawchestrator.config import Settings
 from pawchestrator.db import (
-    complete_review_run,
-    fail_review_run,
     get_run_state,
     lookup_repo_path,
-    start_review_run,
 )
 from pawchestrator.runners import (
     Runner,
@@ -24,6 +21,7 @@ from pawchestrator.runners import (
 )
 from pawchestrator.github import parse_commentable_added_lines
 from pawchestrator.skill_loader import load_skill
+from pawchestrator.stage_lifecycle import StageResult, run_stage_lifecycle
 
 REVIEW_REPORT_SCHEMA = "pawchestrator.review_report.v1"
 REVIEW_VERDICTS = frozenset({"REQUEST_CHANGES", "APPROVE", "COMMENT"})
@@ -48,29 +46,20 @@ class ReviewContext:
     diff: str
 
 
-@dataclass(frozen=True)
-class ReviewResult:
-    run_id: str
-    artifact_path: Path
-    report: dict[str, Any]
-    runner_id: str
-
-
 async def run_review(
     run_id: str,
     settings: Settings,
     *,
     implement_runner: str | None = None,
     runner: Runner | None = None,
-) -> ReviewResult:
+) -> StageResult:
     state = await get_run_state(settings, run_id)
     if state is None:
         raise ValueError(f"run not found: {run_id}")
 
-    stage_id = await start_review_run(settings, run_id=run_id)
     artifact_path = review_report_path(settings, run_id)
 
-    try:
+    async def body(_log_path: Path) -> tuple[dict[str, Any], Path]:
         owner = str(state["owner"])
         repo = str(state["repo"])
         pr_number = int(state["pr_number"])
@@ -110,36 +99,9 @@ async def run_review(
             )
         report = parse_review_artifact(result.artifact)
         write_review_report(artifact_path, report)
-        await complete_review_run(
-            settings,
-            run_id=run_id,
-            stage_id=stage_id,
-            artifact_path=artifact_path,
-        )
-    except Exception as error:
-        db_error = (
-            error.public_message
-            if isinstance(error, RunnerFailedError)
-            else "Stage failed. See local run logs."
-        )
-        await fail_review_run(
-            settings,
-            run_id=run_id,
-            stage_id=stage_id,
-            error=db_error,
-        )
-        raise
+        return report, artifact_path
 
-    from pawchestrator.review_post import run_review_post
-
-    await run_review_post(run_id, settings)
-
-    return ReviewResult(
-        run_id=run_id,
-        artifact_path=artifact_path,
-        report=report,
-        runner_id=selected_runner.id,
-    )
+    return await run_stage_lifecycle(settings, run_id, "review", body)
 
 
 async def fetch_review_context(

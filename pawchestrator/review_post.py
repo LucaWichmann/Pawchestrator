@@ -9,12 +9,9 @@ from typing import Any
 
 from pawchestrator.config import Settings
 from pawchestrator.db import (
-    complete_review_post_run,
-    fail_review_post_run,
     get_run_state,
     insert_run_warning,
     lookup_repo_path,
-    start_review_post_run,
 )
 from pawchestrator.github import (
     GitHubIssueClient,
@@ -24,6 +21,7 @@ from pawchestrator.github import (
     with_generated_attribution,
 )
 from pawchestrator.review import REVIEW_VERDICTS, fetch_pr_diff, review_report_path
+from pawchestrator.stage_lifecycle import run_stage_lifecycle
 
 
 @dataclass(frozen=True)
@@ -45,8 +43,7 @@ async def run_review_post(
     if state is None:
         raise ValueError(f"run not found: {run_id}")
 
-    stage_id = await start_review_post_run(settings, run_id=run_id)
-    try:
+    async def body(_log_path: Path) -> tuple[dict[str, Any], None]:
         owner = str(state["owner"])
         repo = str(state["repo"])
         pr_number = int(state["pr_number"])
@@ -112,25 +109,21 @@ async def run_review_post(
                 pr_number=pr_number,
                 verdict=downgraded_verdict,
             )
-        await complete_review_post_run(
-            settings,
-            run_id=run_id,
-            stage_id=stage_id,
-        )
-    except Exception:
-        await fail_review_post_run(
-            settings,
-            run_id=run_id,
-            stage_id=stage_id,
-            error="Stage failed. See local run logs.",
-        )
-        raise
+        return {
+            "submitted_comments": len(comments),
+            "skipped_comments": skipped,
+            "review_id": review_id,
+        }, None
+
+    result = await run_stage_lifecycle(settings, run_id, "post", body)
 
     return ReviewPostResult(
         run_id=run_id,
-        submitted_comments=len(comments),
-        skipped_comments=skipped,
-        review_id=review_id,
+        submitted_comments=int(result.report["submitted_comments"]),
+        skipped_comments=int(result.report["skipped_comments"]),
+        review_id=(
+            None if result.report["review_id"] is None else int(result.report["review_id"])
+        ),
     )
 
 

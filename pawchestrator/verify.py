@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import fnmatch
-import json
 import os
 import subprocess
 import tomllib
@@ -14,14 +13,10 @@ from typing import Any
 
 from pawchestrator.config import Settings
 from pawchestrator.db import (
-    complete_verify_run,
-    fail_verify_run,
     get_run_state,
     get_worktree_record,
-    skip_verify_run,
-    start_verify_run,
 )
-from pawchestrator.runners import RunnerFailedError
+from pawchestrator.stage_lifecycle import StageResult, StageSkipped, run_stage_lifecycle
 
 VERIFICATION_REPORT_SCHEMA = "pawchestrator.verification_report.v1"
 VERIFY_COMMAND_ORDER = ("build", "test", "lint")
@@ -43,14 +38,6 @@ class CommandResult:
     exit_code: int
     stdout: str
     stderr: str
-
-
-@dataclass(frozen=True)
-class VerificationResult:
-    run_id: str
-    artifact_path: Path
-    log_path: Path
-    report: dict[str, Any]
 
 
 class ShellRunner:
@@ -205,17 +192,16 @@ async def run_verify(
     settings: Settings,
     *,
     runner: ShellRunner | None = None,
-) -> VerificationResult:
+    base_branch: str = "main",
+) -> StageResult:
     state = await get_run_state(settings, run_id)
     if state is None:
         raise ValueError(f"run not found: {run_id}")
 
-    stage_id = await start_verify_run(settings, run_id=run_id)
-    log_path = _verify_log_path(settings, run_id)
     artifact_path = _verification_report_path(settings, run_id)
     active_runner = runner or ShellRunner(debug=settings.debug, run_id=run_id)
 
-    try:
+    async def body(log_path: Path) -> tuple[dict[str, Any], Path]:
         worktree = await get_worktree_record(settings, run_id=run_id)
         if worktree is None:
             raise RuntimeError(f"worktree record not found for run: {run_id}")
@@ -223,6 +209,13 @@ async def run_verify(
         worktree_path = Path(str(worktree["path"]))
         if not worktree_path.exists():
             raise RuntimeError(f"worktree path not found: {worktree_path}")
+
+        if not settings.pipeline.verify_non_code_changes:
+            skip_report = _non_code_skip_report(settings, worktree_path, base_branch)
+            if skip_report is not None:
+                reason = str(skip_report["skip_reason"])
+                _write_verify_log(log_path, reason + "\n", [])
+                raise StageSkipped(reason, skip_report, artifact_path)
 
         repo_config_path = repo_verify_config_path_for(worktree_path)
         commands = load_verify_commands(repo_config_path)
@@ -234,15 +227,7 @@ async def run_verify(
                 skip_reason=reason,
             )
             _write_verify_log(log_path, reason + "\n", [])
-            _write_report(artifact_path, report)
-            await skip_verify_run(
-                settings,
-                run_id=run_id,
-                stage_id=stage_id,
-                artifact_path=artifact_path,
-                reason=reason,
-            )
-            return VerificationResult(run_id, artifact_path, log_path, report)
+            raise StageSkipped(reason, report, artifact_path)
 
         if not any(command.name in {"build", "test"} for command in commands):
             reason = "[verify] skipped - no build or test commands configured"
@@ -252,15 +237,7 @@ async def run_verify(
                 skip_reason=reason,
             )
             _write_verify_log(log_path, reason + "\n", [])
-            _write_report(artifact_path, report)
-            await skip_verify_run(
-                settings,
-                run_id=run_id,
-                stage_id=stage_id,
-                artifact_path=artifact_path,
-                reason=reason,
-            )
-            return VerificationResult(run_id, artifact_path, log_path, report)
+            raise StageSkipped(reason, report, artifact_path)
 
         results: list[CommandResult] = []
         for command in commands:
@@ -279,41 +256,12 @@ async def run_verify(
             commands=results,
             skip_reason=None,
         )
+        if status == "failed":
+            report["error"] = _verification_error(results)
         _write_verify_log(log_path, "", results)
-        _write_report(artifact_path, report)
-        await complete_verify_run(
-            settings,
-            run_id=run_id,
-            stage_id=stage_id,
-            artifact_path=artifact_path,
-            passed=status == "passed",
-            error=_verification_error(results) if status == "failed" else None,
-        )
-    except Exception as error:
-        if not log_path.exists():
-            _write_verify_log(log_path, str(error) + "\n", [])
-        if not artifact_path.exists():
-            _write_report(
-                artifact_path,
-                build_verification_report(
-                    status="failed",
-                    commands=[],
-                    skip_reason=None,
-                ),
-            )
-        if isinstance(error, RunnerFailedError):
-            db_error = error.public_message
-        else:
-            db_error = "Stage failed. See local run logs."
-        await fail_verify_run(
-            settings,
-            run_id=run_id,
-            stage_id=stage_id,
-            error=db_error,
-        )
-        raise
+        return report, artifact_path
 
-    return VerificationResult(run_id, artifact_path, log_path, report)
+    return await run_stage_lifecycle(settings, run_id, "verify", body)
 
 
 def repo_verify_config_path_for(worktree_path: Path) -> Path:
@@ -344,6 +292,44 @@ def all_files_match_non_code(
         any(fnmatch.fnmatchcase(path, pattern) for pattern in patterns)
         for path in changed_files
     )
+
+
+def _non_code_skip_report(
+    settings: Settings,
+    worktree_path: Path,
+    base_branch: str,
+) -> dict[str, Any] | None:
+    patterns = settings.pipeline.non_code_patterns
+    if not all_files_match_non_code(worktree_path, base_branch, patterns):
+        return None
+
+    changed_files = _changed_files(worktree_path, base_branch)
+    if changed_files is None:
+        return None
+
+    file_list = ", ".join(changed_files)
+    reason = f"Verification skipped - only non-code files changed: {file_list}"
+    return build_verification_report(
+        status="skipped",
+        commands=[],
+        skip_reason=reason,
+    )
+
+
+def _changed_files(worktree_path: Path, base_branch: str) -> list[str] | None:
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--name-only", f"{base_branch}...HEAD"],
+            cwd=worktree_path,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return None
+
+    changed_files = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    return changed_files or None
 
 
 def load_verify_commands(path: Path) -> list[CommandSpec] | None:
@@ -405,10 +391,6 @@ def _verification_report_path(settings: Settings, run_id: str) -> Path:
     return settings.app_dir / "runs" / run_id / "verification_report.json"
 
 
-def _verify_log_path(settings: Settings, run_id: str) -> Path:
-    return settings.app_dir / "runs" / run_id / "stdout" / "verify.log"
-
-
 def _write_verify_log(
     log_path: Path,
     prelude: str,
@@ -430,11 +412,3 @@ def _write_verify_log(
         )
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
-
-
-def _write_report(path: Path, report: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(report, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )

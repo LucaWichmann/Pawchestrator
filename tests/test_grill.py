@@ -490,6 +490,38 @@ def test_run_grill_updates_body_without_comment_when_questions_empty(tmp_path: P
     )
 
 
+def test_run_grill_reuses_existing_run_snapshot_before_lifecycle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    run_id = "run-123"
+    asyncio.run(_insert_run(settings, run_id))
+    _write_snapshot(settings, run_id)
+    fake_client = FakeGitHubClient()
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+
+    async def fail_snapshot_issue(*args: object, **kwargs: object) -> object:
+        raise AssertionError("snapshot_issue should not be called")
+
+    monkeypatch.setattr(grill_module, "snapshot_issue", fail_snapshot_issue)
+
+    result = asyncio.run(
+        run_grill(
+            "https://github.com/owner/repo/issues/42",
+            settings,
+            run_id=run_id,
+            repo_path=repo_path,
+            runner=FakeRunner(),
+            github_client=fake_client,  # type: ignore[arg-type]
+        )
+    )
+
+    assert result.run_id == run_id
+    assert result.report.schema == "pawchestrator.grill_report.v1"
+
+
 def test_run_grill_posts_comment_and_applies_label_for_questions(tmp_path: Path) -> None:
     settings = Settings(app_dir=tmp_path)
     run_id = "run-123"

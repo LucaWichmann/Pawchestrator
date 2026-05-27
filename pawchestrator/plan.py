@@ -4,30 +4,23 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from pawchestrator.config import Settings
 from pawchestrator.skill_loader import load_skill
-from pawchestrator.db import (
-    complete_plan_run,
-    fail_plan_run,
-    get_run_state,
-    start_plan_run,
-)
+from pawchestrator.db import get_run_state
 from pawchestrator.runners import (
     Runner,
-    RunnerFailedError,
     RunnerTask,
     resolve_runner,
     runner_tool_mismatch_warning,
 )
 from pawchestrator.stage_fallback import (
-    run_checked_runner,
     run_task_with_usage_limit_fallback,
     usage_limit_fallback_runner,
 )
+from pawchestrator.stage_lifecycle import StageResult, run_stage_lifecycle
 
 IMPLEMENTATION_PLAN_SCHEMA = "pawchestrator.implementation_plan.v1"
 REQUIRED_TOOLS: list[str] = ["Read", "Glob", "Grep"]
@@ -37,112 +30,55 @@ MAX_PROMPT_RISKS = 5
 LOGGER = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
-class ImplementationPlanResult:
-    run_id: str
-    artifact_path: Path
-    log_path: Path
-    plan: dict[str, Any]
-
-
 async def run_plan(
     run_id: str,
     settings: Settings,
     *,
     repo_path: Path | None = None,
     runner: Runner | None = None,
-) -> ImplementationPlanResult:
+) -> StageResult:
     state = await get_run_state(settings, run_id)
     if state is None:
         raise ValueError(f"run not found: {run_id}")
 
-    snapshot_path = _snapshot_artifact_path(settings, run_id)
-    if not snapshot_path.exists():
-        raise FileNotFoundError(f"issue snapshot not found: {snapshot_path}")
-
-    snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
     local_repo_path = (repo_path or Path.cwd()).resolve()
-    stage_id = await start_plan_run(settings, run_id=run_id)
-    active_runner = runner or resolve_runner(settings, "plan", "claude")
-    _log_tool_mismatch(active_runner)
-    fallback_runner = usage_limit_fallback_runner(settings, "plan", active_runner)
-    log_path = _plan_log_path(settings, run_id)
     artifact_path = _plan_artifact_path(settings, run_id)
 
-    try:
+    async def body(log_path: Path) -> tuple[dict[str, Any], Path]:
+        snapshot_path = _snapshot_artifact_path(settings, run_id)
+        if not snapshot_path.exists():
+            raise FileNotFoundError(f"issue snapshot not found: {snapshot_path}")
+        snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
         scout_path = _scout_artifact_path(settings, run_id)
         if not scout_path.exists():
             raise FileNotFoundError(f"scout report not found: {scout_path}")
 
         scout_report = json.loads(scout_path.read_text(encoding="utf-8"))
+        active_runner = runner or resolve_runner(settings, "plan", "claude")
+        _log_tool_mismatch(active_runner)
         task = RunnerTask(
             prompt=build_plan_prompt(snapshot, scout_report, app_dir=settings.app_dir),
             cwd=local_repo_path,
             run_id=run_id,
             stage_name="plan",
         )
-
-        if fallback_runner is None:
-            result = await run_checked_runner(active_runner, task)
-            _write_plan_attempt_log(
-                log_path,
-                active_runner.id,
-                result,
-                append=False,
-            )
-            if result.exit_code != 0:
-                raise RunnerFailedError(
-                    public_message=f"Runner exited with code {result.exit_code}",
-                    exit_code=result.exit_code,
-                    stderr=result.stderr,
-                    stdout=result.stdout,
-                )
-        else:
-            result = await run_task_with_usage_limit_fallback(
-                settings=settings,
-                run_id=run_id,
-                stage_name="plan",
-                active_runner=active_runner,
-                fallback_runner=fallback_runner,
-                task=task,
-                log_path=log_path,
-                write_attempt_log=_write_plan_attempt_log,
-                logger=LOGGER,
-            )
+        fallback_runner = usage_limit_fallback_runner(settings, "plan", active_runner)
+        result = await run_task_with_usage_limit_fallback(
+            settings=settings,
+            run_id=run_id,
+            stage_name="plan",
+            active_runner=active_runner,
+            fallback_runner=fallback_runner,
+            task=task,
+            log_path=log_path,
+            write_attempt_log=_write_plan_attempt_log,
+            logger=LOGGER,
+        )
 
         plan = normalize_implementation_plan(result.artifact)
-        artifact_path.parent.mkdir(parents=True, exist_ok=True)
-        artifact_path.write_text(
-            json.dumps(plan, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        await complete_plan_run(
-            settings,
-            run_id=run_id,
-            stage_id=stage_id,
-            artifact_path=artifact_path,
-        )
-    except Exception as error:
-        if not log_path.exists():
-            _write_plan_log(log_path, "", str(error))
-        if isinstance(error, RunnerFailedError):
-            db_error = error.public_message
-        else:
-            db_error = "Stage failed. See local run logs."
-        await fail_plan_run(
-            settings,
-            run_id=run_id,
-            stage_id=stage_id,
-            error=db_error,
-        )
-        raise
+        return plan, artifact_path
 
-    return ImplementationPlanResult(
-        run_id=run_id,
-        artifact_path=artifact_path,
-        log_path=log_path,
-        plan=plan,
-    )
+    return await run_stage_lifecycle(settings, run_id, "plan", body)
 
 
 def _log_tool_mismatch(runner: Runner) -> None:
@@ -272,18 +208,6 @@ def _scout_artifact_path(settings: Settings, run_id: str) -> Path:
 
 def _plan_artifact_path(settings: Settings, run_id: str) -> Path:
     return settings.app_dir / "runs" / run_id / "implementation_plan.json"
-
-
-def _plan_log_path(settings: Settings, run_id: str) -> Path:
-    return settings.app_dir / "runs" / run_id / "stdout" / "plan.log"
-
-
-def _write_plan_log(log_path: Path, stdout: str, stderr: str) -> None:
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    log_path.write_text(
-        f"[stdout]\n{stdout}\n[stderr]\n{stderr}\n",
-        encoding="utf-8",
-    )
 
 
 def _write_plan_attempt_log(

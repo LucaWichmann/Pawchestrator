@@ -96,6 +96,16 @@ def test_run_review_post_submits_review_and_warns_for_unmapped_lines(
     ]
     assert state["stages"][1]["status"] == "complete"
     assert state["stages"][2]["status"] == "pending"
+    with sqlite3.connect(settings.database_path) as db:
+        post_artifact = db.execute(
+            """
+            SELECT artifact_type
+            FROM artifacts
+            WHERE run_id = ? AND artifact_type = 'review_post_report'
+            """,
+            (run_id,),
+        ).fetchone()
+    assert post_artifact is None
     warnings = asyncio.run(get_run_warnings(settings, run_id))
     assert len(warnings) == 1
     assert warnings[0]["stage_name"] == "post"

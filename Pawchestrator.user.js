@@ -646,7 +646,16 @@
       return null;
     }
     const runs = [epicSummaryRun(status.epic), status.pipeline, status.grill].filter(Boolean);
-    return runs.find((run) => !RUN_DONE.has(run.status)) || runs[0] || null;
+    return runs.find((run) => !isRunDone(run)) || runs[0] || null;
+  }
+
+  function isRunDone(run) {
+    const status = typeof run === "string" ? run : run?.status;
+    return Boolean(status && (RUN_DONE.has(status) || /_failed$/.test(status)));
+  }
+
+  function isEpicDone(epic) {
+    return Boolean(epic && isRunDone(epic.status || epicStatus(epic)));
   }
 
   function summarizeError(run) {
@@ -722,6 +731,12 @@
   function panelStatusForRun(run) {
     if (!run) {
       return "idle";
+    }
+    if (run.status === "epic_complete") {
+      return "done";
+    }
+    if (run.status === "epic_failed") {
+      return "failed";
     }
     if (
       run.status === "completed" ||
@@ -862,7 +877,7 @@
     return -1;
   }
 
-  function renderPipelineTimeline(parent, pipeline) {
+  function renderPipelineTimeline(parent, pipeline, options = {}) {
     const steps = collapseStages(pipeline.stages);
     const activeIndex = activeStageIndex(pipeline, steps);
     const timeline = document.createElement("div");
@@ -872,7 +887,9 @@
       const item = document.createElement("div");
       item.className = "pawchestrator-step";
       item.dataset.status = status;
-      item.dataset.active = String(index === activeIndex && pipeline.status !== "completed");
+      item.dataset.active = String(
+        !options.suppressActive && index === activeIndex && pipeline.status !== "completed"
+      );
 
       const indicator = document.createElement("span");
       indicator.className = "pawchestrator-step-indicator";
@@ -901,7 +918,7 @@
       const item = document.createElement("div");
       item.className = "pawchestrator-step";
       item.dataset.status = status;
-      item.dataset.active = String(index === activeIndex && !RUN_DONE.has(run.status));
+      item.dataset.active = String(index === activeIndex && !isRunDone(run));
 
       const indicator = document.createElement("span");
       indicator.className = "pawchestrator-step-indicator";
@@ -1018,6 +1035,7 @@
 
     const list = document.createElement("div");
     list.className = "pawchestrator-epic-runs";
+    const epicDone = isEpicDone(epic);
     epicSubRuns(epic).forEach((subRun) => {
       const row = document.createElement("div");
       row.className = "pawchestrator-epic-run";
@@ -1028,7 +1046,7 @@
       rowTitle.textContent = `#${subRun.issue_number}${titleText}`;
 
       row.append(rowTitle);
-      renderPipelineTimeline(row, subRun);
+      renderPipelineTimeline(row, subRun, { suppressActive: epicDone });
       list.append(row);
     });
     section.append(list);
@@ -1069,7 +1087,7 @@
   }
 
   function isGrillActive(grill) {
-    return Boolean(grill && !RUN_DONE.has(grill.status));
+    return Boolean(grill && !isRunDone(grill));
   }
 
   function commentElementId(commentId) {
@@ -1518,7 +1536,7 @@
   }
 
   function isPrRunActive(run) {
-    return Boolean(run && !RUN_DONE.has(run.status));
+    return Boolean(run && !isRunDone(run));
   }
 
   function summarizePrRun(run) {
@@ -1675,13 +1693,13 @@
     const status = await fetchIssueStatus(issue);
     renderStatus(status);
     const run = currentRun(status);
-    const running = run && !RUN_DONE.has(run.status);
+    const running = run && !isRunDone(run);
     const issueOpen = isIssueOpen();
     const anyActive = Boolean(
-      (status.pipeline && !RUN_DONE.has(status.pipeline.status)) ||
-      (status.grill && !RUN_DONE.has(status.grill.status)) ||
-      (status.epic && !RUN_DONE.has(status.epic.status || epicStatus(status.epic))) ||
-      epicSubRuns(status.epic).some((run) => !RUN_DONE.has(run.status))
+      (status.pipeline && !isRunDone(status.pipeline)) ||
+      (status.grill && !isRunDone(status.grill)) ||
+      (status.epic && !isEpicDone(status.epic)) ||
+      (!isEpicDone(status.epic) && epicSubRuns(status.epic).some((run) => !isRunDone(run)))
     );
     const shouldDisable = !issueOpen || anyActive;
     const closedTitle = !issueOpen ? "Issue is closed" : "";

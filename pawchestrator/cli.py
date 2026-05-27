@@ -130,7 +130,7 @@ def issue_snapshot(github_issue_url: str) -> None:
 
     typer.echo(f"Run ID: {result.run_id}")
     typer.echo(f"Snapshot: {result.artifact_path}")
-    typer.echo(f"Issue: #{result.issue_number} - {result.title}")
+    typer.echo(f"Issue: #{result.report['number']} - {result.report['title']}")
 
 
 @issue_app.command("start")
@@ -381,8 +381,8 @@ def run_plan_command(run_id: str) -> None:
         typer.secho(f"Plan failed: {error}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from error
 
-    typer.echo(result.plan["approach_summary"])
-    for step in result.plan["steps"]:
+    typer.echo(result.report["approach_summary"])
+    for step in result.report["steps"]:
         typer.echo(f"{step['order']}. {step['description']}")
 
 
@@ -411,8 +411,8 @@ def run_implement_command(
         raise typer.Exit(code=1) from error
 
     files_changed = result.report["files_changed"]
-    typer.echo(f"Worktree: {result.worktree_path}")
-    typer.echo(f"Branch: {result.branch}")
+    typer.echo(f"Worktree: {result.report['worktree_path']}")
+    typer.echo(f"Branch: {result.report['branch']}")
     typer.echo(f"Changed files: {len(files_changed)}")
     for file_path in files_changed:
         typer.echo(f"- {file_path}")
@@ -449,7 +449,7 @@ def run_pr_command(run_id: str) -> None:
         typer.secho(f"PR failed: {error}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from error
 
-    typer.echo(result.pr_url)
+    typer.echo(result.report["pr_url"])
 
 
 async def _sync_codegraph_run(run_id: str, settings, *, repo_path: Path | None = None):
