@@ -122,7 +122,7 @@ def test_issue_snapshot_command_marks_run_failed_after_auth_failure(
         ).fetchone()
 
     assert run == ("snapshot_failed", "snapshot")
-    assert stage == ("failed", "no token")
+    assert stage == ("failed", "Stage failed. See local run logs.")
 
 
 def _output_value(output: str, label: str) -> str:

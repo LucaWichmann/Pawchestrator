@@ -518,10 +518,12 @@ def test_run_pr_command_prints_url(
         return PrDraftResult(
             run_id=run_id,
             artifact_path=tmp_path / "runs" / run_id / "pr_draft.json",
-            pr_url="https://github.com/owner/repo/pull/99",
-            branch="paw/issue-42-test",
-            title="fix: Add PR command (#42)",
-            draft={},
+            log_path=tmp_path / "runs" / run_id / "stdout" / "pr.log",
+            report={
+                "pr_url": "https://github.com/owner/repo/pull/99",
+                "branch": "paw/issue-42-test",
+                "title": "fix: Add PR command (#42)",
+            },
         )
 
     monkeypatch.setattr(cli, "run_pr", fake_run_pr)

@@ -954,9 +954,9 @@ def test_run_implement_command_prints_summary(
             run_id=run_id,
             artifact_path=tmp_path / "runs" / run_id / "implementation_report.json",
             log_path=tmp_path / "runs" / run_id / "stdout" / "implement.log",
-            worktree_path=tmp_path / "worktree",
-            branch="paw/issue-42-add-implement",
             report={
+                "worktree_path": str(tmp_path / "worktree"),
+                "branch": "paw/issue-42-add-implement",
                 "files_changed": ["pawchestrator/implement.py"],
                 "diff_summary": "1 file changed: pawchestrator/implement.py",
             },
