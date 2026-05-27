@@ -21,7 +21,6 @@ from pawchestrator.db import (
     create_repair_run,
     create_review_run,
     fail_review_issues_run,
-    fail_stale_runs_on_startup,
     get_latest_epic_run_by_issue,
     get_latest_failed_epic_run_by_issue,
     get_latest_pipeline_runs_by_group_issue,
@@ -45,6 +44,7 @@ from pawchestrator.github import (
 )
 from pawchestrator.grill import run_grill
 from pawchestrator.implement import run_repair
+from pawchestrator.lifecycle import fail_stale_runs_on_startup
 from pawchestrator.pipeline import run_pipeline
 from pawchestrator.review import run_review
 from pawchestrator.review import review_report_path

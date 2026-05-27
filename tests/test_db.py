@@ -5,7 +5,6 @@ from uuid import UUID
 
 from pawchestrator.config import Settings
 from pawchestrator.db import (
-    TERMINAL_RUN_STATUSES,
     complete_verify_run,
     create_epic_run,
     create_pipeline_run,
@@ -13,7 +12,6 @@ from pawchestrator.db import (
     create_repair_run,
     create_review_run,
     fail_verify_run,
-    fail_stale_runs_on_startup,
     get_github_comment_id,
     get_latest_grill_run_by_issue,
     get_runs_by_group_id,
@@ -24,10 +22,14 @@ from pawchestrator.db import (
     list_tables,
     set_grill_waiting,
     skip_verify_run,
-    STALE_RUN_ERROR,
     start_verify_run,
     store_github_comment_id,
     upsert_worktree_record,
+)
+from pawchestrator.lifecycle import (
+    STALE_RUN_ERROR,
+    TERMINAL_RUN_STATUSES,
+    fail_stale_runs_on_startup,
 )
 
 
