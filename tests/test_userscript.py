@@ -116,8 +116,20 @@ def test_userscript_epic_updates_panel_status_and_auto_expand() -> None:
     assert 'workflow_type: "epic"' in source
     assert "const runs = [epicSummaryRun(status.epic), status.pipeline, status.grill].filter(Boolean)" in source
     assert "function epicStatus(epic)" in source
+    assert "function isRunDone(run)" in source
+    assert 'RUN_DONE.has(status) || /_failed$/.test(status)' in source
     assert 'run.status === "running" || /_running$/.test(run.status || "")' in source
-    assert "epicSubRuns(status.epic).some((run) => !RUN_DONE.has(run.status))" in source
+    assert "epicSubRuns(status.epic).some((run) => !isRunDone(run))" in source
+    assert "const running = run && !isRunDone(run)" in source
+
+
+def test_userscript_failed_epic_child_runs_do_not_block_restart() -> None:
+    source = _read_userscript()
+
+    assert "function isRunDone(run)" in source
+    assert "RUN_DONE.has(status) || /_failed$/.test(status)" in source
+    assert "epicSubRuns(status.epic).some((run) => !isRunDone(run))" in source
+    assert "epicSubRuns(status.epic).some((run) => !RUN_DONE.has(run.status))" not in source
 
 
 def test_userscript_renders_grill_status_outcome_and_failures() -> None:

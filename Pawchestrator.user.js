@@ -646,7 +646,12 @@
       return null;
     }
     const runs = [epicSummaryRun(status.epic), status.pipeline, status.grill].filter(Boolean);
-    return runs.find((run) => !RUN_DONE.has(run.status)) || runs[0] || null;
+    return runs.find((run) => !isRunDone(run)) || runs[0] || null;
+  }
+
+  function isRunDone(run) {
+    const status = typeof run === "string" ? run : run?.status;
+    return Boolean(status && (RUN_DONE.has(status) || /_failed$/.test(status)));
   }
 
   function summarizeError(run) {
@@ -901,7 +906,7 @@
       const item = document.createElement("div");
       item.className = "pawchestrator-step";
       item.dataset.status = status;
-      item.dataset.active = String(index === activeIndex && !RUN_DONE.has(run.status));
+      item.dataset.active = String(index === activeIndex && !isRunDone(run));
 
       const indicator = document.createElement("span");
       indicator.className = "pawchestrator-step-indicator";
@@ -1069,7 +1074,7 @@
   }
 
   function isGrillActive(grill) {
-    return Boolean(grill && !RUN_DONE.has(grill.status));
+    return Boolean(grill && !isRunDone(grill));
   }
 
   function commentElementId(commentId) {
@@ -1518,7 +1523,7 @@
   }
 
   function isPrRunActive(run) {
-    return Boolean(run && !RUN_DONE.has(run.status));
+    return Boolean(run && !isRunDone(run));
   }
 
   function summarizePrRun(run) {
@@ -1675,13 +1680,13 @@
     const status = await fetchIssueStatus(issue);
     renderStatus(status);
     const run = currentRun(status);
-    const running = run && !RUN_DONE.has(run.status);
+    const running = run && !isRunDone(run);
     const issueOpen = isIssueOpen();
     const anyActive = Boolean(
-      (status.pipeline && !RUN_DONE.has(status.pipeline.status)) ||
-      (status.grill && !RUN_DONE.has(status.grill.status)) ||
-      (status.epic && !RUN_DONE.has(status.epic.status || epicStatus(status.epic))) ||
-      epicSubRuns(status.epic).some((run) => !RUN_DONE.has(run.status))
+      (status.pipeline && !isRunDone(status.pipeline)) ||
+      (status.grill && !isRunDone(status.grill)) ||
+      (status.epic && !isRunDone(status.epic.status || epicStatus(status.epic))) ||
+      epicSubRuns(status.epic).some((run) => !isRunDone(run))
     );
     const shouldDisable = !issueOpen || anyActive;
     const closedTitle = !issueOpen ? "Issue is closed" : "";
