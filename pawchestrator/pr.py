@@ -4,43 +4,31 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
 from pawchestrator.config import Settings
 from pawchestrator.db import (
-    complete_pr_run,
-    fail_pr_run,
     get_run_state,
     get_worktree_record,
     insert_run_warning,
-    start_pr_run,
+    set_run_pr_url,
 )
 from pawchestrator.github import (
     GitHubIssueClient,
     get_gh_token,
     with_generated_attribution,
 )
-from pawchestrator.runners import RunnerFailedError
+from pawchestrator.stage_lifecycle import StageResult, run_stage_lifecycle
 
 PR_DRAFT_SCHEMA = "pawchestrator.pr_draft.v1"
 DEFAULT_BASE_BRANCH = "main"
+PrDraftResult = StageResult
 
 
 class PrAssignmentClient(Protocol):
     async def fetch_admin_collaborators(self, owner: str, repo: str) -> list[str]:
         ...
-
-
-@dataclass(frozen=True)
-class PrDraftResult:
-    run_id: str
-    artifact_path: Path
-    pr_url: str
-    branch: str
-    title: str
-    draft: dict[str, Any]
 
 
 async def create_worktree_pr(
@@ -56,7 +44,7 @@ async def create_worktree_pr(
     issue_number: int,
     allow_empty_commit: bool,
     assignees: list[str] | None = None,
-) -> PrDraftResult:
+) -> StageResult:
     artifact_path = _pr_draft_path(settings, run_id)
     await _ensure_branch_has_pr_commits(
         worktree_path,
@@ -81,13 +69,11 @@ async def create_worktree_pr(
         title=title,
     )
     _write_report(artifact_path, draft_payload)
-    return PrDraftResult(
+    return StageResult(
         run_id=run_id,
         artifact_path=artifact_path,
-        pr_url=pr_url,
-        branch=branch,
-        title=title,
-        draft=draft_payload,
+        log_path=settings.app_dir / "runs" / run_id / "stdout" / "pr.log",
+        report=draft_payload,
     )
 
 
@@ -98,15 +84,14 @@ async def run_pr(
     allow_empty_commit: bool = False,
     base_branch: str = DEFAULT_BASE_BRANCH,
     draft_override: bool | None = None,
-) -> PrDraftResult:
+) -> StageResult:
     state = await get_run_state(settings, run_id)
     if state is None:
         raise ValueError(f"run not found: {run_id}")
 
-    stage_id = await start_pr_run(settings, run_id=run_id)
     artifact_path = _pr_draft_path(settings, run_id)
 
-    try:
+    async def body(_log_path: Path) -> tuple[dict[str, Any], Path]:
         worktree = await get_worktree_record(settings, run_id=run_id)
         if worktree is None:
             raise RuntimeError(f"worktree record not found for run: {run_id}")
@@ -145,37 +130,11 @@ async def run_pr(
             allow_empty_commit=allow_empty_commit,
             assignees=assignees,
         )
-        pr_url = pr_result.pr_url
-        draft = pr_result.draft
-        _write_report(artifact_path, draft)
-        await complete_pr_run(
-            settings,
-            run_id=run_id,
-            stage_id=stage_id,
-            artifact_path=artifact_path,
-            pr_url=pr_url,
-        )
-    except Exception as error:
-        if isinstance(error, RunnerFailedError):
-            db_error = error.public_message
-        else:
-            db_error = "Stage failed. See local run logs."
-        await fail_pr_run(
-            settings,
-            run_id=run_id,
-            stage_id=stage_id,
-            error=db_error,
-        )
-        raise
+        return pr_result.report, artifact_path
 
-    return PrDraftResult(
-        run_id=run_id,
-        artifact_path=artifact_path,
-        pr_url=pr_url,
-        branch=branch,
-        title=title,
-        draft=draft,
-    )
+    result = await run_stage_lifecycle(settings, run_id, "pr", body)
+    await set_run_pr_url(settings, run_id=run_id, pr_url=str(result.report["pr_url"]))
+    return result
 
 
 async def resolve_pr_assignees(

@@ -14,17 +14,14 @@ from pawchestrator.codegraph import CodeGraphSyncResult, seed_worktree_index, sy
 from pawchestrator.config import Settings
 from pawchestrator.skill_loader import load_skill
 from pawchestrator.db import (
-    complete_implement_run,
     complete_repair_run,
     complete_repair_push_run,
-    fail_implement_run,
     fail_repair_push_run,
     fail_repair_run,
     get_run_by_pr_number,
     get_run_state,
     insert_run_warning,
     lookup_repo_path,
-    start_implement_run,
     start_repair_push_run,
     start_repair_run,
     upsert_worktree_record,
@@ -37,6 +34,11 @@ from pawchestrator.runners import (
     resolve_runner,
     resolve_repair_runner as resolve_configured_repair_runner,
     runner_tool_mismatch_warning,
+)
+from pawchestrator.stage_lifecycle import (
+    StageFailedWithArtifact,
+    StageResult,
+    run_stage_lifecycle,
 )
 
 IMPLEMENTATION_REPORT_SCHEMA = "pawchestrator.implementation_report.v1"
@@ -56,6 +58,7 @@ MAX_PROMPT_APPROACH_SUMMARY_CHARS = 150
 REPAIR_REPORT_SCHEMA = "pawchestrator.repair_report.v1"
 LOGGER = logging.getLogger(__name__)
 NO_CHANGES_REQUESTED_REVIEWERS = "no_changes_requested_reviewers"
+ImplementationResult = StageResult
 
 
 @dataclass(frozen=True)
@@ -63,16 +66,6 @@ class WorktreeInfo:
     path: Path
     branch: str
     reused: bool
-
-
-@dataclass(frozen=True)
-class ImplementationResult:
-    run_id: str
-    artifact_path: Path
-    log_path: Path
-    worktree_path: Path
-    branch: str
-    report: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -97,21 +90,20 @@ async def run_implement(
     worktree_branch: str | None = None,
     worktree_path: Path | None = None,
     base_branch: str = DEFAULT_BASE_BRANCH,
-) -> ImplementationResult:
+) -> StageResult:
     state = await get_run_state(settings, run_id)
     if state is None:
         raise ValueError(f"run not found: {run_id}")
 
-    stage_id = await start_implement_run(settings, run_id=run_id)
     source_repo_path = (repo_path or Path.cwd()).resolve()
     active_runner = runner or resolve_runner(settings, "implement", "codex")
     _log_tool_mismatch(active_runner)
-    log_path = _implement_log_path(settings, run_id)
     artifact_path = _implementation_report_path(settings, run_id)
     worktree_info: WorktreeInfo | None = None
     codegraph_messages: list[str] = []
 
-    try:
+    async def body(log_path: Path) -> tuple[dict[str, Any], Path]:
+        nonlocal worktree_info, codegraph_messages
         snapshot_path = _snapshot_artifact_path(settings, run_id)
         if not snapshot_path.exists():
             raise FileNotFoundError(f"issue snapshot not found: {snapshot_path}")
@@ -207,10 +199,9 @@ async def run_implement(
             stderr=result.stderr,
             error=no_changes_error,
         )
-        _write_report(artifact_path, report)
 
         if no_changes_error:
-            raise RuntimeError(no_changes_error)
+            raise StageFailedWithArtifact(no_changes_error, report, artifact_path)
 
         if result.exit_code != 0:
             detail = result.stderr.strip() or result.stdout.strip() or "Codex runner failed"
@@ -224,51 +215,28 @@ async def run_implement(
                 stdout=result.stdout,
             )
 
-        await complete_implement_run(
-            settings,
-            run_id=run_id,
-            stage_id=stage_id,
-            artifact_path=artifact_path,
-        )
-    except Exception as error:
-        if not log_path.exists():
-            _write_implement_log(
-                log_path,
-                "",
-                _codegraph_stderr(codegraph_messages, str(error)),
-            )
-        if not artifact_path.exists():
-            _write_report(
-                artifact_path,
-                build_implementation_report(
-                    status="error",
-                    files_changed=[],
-                    diff="",
-                    stdout="",
-                    stderr="",
-                    error=str(error),
-                ),
-            )
-        if isinstance(error, RunnerFailedError):
-            db_error = error.public_message
-        else:
-            db_error = "Stage failed. See local run logs."
-        await fail_implement_run(
-            settings,
-            run_id=run_id,
-            stage_id=stage_id,
-            error=db_error,
-        )
-        raise
+        report["worktree_path"] = str(worktree_info.path)
+        report["branch"] = worktree_info.branch
+        return report, artifact_path
 
-    return ImplementationResult(
-        run_id=run_id,
-        artifact_path=artifact_path,
-        log_path=log_path,
-        worktree_path=worktree_info.path,
-        branch=worktree_info.branch,
-        report=report,
-    )
+    try:
+        return await run_stage_lifecycle(settings, run_id, "implement", body)
+    except Exception as error:
+        if not artifact_path.exists():
+            report = build_implementation_report(
+                status="error",
+                files_changed=[],
+                diff="",
+                stdout="",
+                stderr="",
+                error=str(error),
+            )
+            artifact_path.parent.mkdir(parents=True, exist_ok=True)
+            artifact_path.write_text(
+                json.dumps(report, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+        raise
 
 
 def _log_tool_mismatch(runner: Runner) -> None:

@@ -53,6 +53,7 @@ STAGE_CONFIGS: dict[str, StageLifecycleConfig] = {
         "verify_complete",
         "verify_failed",
         "verification_report",
+        run_status_skipped="verify_skipped",
     ),
     "snapshot": StageLifecycleConfig(
         "snapshot_running",
@@ -117,6 +118,30 @@ class StageResult:
     log_path: Path
     report: dict[str, Any]
 
+    @property
+    def pr_url(self) -> str:
+        return str(self.report["pr_url"])
+
+    @property
+    def branch(self) -> str:
+        return str(self.report["branch"])
+
+    @property
+    def title(self) -> str:
+        return str(self.report["title"])
+
+    @property
+    def draft(self) -> dict[str, Any]:
+        return self.report
+
+    @property
+    def issue_number(self) -> int:
+        return int(self.report["number"])
+
+    @property
+    def worktree_path(self) -> Path:
+        return Path(str(self.report["worktree_path"]))
+
 
 class StageSkipped(Exception):
     def __init__(self, reason: str, report: dict[str, Any], artifact_path: Path | None):
@@ -173,6 +198,27 @@ async def run_stage_lifecycle(
     try:
         report, artifact_path = await body(log_path)
         _write_stage_artifact(report, artifact_path)
+        if stage_name == "verify" and report.get("status") == "failed":
+            async with aiosqlite.connect(settings.database_path) as db:
+                await fail_stage(
+                    db,
+                    run_id=run_id,
+                    stage_id=stage_id,
+                    stage_name=stage_name,
+                    run_status=config.run_status_failed,
+                    error=str(report.get("error") or GENERIC_STAGE_ERROR),
+                    artifact_type=config.artifact_type,
+                    artifact_path=artifact_path,
+                    workflow_type=config.workflow_kind,
+                    now=utc_now_iso(),
+                )
+                await db.commit()
+            return StageResult(
+                run_id=run_id,
+                artifact_path=artifact_path,
+                log_path=log_path,
+                report=report,
+            )
         async with aiosqlite.connect(settings.database_path) as db:
             await complete_stage(
                 db,
