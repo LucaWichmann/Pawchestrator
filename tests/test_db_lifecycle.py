@@ -10,38 +10,27 @@ from pawchestrator.db import (
     complete_pr_run,
     complete_repair_push_run,
     complete_repair_run,
-    complete_review_issues_run,
-    complete_review_post_run,
-    complete_review_run,
     complete_snapshot_run,
     complete_verify_run,
     create_epic_run,
     create_pipeline_run,
     create_repair_run,
-    create_review_run,
     create_snapshot_run,
     fail_epic_run,
     fail_implement_run,
     fail_pr_run,
     fail_repair_push_run,
     fail_repair_run,
-    fail_review_issues_run,
-    fail_review_post_run,
-    fail_review_run,
     fail_snapshot_run,
     fail_verify_run,
     get_run_state,
     skip_pr_stage,
-    skip_review_issues_run,
     skip_verify_run,
     start_epic_run,
     start_implement_run,
     start_pr_run,
     start_repair_push_run,
     start_repair_run,
-    start_review_issues_run,
-    start_review_post_run,
-    start_review_run,
     start_verify_run,
 )
 
@@ -163,43 +152,6 @@ def test_pipeline_run_stage_lifecycle_complete_fail_and_skip(tmp_path: Path) -> 
 
     assert _run_status(tmp_path, run_id)[:2] == ("pending", None)
     assert _stage_by_name(tmp_path, run_id, "pr") == ("skipped", "no PR needed")
-
-
-def test_review_run_lifecycle_complete_fail_and_skip(tmp_path: Path) -> None:
-    settings = Settings(app_dir=tmp_path)
-
-    for spec in _review_stage_specs(tmp_path):
-        _assert_stage_complete(settings, tmp_path, spec)
-        _assert_stage_failed(settings, tmp_path, spec)
-
-    _assert_stage_skipped(
-        settings,
-        tmp_path,
-        StageSpec(
-            stage_name="issues",
-            run_status="issues_skipped",
-            artifact_type="created_issues_report",
-            artifact_path=tmp_path / "issues-skipped.json",
-            create_run=lambda run_id: create_review_run(
-                settings,
-                run_id=run_id,
-                owner="owner",
-                repo="repo",
-                pr_number=17,
-            ),
-            start=lambda run_id: start_review_issues_run(settings, run_id=run_id),
-            complete=lambda _run_id, _stage_id: _noop(),
-            fail=lambda _run_id, _stage_id: _noop(),
-            skip=lambda run_id, stage_id: skip_review_issues_run(
-                settings,
-                run_id=run_id,
-                stage_id=stage_id,
-                artifact_path=tmp_path / "issues-skipped.json",
-                reason="issues skipped",
-            ),
-            skip_error="issues skipped",
-        ),
-    )
 
 
 def test_repair_run_lifecycle_complete_and_fail(tmp_path: Path) -> None:
@@ -359,80 +311,6 @@ def _pipeline_stage_specs(tmp_path: Path) -> list[StageSpec]:
                 run_id=run_id,
                 stage_id=stage_id,
                 error="pr failed",
-            ),
-        ),
-    ]
-
-
-def _review_stage_specs(tmp_path: Path) -> list[StageSpec]:
-    settings = Settings(app_dir=tmp_path)
-
-    def create(run_id: str) -> Awaitable[None]:
-        return create_review_run(
-            settings,
-            run_id=run_id,
-            owner="owner",
-            repo="repo",
-            pr_number=7,
-        )
-
-    return [
-        StageSpec(
-            stage_name="review",
-            run_status="review_complete",
-            artifact_type="review_report",
-            artifact_path=tmp_path / "review.json",
-            create_run=create,
-            start=lambda run_id: start_review_run(settings, run_id=run_id),
-            complete=lambda run_id, stage_id: complete_review_run(
-                settings,
-                run_id=run_id,
-                stage_id=stage_id,
-                artifact_path=tmp_path / "review.json",
-            ),
-            fail=lambda run_id, stage_id: fail_review_run(
-                settings,
-                run_id=run_id,
-                stage_id=stage_id,
-                error="review failed",
-            ),
-        ),
-        StageSpec(
-            stage_name="post",
-            run_status="post_complete",
-            create_run=create,
-            start=lambda run_id: start_review_post_run(settings, run_id=run_id),
-            complete=lambda run_id, stage_id: complete_review_post_run(
-                settings,
-                run_id=run_id,
-                stage_id=stage_id,
-            ),
-            fail=lambda run_id, stage_id: fail_review_post_run(
-                settings,
-                run_id=run_id,
-                stage_id=stage_id,
-                error="post failed",
-            ),
-        ),
-        StageSpec(
-            stage_name="issues",
-            run_status="issues_complete",
-            artifact_type="created_issues_report",
-            artifact_path=tmp_path / "issues.json",
-            create_run=create,
-            start=lambda run_id: start_review_issues_run(settings, run_id=run_id),
-            complete=lambda run_id, stage_id: complete_review_issues_run(
-                settings,
-                run_id=run_id,
-                stage_id=stage_id,
-                artifact_path=tmp_path / "issues.json",
-            ),
-            fail=lambda run_id, stage_id: fail_review_issues_run(
-                settings,
-                run_id=run_id,
-                stage_id=stage_id,
-                artifact_path=tmp_path / "issues-failed.json",
-                error="issues failed",
             ),
         ),
     ]

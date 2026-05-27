@@ -327,9 +327,13 @@ def test_review_start_returns_run_id_and_schedules_review(
         *,
         implement_runner: str | None = None,
     ):
-        calls.append((run_id, runtime_settings.app_dir, implement_runner))
+        calls.append(("review", run_id, runtime_settings.app_dir, implement_runner))
+
+    async def fake_run_review_post(run_id: str, runtime_settings: Settings):
+        calls.append(("post", run_id, runtime_settings.app_dir, None))
 
     monkeypatch.setattr("pawchestrator.server.run_review", fake_run_review)
+    monkeypatch.setattr("pawchestrator.server.run_review_post", fake_run_review_post)
 
     with TestClient(create_app(settings)) as client:
         response = client.post(
@@ -342,7 +346,10 @@ def test_review_start_returns_run_id_and_schedules_review(
 
     assert response.status_code == 200
     assert response.json() == {"run_id": run_id}
-    assert calls == [(run_id, tmp_path, None)]
+    assert calls == [
+        ("review", run_id, tmp_path, None),
+        ("post", run_id, tmp_path, None),
+    ]
     payload = state_response.json()
     assert payload["id"] == run_id
     assert payload["workflow_type"] == "review"

@@ -199,21 +199,9 @@ def test_run_review_fetches_context_before_invoking_runner_and_writes_artifact(
         "pawchestrator.review.fetch_review_context",
         fake_fetch_review_context,
     )
-    post_calls: list[str] = []
-
-    async def fake_run_review_post(post_run_id: str, settings: Settings) -> object:
-        post_calls.append(post_run_id)
-        return object()
-
-    monkeypatch.setattr(
-        "pawchestrator.review_post.run_review_post",
-        fake_run_review_post,
-    )
-
     result = asyncio.run(run_review(run_id, settings, runner=runner))
 
     assert events == ["fetch", "run"]
-    assert post_calls == [run_id]
     assert result.artifact_path == tmp_path / "runs" / run_id / "review_report.json"
     assert json.loads(result.artifact_path.read_text(encoding="utf-8")) == {
         "schema": "pawchestrator.review_report.v1",
