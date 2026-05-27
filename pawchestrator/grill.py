@@ -10,12 +10,7 @@ from typing import Any
 
 from pawchestrator.config import Settings
 from pawchestrator.skill_loader import load_skill
-from pawchestrator.db import (
-    complete_grill_run,
-    fail_grill_run,
-    lookup_repo_path,
-    start_grill_run,
-)
+from pawchestrator.db import lookup_repo_path
 from pawchestrator.github import (
     CHECKED_CHECKBOX_RE,
     HEADING_RE,
@@ -29,7 +24,6 @@ from pawchestrator.github import (
 from pawchestrator.issues import snapshot_issue
 from pawchestrator.runners import (
     Runner,
-    RunnerFailedError,
     RunnerResult,
     RunnerTask,
     resolve_runner,
@@ -39,6 +33,7 @@ from pawchestrator.stage_fallback import (
     run_task_with_usage_limit_fallback,
     usage_limit_fallback_runner,
 )
+from pawchestrator.stage_lifecycle import run_stage_lifecycle
 
 GRILL_REPORT_SCHEMA = "pawchestrator.grill_report.v1"
 CRITERIA_DEDUPE_SCHEMA = "pawchestrator.criteria_dedupe.v1"
@@ -83,11 +78,9 @@ async def run_grill(
     snapshot_path = _snapshot_artifact_path(settings, active_run_id)
     snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
 
-    stage_id = await start_grill_run(settings, run_id=active_run_id)
     artifact_path = _grill_artifact_path(settings, active_run_id)
-    log_path = _grill_log_path(settings, active_run_id)
 
-    try:
+    async def body(log_path: Path) -> tuple[dict[str, Any], Path]:
         local_repo_path = await _resolve_repo_path(settings, snapshot, repo_path)
         report_payload = await _build_report_payload(
             active_run_id,
@@ -107,36 +100,15 @@ async def run_grill(
             repo_path=local_repo_path,
         )
 
-        artifact_path.parent.mkdir(parents=True, exist_ok=True)
-        artifact_path.write_text(
-            json.dumps(asdict(report), indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        await complete_grill_run(
-            settings,
-            run_id=active_run_id,
-            stage_id=stage_id,
-            artifact_path=artifact_path,
-        )
-    except Exception as error:
-        if not log_path.exists():
-            _write_grill_log(log_path, "", str(error))
-        if isinstance(error, RunnerFailedError):
-            db_error = error.public_message
-        else:
-            db_error = "Stage failed. See local run logs."
-        await fail_grill_run(
-            settings,
-            run_id=active_run_id,
-            stage_id=stage_id,
-            error=db_error,
-        )
-        raise
+        return asdict(report), artifact_path
+
+    stage_result = await run_stage_lifecycle(settings, active_run_id, "grill", body)
+    report = GrillReport(**stage_result.report)
 
     return GrillResult(
         run_id=active_run_id,
         artifact_path=artifact_path,
-        log_path=log_path,
+        log_path=stage_result.log_path,
         report=report,
     )
 
@@ -568,14 +540,6 @@ def _grill_log_path(settings: Settings, run_id: str) -> Path:
 
 def _criteria_dedupe_log_path(settings: Settings, run_id: str) -> Path:
     return settings.app_dir / "runs" / run_id / "stdout" / "criteria_dedupe.log"
-
-
-def _write_grill_log(log_path: Path, stdout: str, stderr: str) -> None:
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    log_path.write_text(
-        f"[stdout]\n{stdout}\n[stderr]\n{stderr}\n",
-        encoding="utf-8",
-    )
 
 
 def _write_grill_attempt_log(

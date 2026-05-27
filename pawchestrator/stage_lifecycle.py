@@ -25,6 +25,7 @@ class StageLifecycleConfig:
     run_status_complete: str
     run_status_failed: str
     artifact_type: str
+    workflow_kind: str | None = None
 
 
 STAGE_CONFIGS: dict[str, StageLifecycleConfig] = {
@@ -69,6 +70,7 @@ STAGE_CONFIGS: dict[str, StageLifecycleConfig] = {
         "grill_complete",
         "grill_failed",
         "grill_report",
+        "grill",
     ),
     "review": StageLifecycleConfig(
         "review_running",
@@ -129,6 +131,7 @@ async def run_stage_lifecycle(
         run_id=run_id,
         stage_name=stage_name,
         status=config.run_status_running,
+        workflow_kind=config.workflow_kind,
         now=utc_now_iso(),
     )
 
@@ -148,6 +151,7 @@ async def run_stage_lifecycle(
                 run_status=config.run_status_complete,
                 artifact_type=config.artifact_type,
                 artifact_path=artifact_path,
+                workflow_type=config.workflow_kind,
                 now=utc_now_iso(),
             )
             await db.commit()
@@ -174,6 +178,7 @@ async def run_stage_lifecycle(
                 stage_name=stage_name,
                 run_status=config.run_status_failed,
                 error=error,
+                workflow_type=config.workflow_kind,
                 now=utc_now_iso(),
             )
             await db.commit()

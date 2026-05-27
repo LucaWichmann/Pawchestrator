@@ -806,64 +806,6 @@ async def fail_snapshot_run(
         await db.commit()
 
 
-async def start_grill_run(settings: Settings, *, run_id: str) -> str:
-    await init_db(settings)
-    now = utc_now_iso()
-    return await start_stage(
-        settings.database_path,
-        run_id=run_id,
-        stage_name="grill",
-        status="grill_running",
-        workflow_kind=WorkflowKind.GRILL,
-        now=now,
-    )
-
-
-async def complete_grill_run(
-    settings: Settings,
-    *,
-    run_id: str,
-    stage_id: str,
-    artifact_path: Path,
-) -> None:
-    now = utc_now_iso()
-    async with aiosqlite.connect(settings.database_path) as db:
-        await complete_stage(
-            db,
-            run_id=run_id,
-            stage_id=stage_id,
-            stage_name="grill",
-            run_status="grill_complete",
-            artifact_type="grill_report",
-            artifact_path=artifact_path,
-            workflow_type="grill",
-            now=now,
-        )
-        await db.commit()
-
-
-async def fail_grill_run(
-    settings: Settings,
-    *,
-    run_id: str,
-    stage_id: str,
-    error: str,
-) -> None:
-    now = utc_now_iso()
-    async with aiosqlite.connect(settings.database_path) as db:
-        await fail_stage(
-            db,
-            run_id=run_id,
-            stage_id=stage_id,
-            stage_name="grill",
-            run_status="grill_failed",
-            error=error,
-            workflow_type="grill",
-            now=now,
-        )
-        await db.commit()
-
-
 async def set_grill_waiting(settings: Settings, *, run_id: str) -> None:
     await init_db(settings)
     now = utc_now_iso()
