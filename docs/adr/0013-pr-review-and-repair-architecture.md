@@ -36,5 +36,5 @@ ReviewRun and RepairRun are scoped to a PR number, not an issue number. Rather t
 - New config section `[review]` with `default_runner` and `cross_review` keys.
 - New API endpoints: `POST /runs/review/start`, `POST /runs/repair/start`, `GET /prs/{owner}/{repo}/{number}/review-state`, `POST /runs/{run_id}/create-issues`.
 - Tampermonkey injects a PR panel above the Conversation tab on `/pull/\d+` pages; polls status every 3s; enforces one active review or repair run per PR.
-- Review agent artifact must include `{inline_comments, summary, verdict, suggested_issues}`. Backend translates file line numbers to GitHub diff positions before submitting the review.
+- Review agent artifact must include `{inline_comments, summary, verdict, suggested_issues}`. Backend validates file line numbers against commentable added lines from the PR diff, then submits GitHub review comments with `line` and `side`.
 - After repair pushes, Pawchestrator re-requests review from all reviewers who had `CHANGES_REQUESTED` state (fetched from GitHub reviews API).

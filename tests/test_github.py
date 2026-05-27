@@ -5,15 +5,18 @@ import httpx
 import pytest
 
 from pawchestrator.github import (
+    GENERATED_BY_FOOTER,
     PAWCHESTRATOR_LABELS,
     GitHubError,
     GitHubIssueClient,
     ensure_pawchestrator_labels,
     format_run_comment,
+    parse_commentable_added_lines,
     parse_diff_positions,
     parse_checkboxes,
     parse_issue_shorthand,
     parse_issue_url,
+    with_generated_attribution,
 )
 
 
@@ -230,7 +233,7 @@ def test_github_issue_client_posts_pull_request_review_payload() -> None:
             "body": "Summary",
             "event": "REQUEST_CHANGES",
             "comments": [
-                {"path": "app.py", "position": 3, "body": "Fix this."}
+                {"path": "app.py", "line": 3, "side": "RIGHT", "body": "Fix this."}
             ],
         }
         return httpx.Response(200, json={"id": 123})
@@ -248,7 +251,9 @@ def test_github_issue_client_posts_pull_request_review_payload() -> None:
             42,
             body="Summary",
             event="REQUEST_CHANGES",
-            comments=[{"path": "app.py", "position": 3, "body": "Fix this."}],
+            comments=[
+                {"path": "app.py", "line": 3, "side": "RIGHT", "body": "Fix this."}
+            ],
         )
     )
 
@@ -341,6 +346,32 @@ diff --git a/pkg/util.py b/pkg/util.py
         ("app.py", 4): 4,
         ("pkg/util.py", 10): 2,
     }
+
+
+def test_parse_commentable_added_lines_maps_added_lines_to_file_lines() -> None:
+    diff = """diff --git a/app.py b/app.py
+index 1111111..2222222 100644
+--- a/app.py
++++ b/app.py
+@@ -1,3 +1,4 @@
+ one
++two
+ three
++four
+diff --git a/pkg/util.py b/pkg/util.py
+--- a/pkg/util.py
++++ b/pkg/util.py
+@@ -10,2 +10,2 @@
+-old
++new
+ context
+"""
+
+    assert parse_commentable_added_lines(diff) == [
+        {"path": "app.py", "line": 2, "text": "two"},
+        {"path": "app.py", "line": 4, "text": "four"},
+        {"path": "pkg/util.py", "line": 10, "text": "new"},
+    ]
 
 
 def test_github_issue_client_fetches_paginated_admin_collaborators() -> None:
@@ -538,6 +569,72 @@ def test_github_issue_client_fetches_pr_head_branch() -> None:
     assert len(requests) == 1
 
 
+def test_github_issue_client_fetches_authenticated_user_login() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.method == "GET"
+        assert request.url.path == "/user"
+        return httpx.Response(200, json={"login": "alice"})
+
+    client = GitHubIssueClient(
+        "token",
+        api_base="https://api.github.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert asyncio.run(client.fetch_authenticated_user_login()) == "alice"
+    assert len(requests) == 1
+
+
+def test_github_issue_client_fetches_pr_author_login() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.method == "GET"
+        assert request.url.path == "/repos/owner/repo/pulls/42"
+        return httpx.Response(200, json={"user": {"login": "alice"}})
+
+    client = GitHubIssueClient(
+        "token",
+        api_base="https://api.github.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert asyncio.run(client.fetch_pr_author_login("owner", "repo", 42)) == "alice"
+    assert len(requests) == 1
+
+
+def test_github_issue_client_fetches_issue_labels() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.method == "GET"
+        assert request.url.path == "/repos/owner/repo/issues/42/labels"
+        return httpx.Response(
+            200,
+            json=[
+                {"name": "pawchestrator:changes-requested"},
+                {"name": "enhancement"},
+            ],
+        )
+
+    client = GitHubIssueClient(
+        "token",
+        api_base="https://api.github.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert asyncio.run(client.fetch_issue_labels("owner", "repo", 42)) == [
+        "pawchestrator:changes-requested",
+        "enhancement",
+    ]
+    assert len(requests) == 1
+
+
 def test_github_issue_client_fetches_review_comments_and_pr_diff() -> None:
     requests: list[httpx.Request] = []
 
@@ -616,6 +713,54 @@ def test_github_issue_client_fetches_changes_requested_reviewers() -> None:
 
     assert reviewers == ["alice", "bob"]
     assert len(requests) == 1
+
+
+def test_github_issue_client_review_state_uses_changes_requested_label() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.method == "GET"
+        if request.url.path == "/repos/owner/repo/pulls/42/reviews":
+            return httpx.Response(200, json=[{"state": "COMMENTED"}])
+        if request.url.path == "/repos/owner/repo/issues/42/labels":
+            return httpx.Response(
+                200,
+                json=[{"name": PAWCHESTRATOR_LABELS["review-changes-requested"][0]}],
+            )
+        return httpx.Response(404, json={"message": "not found"})
+
+    client = GitHubIssueClient(
+        "token",
+        api_base="https://api.github.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert asyncio.run(client.fetch_pr_review_state("owner", "repo", 42)) == "changes_requested"
+    assert [request.url.path for request in requests] == [
+        "/repos/owner/repo/pulls/42/reviews",
+        "/repos/owner/repo/issues/42/labels",
+    ]
+
+
+def test_github_issue_client_review_state_uses_approved_label() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/repos/owner/repo/pulls/42/reviews":
+            return httpx.Response(200, json=[{"state": "COMMENTED"}])
+        if request.url.path == "/repos/owner/repo/issues/42/labels":
+            return httpx.Response(
+                200,
+                json=[{"name": PAWCHESTRATOR_LABELS["review-approved"][0]}],
+            )
+        return httpx.Response(404, json={"message": "not found"})
+
+    client = GitHubIssueClient(
+        "token",
+        api_base="https://api.github.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert asyncio.run(client.fetch_pr_review_state("owner", "repo", 42)) == "approved"
 
 
 def test_github_issue_client_requests_reviewers() -> None:
@@ -732,6 +877,24 @@ def test_github_issue_client_ensure_label_noops_when_label_exists() -> None:
     asyncio.run(client.ensure_label("owner", "repo", "pawchestrator:running", "6f42c1"))
 
     assert len(requests) == 1
+
+
+def test_with_generated_attribution_appends_footer_to_body() -> None:
+    assert with_generated_attribution("Body") == f"Body\n\n{GENERATED_BY_FOOTER}"
+
+
+def test_with_generated_attribution_handles_empty_body() -> None:
+    assert with_generated_attribution("") == GENERATED_BY_FOOTER
+
+
+def test_with_generated_attribution_does_not_duplicate_footer() -> None:
+    body = f"Body\n\n{GENERATED_BY_FOOTER}"
+
+    assert with_generated_attribution(body) == body
+
+
+def test_with_generated_attribution_normalizes_trailing_whitespace() -> None:
+    assert with_generated_attribution("Body\n\n") == f"Body\n\n{GENERATED_BY_FOOTER}"
 
 
 def test_github_issue_client_ensure_label_creates_missing_label() -> None:
@@ -880,6 +1043,7 @@ def test_format_run_comment_includes_structured_run_state() -> None:
     assert "- Current stage: `pr`" in body
     assert "- PR: https://github.com/owner/repo/pull/99" in body
     assert "| Snapshot | `complete` |" in body
+    assert body.endswith(GENERATED_BY_FOOTER)
 
 
 def test_format_run_comment_includes_failure_details() -> None:

@@ -488,6 +488,8 @@ def test_pr_review_state_returns_changes_requested_with_mock_transport(
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
         assert request.headers["Authorization"] == "Bearer token"
+        if request.url.path == "/repos/owner/repo/issues/42/labels":
+            return httpx.Response(200, json=[])
         return httpx.Response(
             200,
             json=[
@@ -514,7 +516,8 @@ def test_pr_review_state_returns_changes_requested_with_mock_transport(
     assert response.status_code == 200
     assert response.json() == {"state": "changes_requested"}
     assert [request.url.path for request in requests] == [
-        "/repos/owner/repo/pulls/42/reviews"
+        "/repos/owner/repo/pulls/42/reviews",
+        "/repos/owner/repo/issues/42/labels",
     ]
 
 
@@ -525,7 +528,9 @@ def test_pr_review_state_returns_approved_when_latest_review_approved(
     settings = Settings(app_dir=tmp_path)
     _seed_token(settings)
 
-    def handler(_request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/repos/owner/repo/issues/42/labels":
+            return httpx.Response(200, json=[])
         return httpx.Response(
             200,
             json=[
@@ -560,7 +565,9 @@ def test_pr_review_state_returns_open_without_terminal_review(
     settings = Settings(app_dir=tmp_path)
     _seed_token(settings)
 
-    def handler(_request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/repos/owner/repo/issues/42/labels":
+            return httpx.Response(200, json=[])
         return httpx.Response(200, json=[{"state": "COMMENTED"}])
 
     _patch_github_client(
@@ -580,6 +587,42 @@ def test_pr_review_state_returns_open_without_terminal_review(
 
     assert response.status_code == 200
     assert response.json() == {"state": "open"}
+
+
+def test_pr_review_state_returns_changes_requested_from_pawchestrator_label(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _seed_token(settings)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/repos/owner/repo/pulls/42/reviews":
+            return httpx.Response(200, json=[{"state": "COMMENTED"}])
+        if request.url.path == "/repos/owner/repo/issues/42/labels":
+            return httpx.Response(
+                200,
+                json=[{"name": "pawchestrator:changes-requested"}],
+            )
+        return httpx.Response(404, json={"message": "not found"})
+
+    _patch_github_client(
+        monkeypatch,
+        GitHubIssueClient(
+            "token",
+            api_base="https://api.github.test",
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+
+    with TestClient(create_app(settings)) as client:
+        response = client.get(
+            "/prs/owner/repo/42/review-state",
+            headers=_token_headers(),
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"state": "changes_requested"}
 
 
 def test_pr_review_state_requires_pairing_token(tmp_path: Path) -> None:

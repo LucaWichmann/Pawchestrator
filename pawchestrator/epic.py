@@ -17,7 +17,13 @@ from pawchestrator.db import (
     start_epic_run,
     upsert_worktree_record,
 )
-from pawchestrator.github import GitHubIssueClient, IssueReference, get_gh_token, parse_issue_url
+from pawchestrator.github import (
+    GitHubIssueClient,
+    IssueReference,
+    get_gh_token,
+    parse_issue_url,
+    with_generated_attribution,
+)
 from pawchestrator.implement import DEFAULT_BASE_BRANCH, ensure_issue_worktree, slugify
 from pawchestrator.pipeline import run_pipeline
 from pawchestrator.pr import PrDraftResult, create_worktree_pr
@@ -251,7 +257,7 @@ def _epic_pr_body(
     sub_runs: list[SubRunResult],
 ) -> str:
     if not sub_runs:
-        return f"""## Summary
+        body = f"""## Summary
 
 Pawchestrator opened this PR to collect epic sub-issue work.
 
@@ -263,6 +269,7 @@ Implements epic #{issue_number}
 
 Internal artifacts are stored locally under epic run `{run_id}` and were not posted publicly.
 """
+        return with_generated_attribution(body)
 
     completed_issue_refs = ", ".join(f"#{sub_run.issue_number}" for sub_run in sub_runs)
     closing_refs = ", ".join(f"closes #{sub_run.issue_number}" for sub_run in sub_runs)
@@ -276,7 +283,7 @@ Internal artifacts are stored locally under epic run `{run_id}` and were not pos
         _verification_summary_line(settings, sub_run) for sub_run in sub_runs
     )
 
-    return f"""## Summary
+    body = f"""## Summary
 
 Pawchestrator implemented the completed sub-issues for epic #{issue_number}.
 
@@ -304,6 +311,7 @@ Sub-issues completed: {completed_issue_refs}
 
 Internal artifacts are stored locally under epic run `{run_id}` and child run ids listed above.
 """
+    return with_generated_attribution(body)
 
 
 def _completed_sub_issue_line(sub_run: SubRunResult) -> str:

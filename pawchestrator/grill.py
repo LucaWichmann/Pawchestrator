@@ -23,6 +23,8 @@ from pawchestrator.github import (
     UNCHECKED_CHECKBOX_RE,
     GitHubIssueClient,
     get_gh_token,
+    with_generated_attribution,
+    without_generated_attribution,
 )
 from pawchestrator.issues import snapshot_issue
 from pawchestrator.runners import (
@@ -256,12 +258,15 @@ def append_suggested_criteria(body: str, suggested_criteria: list[str]) -> tuple
     if heading_range is None:
         rendered = "\n".join(f"- [ ] {criterion}" for criterion in suggested_criteria)
         separator = "\n\n" if body.strip() else ""
-        return f"{body.rstrip()}{separator}{SUGGESTED_CRITERIA_HEADING}\n\n{rendered}\n", True
+        section = with_generated_attribution(
+            f"{SUGGESTED_CRITERIA_HEADING}\n\n{rendered}"
+        )
+        return f"{body.rstrip()}{separator}{section}\n", True
 
     existing = _suggested_criteria_texts(body, heading_range)
     new_criteria = [criterion for criterion in suggested_criteria if criterion not in existing]
     if not new_criteria:
-        return body, False
+        return _ensure_suggested_criteria_attribution(body, heading_range)
 
     return _append_to_suggested_criteria_section(body, heading_range, new_criteria), True
 
@@ -366,15 +371,34 @@ def _append_to_suggested_criteria_section(
 ) -> str:
     lines = body.splitlines(keepends=True)
     _, section_end = heading_range
-    before = "".join(lines[:section_end]).rstrip()
+    before = without_generated_attribution("".join(lines[:section_end]).rstrip())
     after = "".join(lines[section_end:])
     rendered = "\n".join(f"- [ ] {criterion}" for criterion in new_criteria)
     separator = "\n\n" if _section_has_no_criteria(lines, heading_range) else "\n"
-    updated = f"{before}{separator}{rendered}\n"
+    updated = with_generated_attribution(f"{before}{separator}{rendered}")
     if after:
         after = after.lstrip("\r\n")
         updated = f"{updated}\n{after}"
     return updated
+
+
+def _ensure_suggested_criteria_attribution(
+    body: str,
+    heading_range: tuple[int, int],
+) -> tuple[str, bool]:
+    lines = body.splitlines(keepends=True)
+    start, section_end = heading_range
+    before = "".join(lines[:start])
+    section = "".join(lines[start:section_end]).rstrip()
+    after = "".join(lines[section_end:])
+    attributed = with_generated_attribution(section)
+    if attributed == section:
+        return body, False
+    updated = f"{before}{attributed}\n"
+    if after:
+        after = after.lstrip("\r\n")
+        updated = f"{updated}\n{after}"
+    return updated, True
 
 
 def _section_has_no_criteria(lines: list[str], heading_range: tuple[int, int]) -> bool:
@@ -523,7 +547,7 @@ async def _resolve_repo_path(
 def _format_questions_comment(questions: list[str]) -> str:
     lines = ["## Pawchestrator questions", ""]
     lines.extend(f"- {question}" for question in questions)
-    return "\n".join(lines)
+    return with_generated_attribution("\n".join(lines))
 
 
 def _list_value(value: object) -> list[object]:

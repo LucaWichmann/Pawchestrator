@@ -11,6 +11,7 @@ from pawchestrator.db import (
     get_run_state,
     start_review_post_run,
 )
+from pawchestrator.github import GENERATED_BY_FOOTER
 from pawchestrator.review import review_report_path
 from pawchestrator.server import create_app
 from pawchestrator.sessions import save_sessions
@@ -60,8 +61,8 @@ def test_review_issues_stage_creates_suggested_issues(
 
     assert response.status_code == 200
     assert fake_client.created == [
-        ("owner", "repo", "First follow-up"),
-        ("owner", "repo", "Second follow-up"),
+        ("owner", "repo", "First follow-up", GENERATED_BY_FOOTER),
+        ("owner", "repo", "Second follow-up", GENERATED_BY_FOOTER),
     ]
     payload = status_response.json()
     assert payload["status"] == "issues_complete"
@@ -125,7 +126,7 @@ def test_review_issues_endpoint_requires_complete_post_stage(tmp_path: Path) -> 
 class FakeCreateIssueClient:
     def __init__(self, *, fail_after: int | None = None) -> None:
         self.fail_after = fail_after
-        self.created: list[tuple[str, str, str]] = []
+        self.created: list[tuple[str, str, str, str | None]] = []
 
     async def create_issue(
         self,
@@ -137,7 +138,7 @@ class FakeCreateIssueClient:
     ) -> str:
         if self.fail_after is not None and len(self.created) >= self.fail_after:
             raise RuntimeError("github failed")
-        self.created.append((owner, repo, title))
+        self.created.append((owner, repo, title, body))
         return f"https://github.com/{owner}/{repo}/issues/{len(self.created)}"
 
 
