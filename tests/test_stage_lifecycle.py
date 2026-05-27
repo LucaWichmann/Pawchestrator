@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from pawchestrator.config import Settings
-from pawchestrator.db import create_pipeline_run
+from pawchestrator.db import create_grill_run, create_pipeline_run
 from pawchestrator.runners import RunnerFailedError
 from pawchestrator.stage_lifecycle import (
     GENERIC_STAGE_ERROR,
@@ -67,6 +67,31 @@ def test_run_stage_lifecycle_success_path_writes_artifact(
     assert _run_status(tmp_path, run_id) == ("scout_complete", "scout")
     assert _stage_by_name(tmp_path, run_id, "scout") == ("complete", None)
     assert _artifacts(tmp_path, run_id) == [("scout_report", str(artifact_path))]
+
+
+def test_run_stage_lifecycle_grill_uses_grill_statuses(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    run_id = "grill-success"
+    artifact_path = tmp_path / "artifacts" / "grill.json"
+    report = {"schema": "pawchestrator.grill_report.v1", "status": "success"}
+
+    async def body(log_path: Path) -> tuple[dict[str, Any], Path]:
+        assert log_path == tmp_path / "runs" / run_id / "stdout" / "grill.log"
+        return report, artifact_path
+
+    asyncio.run(_create_grill(settings, run_id))
+    result = asyncio.run(run_stage_lifecycle(settings, run_id, "grill", body))
+
+    assert result.report == report
+    assert _run_status_with_type(tmp_path, run_id) == (
+        "grill",
+        "grill_complete",
+        "grill",
+    )
+    assert _stage_by_name(tmp_path, run_id, "grill") == ("complete", None)
+    assert _artifacts(tmp_path, run_id) == [("grill_report", str(artifact_path))]
 
 
 def test_run_stage_lifecycle_runner_failed_error_path(
@@ -130,11 +155,34 @@ async def _create_pipeline(settings: Settings, run_id: str) -> None:
     )
 
 
+async def _create_grill(settings: Settings, run_id: str) -> None:
+    await create_grill_run(
+        settings,
+        run_id=run_id,
+        owner="owner",
+        repo="repo",
+        issue_number=42,
+    )
+
+
 def _run_status(tmp_path: Path, run_id: str) -> tuple[str, str | None]:
     with sqlite3.connect(tmp_path / "database.sqlite") as db:
         row = db.execute(
             """
             SELECT status, current_stage
+            FROM workflow_runs
+            WHERE id = ?
+            """,
+            (run_id,),
+        ).fetchone()
+    return row
+
+
+def _run_status_with_type(tmp_path: Path, run_id: str) -> tuple[str, str, str | None]:
+    with sqlite3.connect(tmp_path / "database.sqlite") as db:
+        row = db.execute(
+            """
+            SELECT workflow_type, status, current_stage
             FROM workflow_runs
             WHERE id = ?
             """,

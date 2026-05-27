@@ -6,7 +6,6 @@ from pathlib import Path
 from pawchestrator.config import Settings
 from pawchestrator.db import (
     complete_epic_run,
-    complete_grill_run,
     complete_implement_run,
     complete_pr_run,
     complete_repair_push_run,
@@ -17,13 +16,11 @@ from pawchestrator.db import (
     complete_snapshot_run,
     complete_verify_run,
     create_epic_run,
-    create_grill_run,
     create_pipeline_run,
     create_repair_run,
     create_review_run,
     create_snapshot_run,
     fail_epic_run,
-    fail_grill_run,
     fail_implement_run,
     fail_pr_run,
     fail_repair_push_run,
@@ -38,7 +35,6 @@ from pawchestrator.db import (
     skip_review_issues_run,
     skip_verify_run,
     start_epic_run,
-    start_grill_run,
     start_implement_run,
     start_pr_run,
     start_repair_push_run,
@@ -257,14 +253,6 @@ def test_epic_run_lifecycle_start_complete_and_fail(tmp_path: Path) -> None:
 
     assert _run_status(tmp_path, "epic-fail")[:2] == ("epic_failed", "epic")
     assert _stage_count(tmp_path, "epic-fail") == 0
-
-
-def test_grill_run_lifecycle_start_complete_and_fail(tmp_path: Path) -> None:
-    settings = Settings(app_dir=tmp_path)
-
-    for spec in _grill_stage_specs(tmp_path):
-        _assert_stage_complete(settings, tmp_path, spec)
-        _assert_stage_failed(settings, tmp_path, spec)
 
 
 class StageSpec:
@@ -498,42 +486,6 @@ def _repair_stage_specs(tmp_path: Path) -> list[StageSpec]:
                 run_id=run_id,
                 stage_id=stage_id,
                 error="push failed",
-            ),
-        ),
-    ]
-
-
-def _grill_stage_specs(tmp_path: Path) -> list[StageSpec]:
-    settings = Settings(app_dir=tmp_path)
-
-    def create(run_id: str) -> Awaitable[None]:
-        return create_grill_run(
-            settings,
-            run_id=run_id,
-            owner="owner",
-            repo="repo",
-            issue_number=42,
-        )
-
-    return [
-        StageSpec(
-            stage_name="grill",
-            run_status="grill_complete",
-            artifact_type="grill_report",
-            artifact_path=tmp_path / "grill.json",
-            create_run=create,
-            start=lambda run_id: start_grill_run(settings, run_id=run_id),
-            complete=lambda run_id, stage_id: complete_grill_run(
-                settings,
-                run_id=run_id,
-                stage_id=stage_id,
-                artifact_path=tmp_path / "grill.json",
-            ),
-            fail=lambda run_id, stage_id: fail_grill_run(
-                settings,
-                run_id=run_id,
-                stage_id=stage_id,
-                error="grill failed",
             ),
         ),
     ]
