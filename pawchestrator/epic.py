@@ -26,7 +26,8 @@ from pawchestrator.github import (
 )
 from pawchestrator.implement import DEFAULT_BASE_BRANCH, ensure_issue_worktree, slugify
 from pawchestrator.pipeline import run_pipeline
-from pawchestrator.pr import PrDraftResult, create_worktree_pr
+from pawchestrator.pr import create_worktree_pr
+from pawchestrator.stage_lifecycle import StageResult
 
 ProgressFn = Callable[[str], None]
 
@@ -116,13 +117,13 @@ async def run_epic(
                     allow_empty_commit=True,
                     sub_runs=[],
                 )
-                parent_pr_url = epic_pr.pr_url
+                parent_pr_url = str(epic_pr.report["pr_url"])
                 await set_run_pr_url(
                     settings,
                     run_id=parent_run_id,
-                    pr_url=epic_pr.pr_url,
+                    pr_url=parent_pr_url,
                 )
-                progress(f"[epic] draft PR ready - {epic_pr.pr_url}")
+                progress(f"[epic] draft PR ready - {parent_pr_url}")
 
         latest_child_runs = await get_latest_pipeline_runs_by_group_issue(
             settings,
@@ -197,7 +198,7 @@ async def run_epic(
                 allow_empty_commit=False,
                 sub_runs=sub_runs,
             )
-            epic_pr_url = epic_pr.pr_url
+            epic_pr_url = str(epic_pr.report["pr_url"])
             progress(f"[epic] PR ready - {epic_pr_url}")
         await complete_epic_run(settings, run_id=parent_run_id, pr_url=epic_pr_url)
     except Exception:
@@ -228,7 +229,7 @@ async def _create_epic_pr(
     draft: bool,
     allow_empty_commit: bool,
     sub_runs: list[SubRunResult],
-) -> PrDraftResult:
+) -> StageResult:
     return await create_worktree_pr(
         settings=settings,
         run_id=run_id,
