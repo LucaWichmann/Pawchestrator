@@ -145,7 +145,7 @@ def test_run_plan_writes_artifact_log_and_records_stage(tmp_path: Path) -> None:
     assert "Issue: #42 - Add plan" in runner.task.prompt
     assert result.artifact_path == tmp_path / "runs" / run_id / "implementation_plan.json"
     assert result.log_path == tmp_path / "runs" / run_id / "stdout" / "plan.log"
-    assert result.plan["estimated_risk"] == "low"
+    assert result.report["estimated_risk"] == "low"
 
     plan = json.loads(result.artifact_path.read_text(encoding="utf-8"))
     log = result.log_path.read_text(encoding="utf-8")
@@ -259,7 +259,7 @@ def test_run_plan_falls_back_to_codex_for_claude_usage_limit(
 
     result = asyncio.run(run_plan(run_id, settings, repo_path=tmp_path))
 
-    assert result.plan["estimated_risk"] == "low"
+    assert result.report["estimated_risk"] == "low"
     assert isinstance(seen["task"], RunnerTask)
     assert seen["sandbox"] == "read-only"
     assert seen["bypass_sandbox"] is False
@@ -559,7 +559,7 @@ def test_run_plan_command_prints_human_summary(
         assert settings.app_dir == tmp_path
 
         class Result:
-            plan = {
+            report = {
                 "approach_summary": "Use existing scout shape.",
                 "steps": [
                     {"order": 1, "description": "Add plan module."},

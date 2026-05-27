@@ -9,23 +9,19 @@ import pytest
 from pawchestrator.config import PipelineSettings, Settings
 from pawchestrator.db import (
     complete_implement_run,
-    complete_plan_run,
     complete_pr_run,
-    complete_scout_run,
     complete_snapshot_run,
     complete_verify_run,
     create_snapshot_run,
-    fail_plan_run,
     get_run_warnings,
     start_implement_run,
-    start_plan_run,
     start_pr_run,
-    start_scout_run,
     start_verify_run,
     upsert_worktree_record,
 )
 from pawchestrator.github import PAWCHESTRATOR_LABELS
 from pawchestrator.pipeline import VerificationFailedError, run_pipeline
+from pawchestrator.stage_lifecycle import run_stage_lifecycle
 
 
 @pytest.fixture(autouse=True)
@@ -204,13 +200,10 @@ def test_run_pipeline_stops_on_failure_and_marks_run_failed(
 
     async def fake_plan(run_id: str, settings: Settings, *, repo_path: Path | None = None):
         calls.append("plan")
-        stage_id = await start_plan_run(settings, run_id=run_id)
-        await fail_plan_run(
-            settings,
-            run_id=run_id,
-            stage_id=stage_id,
-            error="plan exploded",
-        )
+        async def body(log_path: Path):
+            raise RuntimeError("plan exploded")
+
+        await run_stage_lifecycle(settings, run_id, "plan", body)
         raise RuntimeError("plan exploded")
 
     monkeypatch.setattr("pawchestrator.pipeline.run_plan", fake_plan)
@@ -603,13 +596,10 @@ def test_run_pipeline_sets_failed_label_on_failure(
 
     async def fake_plan(run_id: str, settings: Settings, *, repo_path: Path | None = None):
         calls.append("plan")
-        stage_id = await start_plan_run(settings, run_id=run_id)
-        await fail_plan_run(
-            settings,
-            run_id=run_id,
-            stage_id=stage_id,
-            error="plan exploded",
-        )
+        async def body(log_path: Path):
+            raise RuntimeError("plan exploded")
+
+        await run_stage_lifecycle(settings, run_id, "plan", body)
         raise RuntimeError("plan exploded")
 
     monkeypatch.setattr("pawchestrator.pipeline.run_plan", fake_plan)
@@ -772,31 +762,21 @@ def _patch_successful_stages(
 
     async def fake_scout(run_id: str, settings: Settings, *, repo_path: Path | None = None):
         calls.append("scout")
-        stage_id = await start_scout_run(settings, run_id=run_id)
         artifact_path = settings.app_dir / "runs" / run_id / "scout_report.json"
-        artifact_path.parent.mkdir(parents=True, exist_ok=True)
-        artifact_path.write_text("{}", encoding="utf-8")
-        await complete_scout_run(
-            settings,
-            run_id=run_id,
-            stage_id=stage_id,
-            artifact_path=artifact_path,
-        )
-        return SimpleNamespace(report={"readiness": "ready"})
+
+        async def body(log_path: Path):
+            return {"readiness": "ready"}, artifact_path
+
+        return await run_stage_lifecycle(settings, run_id, "scout", body)
 
     async def fake_plan(run_id: str, settings: Settings, *, repo_path: Path | None = None):
         calls.append("plan")
-        stage_id = await start_plan_run(settings, run_id=run_id)
         artifact_path = settings.app_dir / "runs" / run_id / "implementation_plan.json"
-        artifact_path.parent.mkdir(parents=True, exist_ok=True)
-        artifact_path.write_text("{}", encoding="utf-8")
-        await complete_plan_run(
-            settings,
-            run_id=run_id,
-            stage_id=stage_id,
-            artifact_path=artifact_path,
-        )
-        return SimpleNamespace(plan={})
+
+        async def body(log_path: Path):
+            return {}, artifact_path
+
+        return await run_stage_lifecycle(settings, run_id, "plan", body)
 
     async def fake_implement(
         run_id: str,
