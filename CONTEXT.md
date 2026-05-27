@@ -78,6 +78,7 @@ No human gates in MVP 0. No repair loop. No YAML workflow engine. No pairing sec
 | Scout    | ClaudeRunner   | Read-only, JSON output               |
 | Grill    | ClaudeRunner   | Read-only enforced for Claude; codex has no tool allowlist |
 | CriteriaDedupe | ClaudeRunner | Grill utility stage; defaults to Claude Haiku, or Codex GPT-5.4-Mini low reasoning when assigned to codex |
+| ReviewIssueFormat | ClaudeRunner | Review issues utility stage; defaults to Claude Haiku (no reasoning), or Codex GPT-5.4-Mini low reasoning. Non-agentic: returns structured JSON snippets only, no tool calls. See ADR 0015. |
 | Plan     | ClaudeRunner   | JSON output                          |
 | Implement| CodexRunner    | File edits via patch                 |
 | Verify   | ShellRunner    | Runs repo-configured build/test cmds — not configurable |
@@ -250,7 +251,9 @@ MVP 1: GitHub OAuth device flow, PAT support.
 - The comment ID is stored in SQLite (`workflow_runs.github_comment_id`) so subsequent stage transitions can edit it.
 - Internal artifacts stay local. GitHub comments show only factual run state.
 
-**Grill comment carve-out:** Grill is the only action that writes LLM-generated text to GitHub. This is intentional — the questions are the product, not a summary. A grill comment is posted only when there are unanswerable questions. Zero unanswerable questions = zero comments. One new comment is posted per round (never edited); `comment_id` in the run always points to the most recent questions comment. See ADR 0002, ADR 0008.
+**Grill comment carve-out:** Grill is the only action that writes LLM-generated text to GitHub comments. This is intentional — the questions are the product, not a summary. A grill comment is posted only when there are unanswerable questions. Zero unanswerable questions = zero comments. One new comment is posted per round (never edited); `comment_id` in the run always points to the most recent questions comment. See ADR 0002, ADR 0008.
+
+**Review issue carve-out:** The `issues` stage creates GitHub issues whose title and body are partially derived from a small-model (`review_issue_format`) call. The model emits structured snippets only (`title`, `problem`, `acceptance_criteria` items); Python assembles the final issue body. The model does not write prose directly to GitHub. Small non-reasoning models (Haiku / GPT-5.4-mini) are used to minimize output token cost. See ADR 0015.
 
 **Label strategy — pipeline runs:**
 - Apply `pawchestrator:running` when a run starts, replace with stage label (`pawchestrator:scouting`, `pawchestrator:planning`, etc.) as stages progress.
@@ -409,7 +412,7 @@ When a run starts via browser trigger, the pipeline looks up `(owner, repo)` in 
 
 **ReviewVerdict** — The agent-determined outcome of a ReviewRun. One of: `REQUEST_CHANGES` (blocking issues: bugs, security risks, wrong behavior), `APPROVE` (no blocking issues — minor items may become SuggestedIssues), `COMMENT` (observations without a formal decision). Agent picks verdict. Auto-approving is a valid outcome; constraining to always REQUEST_CHANGES loses signal.
 
-**SuggestedIssues** — Minor, non-blocking items surfaced during an APPROVE review that are worth tracking but don't block merge. Proposed in the PR panel as a list of `{title, body}` pairs. Human clicks "Create Issues" to open them on GitHub — not auto-created. The `issues` stage runs only on user confirmation; stays pending otherwise.
+**SuggestedIssues** — Minor, non-blocking items surfaced during an APPROVE review that are worth tracking but don't block merge. Stored internally in the review artifact as `{hint, file, line}` triples, where `file`+`line` reference an existing `inline_comment`. Human clicks "Create Issues" in the PR panel to trigger the `issues` stage — not auto-created. The stage runs one non-agentic `review_issue_format` small-model call per item (parallel), then creates each GitHub issue sequentially from the returned structured snippets. See ADR 0015.
 
 ### Review agent inputs
 
@@ -424,11 +427,11 @@ When a run starts via browser trigger, the pipeline looks up `(owner, repo)` in 
   "inline_comments": [{"file": "...", "line": 42, "body": "..."}],
   "summary": "Overall review vibe — e.g. 'smaller changes requested, logic is sound'",
   "verdict": "REQUEST_CHANGES | APPROVE | COMMENT",
-  "suggested_issues": [{"title": "...", "body": "..."}]
+  "suggested_issues": [{"hint": "...", "file": "...", "line": 42}]
 }
 ```
 
-`suggested_issues` only populated when `verdict = "APPROVE"`. Inline comments use file line numbers copied from the prompt's Commentable added lines section; Pawchestrator validates those lines against the PR diff and submits GitHub review comments with `line` + `side = RIGHT`. GitHub review posted as one `POST /pulls/{number}/reviews` call with inline comments + summary body + event field.
+`suggested_issues` only populated when `verdict = "APPROVE"`. Each entry's `file`+`line` must reference an existing `inline_comment`; `normalize_review_artifact` validates this and rejects orphaned entries. Inline comments use file line numbers copied from the prompt's Commentable added lines section; Pawchestrator validates those lines against the PR diff and submits GitHub review comments with `line` + `side = RIGHT`. GitHub review posted as one `POST /pulls/{number}/reviews` call with inline comments + summary body + event field.
 
 ### Runner assignment
 
