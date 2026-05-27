@@ -79,12 +79,12 @@ def test_run_stage_lifecycle_runner_failed_error_path(
     async def body(log_path: Path) -> tuple[dict[str, Any], Path]:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.write_text("runner stderr\n", encoding="utf-8")
-        error = RunnerFailedError()
-        error.public_message = public_message
-        error.exit_code = 1
-        error.stderr = "stderr"
-        error.stdout = "stdout"
-        raise error
+        raise RunnerFailedError(
+            public_message=public_message,
+            exit_code=1,
+            stderr="stderr",
+            stdout="stdout",
+        )
 
     asyncio.run(_create_pipeline(settings, run_id))
     with pytest.raises(RunnerFailedError):
