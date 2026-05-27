@@ -10,34 +10,19 @@ from uuid import uuid4
 import aiosqlite
 
 from pawchestrator.config import Settings, ensure_app_dir
-from pawchestrator.lifecycle import complete_stage, fail_stage, skip_stage
+from pawchestrator.lifecycle import (
+    STALE_RUN_ERROR,
+    TERMINAL_RUN_STATUSES,
+    complete_stage,
+    fail_stage,
+    fail_stale_runs_on_startup,
+    skip_stage,
+)
 from pawchestrator.run_lifecycle import (
-    PIPELINE_STAGES,
-    REPAIR_STAGES,
-    REVIEW_STAGES,
     WorkflowKind,
     create_run,
     start_stage,
 )
-TERMINAL_RUN_STATUSES = (
-    "completed",
-    "failed",
-    "grill_complete",
-    "grill_failed",
-    "epic_complete",
-    "epic_failed",
-    "post_complete",
-    "post_failed",
-    "issues_complete",
-    "issues_failed",
-    "issues_skipped",
-    "review_failed",
-    "repair_complete",
-    "repair_failed",
-    "push_complete",
-    "push_failed",
-)
-STALE_RUN_ERROR = "Run aborted: Pawchestrator stopped before this run finished."
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS workflow_runs (
@@ -1537,81 +1522,6 @@ async def mark_run_failed(settings: Settings, *, run_id: str) -> None:
         await db.commit()
 
 
-async def fail_stale_runs_on_startup(settings: Settings) -> int:
-    await init_db(settings)
-    now = utc_now_iso()
-    cleaned = 0
-    async with aiosqlite.connect(settings.database_path) as db:
-        db.row_factory = aiosqlite.Row
-        terminal_placeholders = ", ".join("?" for _ in TERMINAL_RUN_STATUSES)
-        cursor = await db.execute(
-            f"""
-            SELECT id, workflow_type, status, current_stage, pr_url
-            FROM workflow_runs
-            WHERE status NOT IN ({terminal_placeholders})
-              AND (group_id IS NULL OR workflow_type = 'epic')
-            ORDER BY created_at, id
-            """,
-            TERMINAL_RUN_STATUSES,
-        )
-        runs = await cursor.fetchall()
-
-        for run in runs:
-            run_id = str(run["id"])
-            if run["status"] == "grill_waiting":
-                continue
-
-            if run["status"] == "pr_complete" and run["pr_url"]:
-                await db.execute(
-                    """
-                    UPDATE workflow_runs
-                    SET status = 'completed',
-                        current_stage = 'pr',
-                        updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (now, run_id),
-                )
-                cleaned += 1
-                continue
-
-            if run["workflow_type"] == "epic":
-                await db.execute(
-                    """
-                    UPDATE workflow_runs
-                    SET status = 'epic_failed',
-                        current_stage = 'epic',
-                        updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (now, run_id),
-                )
-                cleaned += 1
-                continue
-
-            stage_name = await _stale_failure_stage(db, run)
-            await db.execute(
-                """
-                UPDATE workflow_runs
-                SET status = 'failed',
-                    current_stage = ?,
-                    updated_at = ?
-                WHERE id = ?
-                """,
-                (stage_name, now, run_id),
-            )
-            await _fail_stale_stage(
-                db,
-                run_id=run_id,
-                stage_name=stage_name,
-                now=now,
-            )
-            cleaned += 1
-
-        await db.commit()
-    return cleaned
-
-
 async def get_run_state(settings: Settings, run_id: str) -> dict[str, object] | None:
     await init_db(settings)
     async with aiosqlite.connect(settings.database_path) as db:
@@ -1825,132 +1735,6 @@ def _created_issue_urls(run: dict[str, object]) -> list[str]:
     if not isinstance(urls, list):
         return []
     return [url for url in urls if isinstance(url, str)]
-
-
-async def _stale_failure_stage(
-    db: aiosqlite.Connection,
-    run: aiosqlite.Row,
-) -> str:
-    workflow_type = str(run["workflow_type"] or "pipeline")
-    if workflow_type == "grill":
-        return "grill"
-    if workflow_type == "repair":
-        return "repair"
-
-    status = str(run["status"] or "")
-    current_stage = _valid_pipeline_stage(run["current_stage"])
-    status_stage = _valid_pipeline_stage(status.rsplit("_", 1)[0])
-    if status.endswith("_running") or status.endswith("_failed"):
-        return status_stage or current_stage or "snapshot"
-
-    if status == "pending":
-        return await _first_pending_pipeline_stage(db, str(run["id"])) or "snapshot"
-
-    if status.endswith("_complete") or status == "verify_skipped":
-        pending_stage = await _first_pending_pipeline_stage(db, str(run["id"]))
-        if pending_stage is not None:
-            return pending_stage
-        return _next_pipeline_stage(current_stage) or current_stage or "snapshot"
-
-    return current_stage or status_stage or "snapshot"
-
-
-def _valid_pipeline_stage(stage_name: object) -> str | None:
-    stage = str(stage_name or "")
-    return (
-        stage
-        if stage in PIPELINE_STAGES or stage in REVIEW_STAGES or stage in REPAIR_STAGES
-        else None
-    )
-
-
-def _next_pipeline_stage(stage_name: str | None) -> str | None:
-    if stage_name not in PIPELINE_STAGES:
-        return None
-    index = PIPELINE_STAGES.index(stage_name)
-    if index + 1 >= len(PIPELINE_STAGES):
-        return stage_name
-    return PIPELINE_STAGES[index + 1]
-
-
-async def _first_pending_pipeline_stage(
-    db: aiosqlite.Connection,
-    run_id: str,
-) -> str | None:
-    cursor = await db.execute(
-        """
-        SELECT stage_name
-        FROM workflow_stages
-        WHERE run_id = ?
-          AND status = 'pending'
-          AND stage_name IN (?, ?, ?, ?, ?, ?)
-        ORDER BY
-          CASE stage_name
-            WHEN 'snapshot' THEN 1
-            WHEN 'scout' THEN 2
-            WHEN 'plan' THEN 3
-            WHEN 'implement' THEN 4
-            WHEN 'verify' THEN 5
-            WHEN 'pr' THEN 6
-            ELSE 99
-          END,
-          id
-        LIMIT 1
-        """,
-        (run_id, *PIPELINE_STAGES),
-    )
-    row = await cursor.fetchone()
-    return str(row["stage_name"]) if row is not None else None
-
-
-async def _fail_stale_stage(
-    db: aiosqlite.Connection,
-    *,
-    run_id: str,
-    stage_name: str,
-    now: str,
-) -> None:
-    cursor = await db.execute(
-        """
-        SELECT id
-        FROM workflow_stages
-        WHERE run_id = ? AND stage_name = ?
-        ORDER BY
-          CASE status
-            WHEN 'running' THEN 1
-            WHEN 'pending' THEN 2
-            ELSE 3
-          END,
-          started_at DESC,
-          id DESC
-        LIMIT 1
-        """,
-        (run_id, stage_name),
-    )
-    row = await cursor.fetchone()
-    if row is None:
-        await db.execute(
-            """
-            INSERT INTO workflow_stages (
-              id, run_id, stage_name, status, error, started_at, completed_at
-            )
-            VALUES (?, ?, ?, 'failed', ?, ?, ?)
-            """,
-            (str(uuid4()), run_id, stage_name, STALE_RUN_ERROR, now, now),
-        )
-        return
-
-    await db.execute(
-        """
-        UPDATE workflow_stages
-        SET status = 'failed',
-            error = ?,
-            started_at = COALESCE(started_at, ?),
-            completed_at = ?
-        WHERE id = ?
-        """,
-        (STALE_RUN_ERROR, now, now, str(row["id"])),
-    )
 
 
 async def _start_stage_row(
