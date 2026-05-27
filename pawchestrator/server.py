@@ -16,11 +16,9 @@ from pydantic import BaseModel, Field
 from pawchestrator import __version__
 from pawchestrator.config import LOCAL_HOST, Settings, load_settings
 from pawchestrator.db import (
-    complete_review_issues_run,
     create_epic_run,
     create_repair_run,
     create_review_run,
-    fail_review_issues_run,
     get_latest_epic_run_by_issue,
     get_latest_failed_epic_run_by_issue,
     get_latest_pipeline_runs_by_group_issue,
@@ -32,8 +30,6 @@ from pawchestrator.db import (
     is_repo_registered,
     lookup_repo_path,
     mark_run_failed,
-    skip_review_issues_run,
-    start_review_issues_run,
 )
 from pawchestrator.epic import run_epic
 from pawchestrator.github import (
@@ -48,6 +44,7 @@ from pawchestrator.pipeline import run_pipeline
 from pawchestrator.review import run_review
 from pawchestrator.review import review_report_path
 from pawchestrator.review_issues import format_and_create_issues
+from pawchestrator.review_post import run_review_post
 from pawchestrator.runners import get_runner_health
 from pawchestrator.sessions import (
     _pair_lock,
@@ -55,6 +52,11 @@ from pawchestrator.sessions import (
     load_sessions,
     save_sessions,
     token_exists,
+)
+from pawchestrator.stage_lifecycle import (
+    StageFailedWithArtifact,
+    StageSkipped,
+    run_stage_lifecycle,
 )
 
 
@@ -472,56 +474,46 @@ async def _create_review_issues(settings: Settings, run_id: str) -> dict[str, ob
             detail="review report inline_comments must be a list of comment objects",
         )
 
-    stage_id = await start_review_issues_run(settings, run_id=run_id)
-    created_issue_urls: list[str] = []
-    artifact_path = _created_issues_report_path(settings, run_id)
-    try:
+    async def body(_log_path: Path) -> tuple[dict[str, object], Path]:
+        created_issue_urls: list[str] = []
+        artifact_path = _created_issues_report_path(settings, run_id)
         if not suggested_issues:
-            _write_created_issues_report(artifact_path, created_issue_urls)
-            await skip_review_issues_run(
-                settings,
-                run_id=run_id,
-                stage_id=stage_id,
-                artifact_path=artifact_path,
-                reason="No suggested issues.",
+            raise StageSkipped(
+                "No suggested issues.",
+                {"created_issue_urls": created_issue_urls},
+                artifact_path,
             )
-            result = await get_run_state(settings, run_id)
-            return result or {}
 
         owner = str(state["owner"])
         repo = str(state["repo"])
         repo_path = await lookup_repo_path(settings, owner=owner, repo=repo)
         cwd = repo_path or Path.cwd()
-        created_issue_urls = await format_and_create_issues(
-            settings,
-            run_id=run_id,
-            cwd=cwd,
-            owner=owner,
-            repo=repo,
-            pr_summary=str(report.get("summary") or ""),
-            suggested_issues=suggested_issues,
-            inline_comments=inline_comments,
-            artifact_path=artifact_path,
-            write_created_issues_report=_write_created_issues_report,
-            created_issue_urls=created_issue_urls,
-            repo_path=repo_path,
-        )
+        try:
+            created_issue_urls = await format_and_create_issues(
+                settings,
+                run_id=run_id,
+                cwd=cwd,
+                owner=owner,
+                repo=repo,
+                pr_summary=str(report.get("summary") or ""),
+                suggested_issues=suggested_issues,
+                inline_comments=inline_comments,
+                artifact_path=artifact_path,
+                write_created_issues_report=_write_created_issues_report,
+                created_issue_urls=created_issue_urls,
+                repo_path=repo_path,
+            )
+        except Exception as error:
+            raise StageFailedWithArtifact(
+                str(error),
+                {"created_issue_urls": created_issue_urls},
+                artifact_path,
+            ) from error
+        return {"created_issue_urls": created_issue_urls}, artifact_path
 
-        await complete_review_issues_run(
-            settings,
-            run_id=run_id,
-            stage_id=stage_id,
-            artifact_path=artifact_path,
-        )
+    try:
+        await run_stage_lifecycle(settings, run_id, "issues", body)
     except Exception as error:
-        _write_created_issues_report(artifact_path, created_issue_urls)
-        await fail_review_issues_run(
-            settings,
-            run_id=run_id,
-            stage_id=stage_id,
-            artifact_path=artifact_path,
-            error="Stage failed. See local run logs.",
-        )
         raise HTTPException(status_code=502, detail=str(error)) from error
 
     result = await get_run_state(settings, run_id)
@@ -629,6 +621,7 @@ async def _run_review_background(
 ) -> None:
     try:
         await run_review(run_id, settings)
+        await run_review_post(run_id, settings)
     except Exception as error:
         print(f"[run {run_id}] review failed: {error}")
 
