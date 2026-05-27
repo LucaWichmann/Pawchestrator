@@ -38,7 +38,10 @@ def test_build_review_prompt_requires_structured_artifact() -> None:
     ) in prompt
     assert '"summary": "short review summary"' in prompt
     assert '"verdict": "REQUEST_CHANGES|APPROVE|COMMENT"' in prompt
-    assert '"suggested_issues": ["optional follow-up issue titles"]' in prompt
+    assert (
+        '"suggested_issues": [{"hint": "optional follow-up issue hint", '
+        '"file": "path/to/file", "line": 123}]'
+    ) in prompt
     assert "REQUEST_CHANGES" in prompt
     assert "APPROVE" in prompt
     assert "COMMENT" in prompt
@@ -80,7 +83,9 @@ def test_parse_review_artifact_validates_and_normalizes_report() -> None:
             "inline_comments": [{"file": "app.py", "line": 12, "body": "Fix this."}],
             "summary": "One issue.",
             "verdict": "REQUEST_CHANGES",
-            "suggested_issues": ["Add regression test"],
+            "suggested_issues": [
+                {"hint": "Add regression test", "file": "app.py", "line": 12}
+            ],
         }
     )
 
@@ -89,8 +94,50 @@ def test_parse_review_artifact_validates_and_normalizes_report() -> None:
         "inline_comments": [{"file": "app.py", "line": 12, "body": "Fix this."}],
         "summary": "One issue.",
         "verdict": "REQUEST_CHANGES",
-        "suggested_issues": ["Add regression test"],
+        "suggested_issues": [
+            {"hint": "Add regression test", "file": "app.py", "line": 12}
+        ],
     }
+
+
+def test_parse_review_artifact_rejects_suggested_issue_without_inline_comment() -> None:
+    with pytest.raises(ValueError, match="must match an inline comment"):
+        parse_review_artifact(
+            {
+                "inline_comments": [
+                    {"file": "app.py", "line": 12, "body": "Fix this."}
+                ],
+                "summary": "One issue.",
+                "verdict": "REQUEST_CHANGES",
+                "suggested_issues": [
+                    {"hint": "Add regression test", "file": "app.py", "line": 13}
+                ],
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "issue",
+    [
+        {"file": "app.py", "line": 12},
+        {"hint": "Add regression test", "line": 12},
+        {"hint": "Add regression test", "file": "app.py"},
+    ],
+)
+def test_parse_review_artifact_rejects_suggested_issue_missing_required_field(
+    issue: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError, match="review suggested issue"):
+        parse_review_artifact(
+            {
+                "inline_comments": [
+                    {"file": "app.py", "line": 12, "body": "Fix this."}
+                ],
+                "summary": "One issue.",
+                "verdict": "REQUEST_CHANGES",
+                "suggested_issues": [issue],
+            }
+        )
 
 
 @pytest.mark.parametrize("verdict", ["REQUEST_CHANGES", "APPROVE", "COMMENT"])

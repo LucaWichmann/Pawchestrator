@@ -32,10 +32,11 @@ _REVIEW_FALLBACK = """Review GitHub PR -> JSON only:
   "inline_comments": [{"file": "path/to/file", "line": 123, "body": "comment"}],
   "summary": "short review summary",
   "verdict": "REQUEST_CHANGES|APPROVE|COMMENT",
-  "suggested_issues": ["optional follow-up issue titles"]
+  "suggested_issues": [{"hint": "optional follow-up issue hint", "file": "path/to/file", "line": 123}]
 }
 
 Rules: inline_comments changed lines only. Copy `file` + `line` exactly from Commentable added lines. Do not use diff positions, hunk offsets, or raw-diff line counts as `line`.
+Each suggested_issues entry must copy `file` + `line` from a matching inline_comments entry.
 
 Verdict: REQUEST_CHANGES = correctness | safety | data-loss | test-blocking. APPROVE = no actionable issues. COMMENT = non-blocking feedback.
 No prose. No progress updates. Emit valid JSON artifact only."""
@@ -254,18 +255,37 @@ def parse_review_artifact(artifact: dict[str, Any] | None) -> dict[str, Any]:
             "review artifact verdict must be one of REQUEST_CHANGES, APPROVE, COMMENT"
         )
 
+    comment_anchors = {
+        (comment["file"], comment["line"]) for comment in normalized_comments
+    }
     suggested_issues = artifact.get("suggested_issues")
-    if not isinstance(suggested_issues, list) or not all(
-        isinstance(issue, str) for issue in suggested_issues
-    ):
-        raise ValueError("review artifact suggested_issues must be a list of strings")
+    if not isinstance(suggested_issues, list):
+        raise ValueError("review artifact suggested_issues must be a list")
+    normalized_issues: list[dict[str, Any]] = []
+    for issue in suggested_issues:
+        if not isinstance(issue, dict):
+            raise ValueError("review artifact suggested_issues entries must be objects")
+        hint = issue.get("hint")
+        file_path = issue.get("file")
+        line = issue.get("line")
+        if not isinstance(hint, str) or not hint:
+            raise ValueError("review suggested issue hint must be a non-empty string")
+        if not isinstance(file_path, str) or not file_path:
+            raise ValueError("review suggested issue file must be a non-empty string")
+        if not isinstance(line, int) or line <= 0:
+            raise ValueError("review suggested issue line must be a positive integer")
+        if (file_path, line) not in comment_anchors:
+            raise ValueError(
+                "review suggested issue file and line must match an inline comment"
+            )
+        normalized_issues.append({"hint": hint, "file": file_path, "line": line})
 
     return {
         "schema": REVIEW_REPORT_SCHEMA,
         "inline_comments": normalized_comments,
         "summary": summary,
         "verdict": verdict,
-        "suggested_issues": suggested_issues,
+        "suggested_issues": normalized_issues,
     }
 
 
