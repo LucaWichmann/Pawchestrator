@@ -615,8 +615,9 @@ def test_claude_runner_uses_stage_model_override_without_mutating_global_config(
     assert config.effort == "medium"
 
 
-def test_claude_runner_uses_haiku_for_criteria_dedupe_by_default(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("stage_name", ["criteria_dedupe", "review_issue_format"])
+def test_claude_runner_uses_haiku_for_small_model_stages_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage_name: str
 ) -> None:
     calls: dict[str, object] = {}
 
@@ -641,12 +642,51 @@ def test_claude_runner_uses_haiku_for_criteria_dedupe_by_default(
                 prompt="dedupe criteria",
                 cwd=tmp_path,
                 run_id="run-123",
-                stage_name="criteria_dedupe",
+                stage_name=stage_name,
             )
         )
     )
 
     assert calls["cmd"][calls["cmd"].index("--model") + 1] == "haiku"
+
+
+def test_claude_runner_stage_override_wins_for_review_issue_format(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: dict[str, object] = {}
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
+            return b'{"result": {"status": "success"}}', b""
+
+    async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
+        calls["cmd"] = list(cmd)
+        return FakeProcess()
+
+    monkeypatch.setattr(
+        "pawchestrator.runners.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+
+    asyncio.run(
+        ClaudeRunner(
+            ClaudeRunnerSettings(model="sonnet"),
+            stage_overrides={
+                "review_issue_format": StageSettings(claude={"model": "opus"})
+            },
+        ).run_task(
+            RunnerTask(
+                prompt="review issue format",
+                cwd=tmp_path,
+                run_id="run-123",
+                stage_name="review_issue_format",
+            )
+        )
+    )
+
+    assert calls["cmd"][calls["cmd"].index("--model") + 1] == "opus"
 
 
 def test_claude_runner_wsl_mode_invokes_wsl_and_preserves_tools(
@@ -1035,8 +1075,9 @@ def test_codex_runner_uses_stage_model_override_without_mutating_global_config(
     assert config.reasoning_effort == "medium"
 
 
-def test_codex_runner_uses_mini_low_for_criteria_dedupe_by_default(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("stage_name", ["criteria_dedupe", "review_issue_format"])
+def test_codex_runner_uses_mini_low_for_small_model_stages_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage_name: str
 ) -> None:
     codex_path = "C:\\bin\\codex.CMD"
     calls: list[dict[str, object]] = []
@@ -1068,13 +1109,63 @@ def test_codex_runner_uses_mini_low_for_criteria_dedupe_by_default(
                 prompt="dedupe criteria",
                 cwd=tmp_path,
                 run_id="run-123",
-                stage_name="criteria_dedupe",
+                stage_name=stage_name,
             )
         )
     )
 
     assert calls[0]["cmd"][calls[0]["cmd"].index("--model") + 1] == "gpt-5.4-mini"
     assert 'model_reasoning_effort="low"' in calls[0]["cmd"]
+
+
+def test_codex_runner_stage_override_wins_for_review_issue_format(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    codex_path = "C:\\bin\\codex.CMD"
+    calls: list[dict[str, object]] = []
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
+            return b"", b""
+
+    async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
+        calls.append({"cmd": list(cmd), "cwd": kwargs["cwd"]})
+        return FakeProcess()
+
+    monkeypatch.setattr(
+        "pawchestrator.runners.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr(
+        "pawchestrator.runners.shutil.which",
+        lambda name: codex_path if name == "codex" else None,
+    )
+
+    asyncio.run(
+        CodexRunner(
+            CodexRunnerSettings(model="gpt-5.5", reasoning_effort="medium"),
+            stage_overrides={
+                "review_issue_format": StageSettings(
+                    codex={
+                        "model": "gpt-5.5",
+                        "reasoning_effort": "high",
+                    }
+                )
+            },
+        ).run_task(
+            RunnerTask(
+                prompt="review issue format",
+                cwd=tmp_path,
+                run_id="run-123",
+                stage_name="review_issue_format",
+            )
+        )
+    )
+
+    assert calls[0]["cmd"][calls[0]["cmd"].index("--model") + 1] == "gpt-5.5"
+    assert 'model_reasoning_effort="high"' in calls[0]["cmd"]
 
 
 def test_codex_runner_retries_previous_response_not_found_with_resume(
