@@ -12,7 +12,8 @@ from pawchestrator import cli
 from pawchestrator.config import PrSettings, Settings
 from pawchestrator.db import get_run_warnings, init_db
 from pawchestrator.github import GENERATED_BY_FOOTER
-from pawchestrator.pr import PrDraftResult, build_pr_body, resolve_pr_assignees, run_pr
+from pawchestrator.pr import build_pr_body, resolve_pr_assignees, run_pr
+from pawchestrator.stage_lifecycle import StageResult
 
 
 def test_build_pr_body_includes_required_sections_for_passed_verification() -> None:
@@ -511,11 +512,11 @@ def test_run_pr_command_prints_url(
         settings: Settings,
         *,
         allow_empty_commit: bool = False,
-    ) -> PrDraftResult:
+    ) -> StageResult:
         assert run_id == "run-123"
         assert settings.app_dir == tmp_path
         assert allow_empty_commit is False
-        return PrDraftResult(
+        return StageResult(
             run_id=run_id,
             artifact_path=tmp_path / "runs" / run_id / "pr_draft.json",
             log_path=tmp_path / "runs" / run_id / "stdout" / "pr.log",

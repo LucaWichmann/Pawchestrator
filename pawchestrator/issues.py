@@ -10,8 +10,6 @@ from pawchestrator.db import create_pipeline_run, get_run_state
 from pawchestrator.github import GitHubIssueClient, get_gh_token, parse_issue_url
 from pawchestrator.stage_lifecycle import StageResult, run_stage_lifecycle
 
-SnapshotResult = StageResult
-
 
 async def snapshot_issue(
     issue_url: str,

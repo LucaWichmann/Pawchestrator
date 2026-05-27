@@ -23,7 +23,6 @@ VERIFY_COMMAND_ORDER = ("build", "test", "lint")
 REPO_VERIFY_CONFIG_PATH = Path(".pawchestrator") / "verify.toml"
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 600
 SUMMARY_MAX_CHARS = 500
-VerificationResult = StageResult
 
 
 @dataclass(frozen=True)

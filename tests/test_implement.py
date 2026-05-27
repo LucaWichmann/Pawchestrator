@@ -13,7 +13,6 @@ from pawchestrator.codegraph import CodeGraphSyncResult
 from pawchestrator.config import Settings
 from pawchestrator.db import init_db
 from pawchestrator.implement import (
-    ImplementationResult,
     WorktreeInfo,
     build_implement_prompt,
     ensure_issue_worktree,
@@ -22,6 +21,7 @@ from pawchestrator.implement import (
     slugify,
 )
 from pawchestrator.runners import Runner, RunnerResult, RunnerTask
+from pawchestrator.stage_lifecycle import StageResult
 
 
 async def _async_value(value: Any) -> Any:
@@ -1020,11 +1020,11 @@ def test_run_implement_command_prints_summary(
         settings: Settings,
         *,
         repo_path: Path | None = None,
-    ) -> ImplementationResult:
+    ) -> StageResult:
         assert run_id == "run-123"
         assert settings.app_dir == tmp_path
         assert repo_path is None
-        return ImplementationResult(
+        return StageResult(
             run_id=run_id,
             artifact_path=tmp_path / "runs" / run_id / "implementation_report.json",
             log_path=tmp_path / "runs" / run_id / "stdout" / "implement.log",

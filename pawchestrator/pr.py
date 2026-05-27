@@ -23,7 +23,6 @@ from pawchestrator.stage_lifecycle import StageResult, run_stage_lifecycle
 
 PR_DRAFT_SCHEMA = "pawchestrator.pr_draft.v1"
 DEFAULT_BASE_BRANCH = "main"
-PrDraftResult = StageResult
 
 
 class PrAssignmentClient(Protocol):

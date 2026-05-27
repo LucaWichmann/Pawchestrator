@@ -58,7 +58,6 @@ MAX_PROMPT_APPROACH_SUMMARY_CHARS = 150
 REPAIR_REPORT_SCHEMA = "pawchestrator.repair_report.v1"
 LOGGER = logging.getLogger(__name__)
 NO_CHANGES_REQUESTED_REVIEWERS = "no_changes_requested_reviewers"
-ImplementationResult = StageResult
 
 
 @dataclass(frozen=True)
