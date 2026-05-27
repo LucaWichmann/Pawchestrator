@@ -13,15 +13,12 @@ from pawchestrator.config import Settings, ensure_app_dir
 from pawchestrator.lifecycle import (
     STALE_RUN_ERROR,
     TERMINAL_RUN_STATUSES,
-    complete_stage,
-    fail_stage,
     fail_stale_runs_on_startup,
     skip_stage,
 )
 from pawchestrator.run_lifecycle import (
     WorkflowKind,
     create_run,
-    start_stage,
 )
 
 SCHEMA_SQL = """
@@ -246,119 +243,6 @@ async def create_repair_run(
     )
 
 
-async def start_repair_run(settings: Settings, *, run_id: str) -> str:
-    await init_db(settings)
-    now = utc_now_iso()
-    return await start_stage(
-        settings.database_path,
-        run_id=run_id,
-        stage_name="repair",
-        status="repair_running",
-        workflow_kind=WorkflowKind.REPAIR,
-        now=now,
-    )
-
-
-async def complete_repair_run(
-    settings: Settings,
-    *,
-    run_id: str,
-    stage_id: str,
-    artifact_path: Path,
-) -> None:
-    now = utc_now_iso()
-    async with aiosqlite.connect(settings.database_path) as db:
-        await complete_stage(
-            db,
-            run_id=run_id,
-            stage_id=stage_id,
-            stage_name="repair",
-            run_status="repair_complete",
-            artifact_type="repair_report",
-            artifact_path=artifact_path,
-            workflow_type="repair",
-            now=now,
-        )
-        await db.commit()
-
-
-async def fail_repair_run(
-    settings: Settings,
-    *,
-    run_id: str,
-    stage_id: str,
-    error: str,
-) -> None:
-    now = utc_now_iso()
-    async with aiosqlite.connect(settings.database_path) as db:
-        await fail_stage(
-            db,
-            run_id=run_id,
-            stage_id=stage_id,
-            stage_name="repair",
-            run_status="repair_failed",
-            error=error,
-            workflow_type="repair",
-            now=now,
-        )
-        await db.commit()
-
-
-async def start_repair_push_run(settings: Settings, *, run_id: str) -> str:
-    await init_db(settings)
-    now = utc_now_iso()
-    return await start_stage(
-        settings.database_path,
-        run_id=run_id,
-        stage_name="push",
-        status="push_running",
-        workflow_kind=WorkflowKind.REPAIR,
-        now=now,
-    )
-
-
-async def complete_repair_push_run(
-    settings: Settings,
-    *,
-    run_id: str,
-    stage_id: str,
-) -> None:
-    now = utc_now_iso()
-    async with aiosqlite.connect(settings.database_path) as db:
-        await complete_stage(
-            db,
-            run_id=run_id,
-            stage_id=stage_id,
-            stage_name="push",
-            run_status="push_complete",
-            workflow_type="repair",
-            now=now,
-        )
-        await db.commit()
-
-
-async def fail_repair_push_run(
-    settings: Settings,
-    *,
-    run_id: str,
-    stage_id: str,
-    error: str,
-) -> None:
-    now = utc_now_iso()
-    async with aiosqlite.connect(settings.database_path) as db:
-        await fail_stage(
-            db,
-            run_id=run_id,
-            stage_id=stage_id,
-            stage_name="push",
-            run_status="push_failed",
-            error=error,
-            workflow_type="repair",
-            now=now,
-        )
-        await db.commit()
-
-
 async def _create_pr_workflow_run(
     settings: Settings,
     *,
@@ -443,40 +327,6 @@ async def create_epic_run(
     )
 
 
-async def start_epic_run(settings: Settings, *, run_id: str) -> None:
-    now = utc_now_iso()
-    async with aiosqlite.connect(settings.database_path) as db:
-        await db.execute(
-            """
-            UPDATE workflow_runs
-            SET status = 'epic_running', current_stage = 'epic', updated_at = ?
-            WHERE id = ?
-            """,
-            (now, run_id),
-        )
-        await db.commit()
-
-
-async def complete_epic_run(
-    settings: Settings,
-    *,
-    run_id: str,
-    pr_url: str | None,
-) -> None:
-    now = utc_now_iso()
-    async with aiosqlite.connect(settings.database_path) as db:
-        await db.execute(
-            """
-            UPDATE workflow_runs
-            SET status = 'epic_complete', current_stage = 'epic',
-                pr_url = COALESCE(?, pr_url), updated_at = ?
-            WHERE id = ?
-            """,
-            (pr_url, now, run_id),
-        )
-        await db.commit()
-
-
 async def set_run_pr_url(settings: Settings, *, run_id: str, pr_url: str) -> None:
     now = utc_now_iso()
     async with aiosqlite.connect(settings.database_path) as db:
@@ -487,20 +337,6 @@ async def set_run_pr_url(settings: Settings, *, run_id: str, pr_url: str) -> Non
             WHERE id = ?
             """,
             (pr_url, now, run_id),
-        )
-        await db.commit()
-
-
-async def fail_epic_run(settings: Settings, *, run_id: str) -> None:
-    now = utc_now_iso()
-    async with aiosqlite.connect(settings.database_path) as db:
-        await db.execute(
-            """
-            UPDATE workflow_runs
-            SET status = 'epic_failed', current_stage = 'epic', updated_at = ?
-            WHERE id = ?
-            """,
-            (now, run_id),
         )
         await db.commit()
 

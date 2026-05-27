@@ -101,12 +101,14 @@ STAGE_CONFIGS: dict[str, StageLifecycleConfig] = {
         "repair_complete",
         "repair_failed",
         "repair_report",
+        "repair",
     ),
     "push": StageLifecycleConfig(
         "push_running",
         "push_complete",
         "push_failed",
         "repair_push_report",
+        "repair",
     ),
 }
 

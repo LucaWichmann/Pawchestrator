@@ -14,16 +14,10 @@ from pawchestrator.codegraph import CodeGraphSyncResult, seed_worktree_index, sy
 from pawchestrator.config import Settings
 from pawchestrator.skill_loader import load_skill
 from pawchestrator.db import (
-    complete_repair_run,
-    complete_repair_push_run,
-    fail_repair_push_run,
-    fail_repair_run,
     get_run_by_pr_number,
     get_run_state,
     insert_run_warning,
     lookup_repo_path,
-    start_repair_push_run,
-    start_repair_run,
     upsert_worktree_record,
 )
 from pawchestrator.github import GitHubIssueClient, get_gh_token
@@ -411,16 +405,16 @@ async def run_repair(
     if state is None:
         raise ValueError(f"run not found: {run_id}")
 
-    stage_id = await start_repair_run(settings, run_id=run_id)
     artifact_path = _repair_report_path(settings, run_id)
-    log_path = _repair_log_path(settings, run_id)
     owner = str(state["owner"])
     repo = str(state["repo"])
     pr_number = int(state["pr_number"])
     github_client = client or GitHubIssueClient(get_gh_token())
     worktree_info: WorktreeInfo | None = None
+    report: dict[str, Any] = {}
 
-    try:
+    async def body(log_path: Path) -> tuple[dict[str, Any], Path]:
+        nonlocal worktree_info, report
         repo_path = await lookup_repo_path(settings, owner=owner, repo=repo)
         if repo_path is None:
             raise RuntimeError(
@@ -487,12 +481,10 @@ async def run_repair(
                 stdout=result.stdout,
                 stderr=result.stderr,
             )
-        await complete_repair_run(
-            settings,
-            run_id=run_id,
-            stage_id=stage_id,
-            artifact_path=artifact_path,
-        )
+        return report, artifact_path
+
+    try:
+        repair_stage = await run_stage_lifecycle(settings, run_id, "repair", body)
     except Exception as error:
         if not artifact_path.exists():
             _write_report(
@@ -506,14 +498,10 @@ async def run_repair(
                     "error": str(error),
                 },
             )
-        db_error = (
-            error.public_message
-            if isinstance(error, RunnerFailedError)
-            else "Stage failed. See local run logs."
-        )
-        await fail_repair_run(settings, run_id=run_id, stage_id=stage_id, error=db_error)
         raise
 
+    if worktree_info is None:
+        raise RuntimeError("repair worktree was not created")
     await run_repair_push(
         run_id,
         settings,
@@ -528,7 +516,7 @@ async def run_repair(
     return RepairResult(
         run_id=run_id,
         artifact_path=artifact_path,
-        log_path=log_path,
+        log_path=repair_stage.log_path,
         worktree_path=worktree_info.path,
         branch=worktree_info.branch,
         report=report,
@@ -546,8 +534,7 @@ async def run_repair_push(
     branch: str,
     worktree_path: Path,
 ) -> None:
-    stage_id = await start_repair_push_run(settings, run_id=run_id)
-    try:
+    async def body(log_path: Path) -> tuple[dict[str, Any], None]:
         await _run_git_checked(["push", "origin", branch], worktree_path)
         reviewers = await client.fetch_changes_requested_reviewers(owner, repo, pr_number)
         if reviewers:
@@ -560,15 +547,9 @@ async def run_repair_push(
                 code=NO_CHANGES_REQUESTED_REVIEWERS,
                 message="No CHANGES_REQUESTED reviewers found; skipped re-review request.",
             )
-        await complete_repair_push_run(settings, run_id=run_id, stage_id=stage_id)
-    except Exception:
-        await fail_repair_push_run(
-            settings,
-            run_id=run_id,
-            stage_id=stage_id,
-            error="Stage failed. See local run logs.",
-        )
-        raise
+        return {}, None
+
+    await run_stage_lifecycle(settings, run_id, "push", body)
 
 
 def build_repair_prompt(
