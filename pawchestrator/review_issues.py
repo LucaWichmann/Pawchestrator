@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass
@@ -9,7 +10,11 @@ from pathlib import Path
 from typing import Any
 
 from pawchestrator.config import Settings
-from pawchestrator.github import with_generated_attribution
+from pawchestrator.github import (
+    GitHubIssueClient,
+    get_gh_token,
+    with_generated_attribution,
+)
 from pawchestrator.runners import Runner, RunnerTask, resolve_runner
 from pawchestrator.stage_fallback import (
     run_task_with_usage_limit_fallback,
@@ -27,6 +32,62 @@ LOGGER = logging.getLogger(__name__)
 class FormattedReviewIssue:
     title: str
     body: str
+
+
+async def format_and_create_issues(
+    settings: Settings,
+    *,
+    run_id: str,
+    cwd: Path,
+    owner: str,
+    repo: str,
+    pr_summary: str,
+    suggested_issues: list[dict[str, Any]],
+    inline_comments: list[dict[str, Any]],
+    artifact_path: Path,
+    write_created_issues_report,
+    repo_path: Path | None = None,
+    client: GitHubIssueClient | None = None,
+) -> list[str]:
+    inline_comments_by_anchor = {
+        (comment.get("file"), comment.get("line")): comment
+        for comment in inline_comments
+        if isinstance(comment, dict)
+    }
+
+    format_tasks = []
+    for issue in suggested_issues:
+        hint = _require_non_empty_str(issue.get("hint"), "suggested issue hint")
+        file = _require_non_empty_str(issue.get("file"), "suggested issue file")
+        line = _require_positive_int(issue.get("line"), "suggested issue line")
+        inline_comment = inline_comments_by_anchor.get((file, line))
+        if inline_comment is None:
+            raise ValueError("suggested issue file and line must match an inline comment")
+        format_tasks.append(
+            review_issue_format(
+                settings,
+                run_id=run_id,
+                cwd=cwd,
+                hint=hint,
+                pr_summary=pr_summary,
+                inline_comment=inline_comment,
+                repo_path=repo_path,
+            )
+        )
+
+    formatted_issues = await asyncio.gather(*format_tasks)
+    github_client = client or GitHubIssueClient(get_gh_token())
+    created_issue_urls: list[str] = []
+    for issue in formatted_issues:
+        issue_url = await github_client.create_issue(
+            owner,
+            repo,
+            title=issue.title,
+            body=issue.body,
+        )
+        created_issue_urls.append(issue_url)
+        write_created_issues_report(artifact_path, created_issue_urls)
+    return created_issue_urls
 
 
 def fetch_source_snippet(
