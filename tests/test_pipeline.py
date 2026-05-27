@@ -780,7 +780,12 @@ def _patch_successful_stages(
 
         return await run_stage_lifecycle(settings, run_id, "implement", body)
 
-    async def fake_verify(run_id: str, settings: Settings):
+    async def fake_verify(
+        run_id: str,
+        settings: Settings,
+        *,
+        base_branch: str = "main",
+    ):
         calls.append("verify")
         artifact_path = settings.app_dir / "runs" / run_id / "verification_report.json"
 
@@ -855,7 +860,12 @@ def _patch_verify_results(
 ) -> None:
     remaining = list(statuses)
 
-    async def fake_verify(run_id: str, settings: Settings):
+    async def fake_verify(
+        run_id: str,
+        settings: Settings,
+        *,
+        base_branch: str = "main",
+    ):
         calls.append("verify")
         if not remaining:
             raise AssertionError("unexpected verify call")
