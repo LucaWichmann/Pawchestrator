@@ -102,11 +102,15 @@ async def run_implement(
             raise FileNotFoundError(f"issue snapshot not found: {snapshot_path}")
 
         plan_path = _plan_artifact_path(settings, run_id)
-        if not plan_path.exists():
+        if not plan_path.exists() and repair_context is None:
             raise FileNotFoundError(f"implementation plan not found: {plan_path}")
 
         snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
-        implementation_plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        implementation_plan = (
+            json.loads(plan_path.read_text(encoding="utf-8"))
+            if plan_path.exists()
+            else {}
+        )
         worktree_kwargs: dict[str, Any] = {
             "snapshot": snapshot,
             "source_repo_path": source_repo_path,
