@@ -48,6 +48,12 @@ Grill is multi-round: if questions are posted, the run transitions to `grill_wai
 
 **EpicRun** — An orchestrated sequence of pipeline Runs, one per sub-issue of an Epic, executed sequentially. Identified by a `group_id` (the epic's own run ID). All child Runs share this `group_id` in `workflow_runs`. Stops on first child failure by default (`epic_fail_fast = false` to continue). No resume across separate EpicRuns — re-triggering creates a new EpicRun.
 
+**EpicArchitect** — A standalone action triggered from a plain (non-Epic) GitHub issue that decomposes it into sub-issues and promotes it to an Epic. `workflow_type = "epic_architect"`. Two stages: `epic_scout` (small-model, read-only — finds relevant source files and tech context) → `epic_architect` (LLM decomposes issue into sub-issues, respecting dependency order). Sub-issues are linked to the parent via GitHub's native sub-issues API (`POST /repos/{owner}/{repo}/issues/{number}/sub_issues`). No worktree created. No GitHub comment posted — GitHub's native sub-issues UI surfaces results. Button "Turn into Epic" is hidden when the issue already has sub-issues. Triggered via `POST /issue/epic-architect`. Gate mechanism (user approval before creation) is deferred to a future iteration. See [[EpicArchitectPlan]], [[EpicScoutReport]].
+
+**EpicScoutReport** — Artifact produced by the `epic_scout` stage of an `EpicArchitect` run. Schema: `{relevant_files: [{path, reason, snippet}], tech_context: string}`. `relevant_files` is capped at 3–5 entries. `tech_context` is a one-line tech stack summary. Passed as context to the `epic_architect` stage.
+
+**EpicArchitectPlan** — Artifact produced by the `epic_architect` stage. Schema: `{epic_analysis: string, sub_issues: [{title, description, depends_on_indexes: []}]}`. `epic_analysis` is one terse sentence (token efficiency). `depends_on_indexes` are array-indexes into `sub_issues`; Pawchestrator validates the graph (cycle detection, range checks) before creation — invalid entries are stripped with a `RunWarning` per strip. Sub-issues are created in topological dependency order; "Depends on: #N" is appended to descriptions of dependent issues. If creation fails partway, the stage fails and records created issue numbers in the artifact before failing. No labels on sub-issues (deferred). No `estimated_complexity` field.
+
 **SubIssue** — A GitHub issue linked as a direct child of another issue via GitHub's sub-issues feature. Pawchestrator resolves one level of sub-issues only; sub-issues of sub-issues are not expanded.
 
 ---
@@ -78,6 +84,8 @@ No human gates in MVP 0. No repair loop. No YAML workflow engine. No pairing sec
 | Scout    | ClaudeRunner   | Read-only, JSON output               |
 | Grill    | ClaudeRunner   | Read-only enforced for Claude; codex has no tool allowlist |
 | CriteriaDedupe | ClaudeRunner | Grill utility stage; defaults to Claude Haiku, or Codex GPT-5.4-Mini low reasoning when assigned to codex |
+| EpicScout | ClaudeRunner | EpicArchitect utility stage; defaults to Claude Haiku, or Codex GPT-5.4-Mini low reasoning when assigned to codex. Read-only. |
+| EpicArchitect | ClaudeRunner | EpicArchitect decomposition stage; JSON output (`EpicArchitectPlan`). Read-only. |
 | ReviewIssueFormat | ClaudeRunner | Review issues utility stage; defaults to Claude Haiku (no reasoning), or Codex GPT-5.4-Mini low reasoning. Non-agentic: returns structured JSON snippets only, no tool calls. See ADR 0015. |
 | Plan     | ClaudeRunner   | JSON output                          |
 | Implement| CodexRunner    | File edits via patch                 |
@@ -181,7 +189,7 @@ artifacts       (id, run_id, artifact_type, file_path, created_at)
 run_warnings    (id, run_id, stage_name, code, message, created_at)
 ```
 
-`workflow_type` distinguishes run kinds: `"pipeline"` (default, snapshot→PR) and `"grill"` (standalone analysis, no worktree). Pipeline code must assert `workflow_type != "grill"` before creating worktrees or running pipeline-only stages.
+`workflow_type` distinguishes run kinds: `"pipeline"` (default, snapshot→PR), `"grill"` (standalone analysis, no worktree), `"review"`, `"repair"`, `"epic_architect"` (decomposes plain issue into sub-issues, no worktree). Pipeline code must assert `workflow_type == "pipeline"` before creating worktrees or running pipeline-only stages.
 
 Grill run statuses: `pending` → `grill_running` → `grill_waiting` (questions posted, paused for reply) → `grill_running` (resumed) → `grill_complete` | `grill_failed`. `grill_waiting` is excluded from `fail_stale_runs_on_startup` — it survives server restarts. Terminal statuses: `grill_complete`, `grill_failed` (plus pipeline terminals).
 
@@ -197,7 +205,9 @@ Grill run statuses: `pending` → `grill_running` → `grill_waiting` (questions
   implementation_report.json
   verification_report.json
   pr_draft.json
-  grill_report.json        ← grill runs only
+  grill_report.json               ← grill runs only
+  epic_scout_report.json          ← epic_architect runs only
+  epic_architect_plan.json        ← epic_architect runs only
 ```
 
 ---
@@ -308,9 +318,9 @@ Design decisions (locked via grilling sessions 2026-05-24 and 2026-05-25):
 
 **Stage timeline:** Horizontal steps (snapshot → scout → plan → implement → verify → pr) with status icons. Repair loop iterations shown as `implement (repair 1/2)`. Collapsible warnings section below timeline for `run_warnings`.
 
-**Two independent sections:** Pipeline section and Grill section rendered separately in the expanded panel. Each tracks its own latest run.
+**Three independent sections:** Pipeline section, Grill section, and EpicArchitect section rendered separately in the expanded panel. Each tracks its own latest run.
 
-**Buttons move into panel (revised 2026-05-25):** "🐾 Work on this issue" and "🔥 Grill Issue" move from the GitHub issue header into the panel bar (always-visible strip), unifying all Pawchestrator controls into one surface. `injectHeaderActions` is retired. Inline status text divs (`STATUS_ID`, `GRILL_STATUS_ID`) were already retired — all status is in the panel.
+**Buttons move into panel (revised 2026-05-25):** "🐾 Work on this issue", "🔥 Grill Issue", and "🏗️ Turn into Epic" live in the panel bar (always-visible strip), unifying all Pawchestrator controls into one surface. `injectHeaderActions` is retired. Inline status text divs (`STATUS_ID`, `GRILL_STATUS_ID`) were already retired — all status is in the panel. "Turn into Epic" is hidden when the issue already has sub-issues (i.e., is already a GitHub Epic).
 
 **New backend endpoint:** `GET /issue/{owner}/{repo}/{number}/status` — combined payload:
 ```json
@@ -328,10 +338,15 @@ Design decisions (locked via grilling sessions 2026-05-24 and 2026-05-25):
   "grill": {
     "run_id": "...", "status": "...", "grill_report": {...},
     "created_at": "...", "updated_at": "..."
+  },
+  "epic_architect": {
+    "run_id": "...", "status": "...", "epic_analysis": "...",
+    "created_sub_issues": [{"number": 124, "title": "...", "url": "..."}],
+    "created_at": "...", "updated_at": "..."
   }
 }
 ```
-`pipeline` and `grill` are null when no run exists for that type. Endpoint is token-authenticated.
+`pipeline`, `grill`, and `epic_architect` are null when no run exists for that type. Endpoint is token-authenticated.
 
 **Runner health cache:** 60-second in-memory TTL. Spawns `claude --version` / `codex --version` at most once per minute. Never blocks a panel load.
 
