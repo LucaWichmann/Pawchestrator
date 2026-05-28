@@ -344,7 +344,7 @@ def test_issue_grill_returns_run_id_and_schedules_grill(
     assert payload["workflow_type"] == "grill"
 
 
-def test_issue_epic_architect_returns_run_id_and_runs_scout(
+def test_issue_epic_architect_returns_run_id_and_runs_scout_then_architect(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -353,9 +353,16 @@ def test_issue_epic_architect_returns_run_id_and_runs_scout(
     calls = []
 
     async def fake_run_epic_scout(issue_url: str, settings: Settings, *, run_id: str):
-        calls.append((issue_url, settings.app_dir, run_id))
+        calls.append(("scout", issue_url, settings.app_dir, run_id))
+
+    async def fake_run_epic_architect(issue_url: str, settings: Settings, *, run_id: str):
+        calls.append(("architect", issue_url, settings.app_dir, run_id))
 
     monkeypatch.setattr("pawchestrator.server.run_epic_scout", fake_run_epic_scout)
+    monkeypatch.setattr(
+        "pawchestrator.server.run_epic_architect",
+        fake_run_epic_architect,
+    )
 
     with TestClient(create_app(settings)) as client:
         response = client.post(
@@ -375,7 +382,8 @@ def test_issue_epic_architect_returns_run_id_and_runs_scout(
     assert payload["status"] == "completed"
     assert payload["current_stage"] == "epic_architect"
     assert calls == [
-        ("https://github.com/owner/repo/issues/42", tmp_path, run_id),
+        ("scout", "https://github.com/owner/repo/issues/42", tmp_path, run_id),
+        ("architect", "https://github.com/owner/repo/issues/42", tmp_path, run_id),
     ]
 
 
