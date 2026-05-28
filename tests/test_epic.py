@@ -11,6 +11,7 @@ from pawchestrator.db import create_epic_run, get_latest_epic_run_by_issue
 from pawchestrator.epic import run_epic
 from pawchestrator.github import GENERATED_BY_FOOTER
 from pawchestrator.implement import WorktreeInfo
+from pawchestrator.stage_lifecycle import StageResult
 
 
 def test_run_epic_mode_runs_sub_issues_on_shared_branch_then_final_pr(
@@ -40,6 +41,7 @@ def test_run_epic_mode_runs_sub_issues_on_shared_branch_then_final_pr(
     )
     _patch_epic_worktree(monkeypatch, tmp_path, expected_allow_dirty=False)
     _patch_pipeline(monkeypatch, calls)
+    _patch_epic_verify(monkeypatch, [])
     _patch_epic_pr(monkeypatch, pr_calls)
 
     result = asyncio.run(
@@ -258,6 +260,7 @@ def test_run_epic_resume_skips_completed_sub_issue_and_reruns_failed(
     )
     _patch_epic_worktree(monkeypatch, tmp_path, expected_allow_dirty=True)
     _patch_pipeline(monkeypatch, calls)
+    _patch_epic_verify(monkeypatch, [])
     _patch_epic_pr(monkeypatch, pr_calls)
 
     result = asyncio.run(
@@ -307,6 +310,7 @@ def test_run_epic_resume_all_children_complete_creates_final_pr(
     )
     _patch_epic_worktree(monkeypatch, tmp_path, expected_allow_dirty=True)
     _patch_pipeline(monkeypatch, calls)
+    _patch_epic_verify(monkeypatch, [])
     _patch_epic_pr(monkeypatch, pr_calls)
 
     result = asyncio.run(
@@ -371,6 +375,188 @@ def test_run_epic_with_sub_issues_resume_reuses_existing_draft_pr(
     assert result.sub_runs[0].pr_url == "https://github.com/owner/repo/pull/43"
 
 
+def test_run_epic_verifies_parent_after_all_sub_issues_complete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    asyncio.run(_insert_parent(settings))
+    pipeline_calls: list[dict[str, object]] = []
+    verify_calls: list[str] = []
+    pr_calls: list[dict[str, object]] = []
+    _patch_client(
+        monkeypatch,
+        _FakeSubIssueClient(
+            [{"number": 43, "url": "https://github.com/owner/repo/issues/43"}]
+        ),
+    )
+    _patch_epic_worktree(monkeypatch, tmp_path, expected_allow_dirty=False)
+    _patch_pipeline(monkeypatch, pipeline_calls)
+    _patch_epic_verify(monkeypatch, verify_calls)
+    _patch_epic_pr(monkeypatch, pr_calls)
+
+    asyncio.run(
+        run_epic(
+            "https://github.com/owner/repo/issues/42",
+            settings,
+            repo_path=tmp_path,
+            progress=lambda _message: None,
+            group_id="group-123",
+            parent_run_id="epic-parent",
+        )
+    )
+
+    assert verify_calls == ["epic-parent"]
+    assert len(pr_calls) == 1
+    snapshot = json.loads(
+        (tmp_path / "runs" / "epic-parent" / "issue.snapshot.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert snapshot["number"] == 42
+
+
+def test_run_epic_repairs_parent_when_epic_verify_fails_then_passes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(
+        app_dir=tmp_path,
+        pipeline=PipelineSettings(verify_repair_attempts=2),
+    )
+    asyncio.run(_insert_parent(settings))
+    pipeline_calls: list[dict[str, object]] = []
+    verify_calls: list[str] = []
+    implement_calls: list[dict[str, object]] = []
+    pr_calls: list[dict[str, object]] = []
+    _patch_client(
+        monkeypatch,
+        _FakeSubIssueClient(
+            [{"number": 43, "url": "https://github.com/owner/repo/issues/43"}]
+        ),
+    )
+    _patch_epic_worktree(monkeypatch, tmp_path, expected_allow_dirty=False)
+    _patch_pipeline(monkeypatch, pipeline_calls)
+    _patch_epic_verify(monkeypatch, verify_calls, statuses=["failed", "passed"])
+    _patch_epic_implement(monkeypatch, implement_calls)
+    _patch_epic_pr(monkeypatch, pr_calls)
+
+    asyncio.run(
+        run_epic(
+            "https://github.com/owner/repo/issues/42",
+            settings,
+            repo_path=tmp_path,
+            progress=lambda _message: None,
+            group_id="group-123",
+            parent_run_id="epic-parent",
+        )
+    )
+
+    assert verify_calls == ["epic-parent", "epic-parent"]
+    assert implement_calls == [
+        {
+            "run_id": "epic-parent",
+            "repair_attempt": 1,
+            "allow_dirty_existing_worktree": True,
+            "worktree_branch": "paw/epic-42-big-epic",
+            "worktree_path": tmp_path / "worktrees" / "owner" / "repo" / "epic-42",
+            "background": (
+                "Epic #42 - Big epic. Sub-issues implemented: #43\n\nEpic body"
+            ),
+        }
+    ]
+    assert len(pr_calls) == 1
+
+
+def test_run_epic_marks_failed_when_epic_verify_repair_exhausted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(
+        app_dir=tmp_path,
+        pipeline=PipelineSettings(verify_repair_attempts=2),
+    )
+    asyncio.run(_insert_parent(settings))
+    pipeline_calls: list[dict[str, object]] = []
+    verify_calls: list[str] = []
+    implement_calls: list[dict[str, object]] = []
+    pr_calls: list[dict[str, object]] = []
+    _patch_client(
+        monkeypatch,
+        _FakeSubIssueClient(
+            [{"number": 43, "url": "https://github.com/owner/repo/issues/43"}]
+        ),
+    )
+    _patch_epic_worktree(monkeypatch, tmp_path, expected_allow_dirty=False)
+    _patch_pipeline(monkeypatch, pipeline_calls)
+    _patch_epic_verify(
+        monkeypatch,
+        verify_calls,
+        statuses=["failed", "failed", "failed"],
+    )
+    _patch_epic_implement(monkeypatch, implement_calls)
+    _patch_epic_pr(monkeypatch, pr_calls)
+
+    with pytest.raises(Exception, match="verification failed"):
+        asyncio.run(
+            run_epic(
+                "https://github.com/owner/repo/issues/42",
+                settings,
+                repo_path=tmp_path,
+                progress=lambda _message: None,
+                group_id="group-123",
+                parent_run_id="epic-parent",
+            )
+        )
+
+    assert verify_calls == ["epic-parent", "epic-parent", "epic-parent"]
+    assert [call["repair_attempt"] for call in implement_calls] == [1, 2]
+    assert pr_calls == []
+    status = asyncio.run(get_latest_epic_run_by_issue(settings, "owner", "repo", 42))
+    assert status is not None
+    assert status["status"] == "epic_failed"
+
+
+def test_run_epic_with_sub_issues_mode_skips_epic_verify_repair(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(
+        app_dir=tmp_path,
+        pipeline=PipelineSettings(epic_branch_mode="epic-with-sub-issues"),
+    )
+    asyncio.run(_insert_parent(settings))
+    pipeline_calls: list[dict[str, object]] = []
+    verify_calls: list[str] = []
+    implement_calls: list[dict[str, object]] = []
+    pr_calls: list[dict[str, object]] = []
+    _patch_client(
+        monkeypatch,
+        _FakeSubIssueClient(
+            [{"number": 43, "url": "https://github.com/owner/repo/issues/43"}]
+        ),
+    )
+    _patch_epic_worktree(monkeypatch, tmp_path, expected_allow_dirty=False)
+    _patch_pipeline(monkeypatch, pipeline_calls)
+    _patch_epic_verify(monkeypatch, verify_calls, statuses=["failed"])
+    _patch_epic_implement(monkeypatch, implement_calls)
+    _patch_epic_pr(monkeypatch, pr_calls)
+
+    asyncio.run(
+        run_epic(
+            "https://github.com/owner/repo/issues/42",
+            settings,
+            repo_path=tmp_path,
+            progress=lambda _message: None,
+            group_id="group-123",
+            parent_run_id="epic-parent",
+        )
+    )
+
+    assert verify_calls == []
+    assert implement_calls == []
+
+
 class _FakeSubIssueClient:
     def __init__(self, sub_issues: list[dict[str, object]]) -> None:
         self.sub_issues = sub_issues
@@ -382,6 +568,24 @@ class _FakeSubIssueClient:
 
     async def fetch_issue_title(self, _reference):
         return "Big epic"
+
+    async def fetch_snapshot(self, reference, _headings):
+        return {
+            "schema": "pawchestrator.issue_snapshot.v1",
+            "owner": reference.owner,
+            "repo": reference.repo,
+            "number": reference.number,
+            "title": "Big epic",
+            "body": "Epic body",
+            "assignees": [],
+            "labels": [],
+            "checkboxes": [],
+            "comments": [],
+            "source_url": (
+                f"https://github.com/{reference.owner}/{reference.repo}/issues/"
+                f"{reference.number}"
+            ),
+        }
 
 
 async def _insert_parent(
@@ -489,6 +693,94 @@ def _patch_epic_pr(
         return SimpleNamespace(pr_url="https://github.com/owner/repo/pull/42")
 
     monkeypatch.setattr("pawchestrator.epic.create_worktree_pr", fake_create_worktree_pr)
+
+
+def _patch_epic_verify(
+    monkeypatch: pytest.MonkeyPatch,
+    calls: list[str],
+    *,
+    statuses: list[str] | None = None,
+) -> None:
+    remaining_statuses = list(statuses or ["passed"])
+
+    async def fake_run_verify(
+        run_id: str,
+        settings: Settings,
+        *,
+        base_branch: str = "main",
+    ):
+        assert base_branch == "main"
+        calls.append(run_id)
+        status = remaining_statuses.pop(0) if remaining_statuses else "passed"
+        run_dir = settings.app_dir / "runs" / run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        artifact_path = run_dir / "verification_report.json"
+        log_path = run_dir / f"verify-{len(calls)}.log"
+        command = {
+            "command": "pytest",
+            "exit_code": 1 if status == "failed" else 0,
+            "stdout_summary": "",
+            "stderr_summary": "boom" if status == "failed" else "",
+        }
+        report = {
+            "status": status,
+            "commands": [command],
+            "skip_reason": None,
+        }
+        artifact_path.write_text(json.dumps(report), encoding="utf-8")
+        log_path.write_text("verify log", encoding="utf-8")
+        return StageResult(
+            run_id=run_id,
+            artifact_path=artifact_path,
+            log_path=log_path,
+            report=report,
+        )
+
+    monkeypatch.setattr("pawchestrator.epic.run_verify", fake_run_verify)
+
+
+def _patch_epic_implement(
+    monkeypatch: pytest.MonkeyPatch,
+    calls: list[dict[str, object]],
+) -> None:
+    async def fake_run_implement(
+        run_id: str,
+        settings: Settings,
+        *,
+        repo_path: Path | None = None,
+        repair_context: dict[str, object] | None = None,
+        repair_attempt: int | None = None,
+        allow_dirty_existing_worktree: bool = False,
+        worktree_branch: str | None = None,
+        worktree_path: Path | None = None,
+        base_branch: str = "main",
+    ):
+        assert base_branch == "main"
+        assert repair_context is not None
+        calls.append(
+            {
+                "run_id": run_id,
+                "repair_attempt": repair_attempt,
+                "allow_dirty_existing_worktree": allow_dirty_existing_worktree,
+                "worktree_branch": worktree_branch,
+                "worktree_path": worktree_path,
+                "background": repair_context["background"],
+            }
+        )
+        artifact_path = settings.app_dir / "runs" / run_id / "implementation_report.json"
+        log_path = settings.app_dir / "runs" / run_id / "implement.log"
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        report = {"status": "completed", "files_changed": []}
+        artifact_path.write_text(json.dumps(report), encoding="utf-8")
+        log_path.write_text("repair", encoding="utf-8")
+        return StageResult(
+            run_id=run_id,
+            artifact_path=artifact_path,
+            log_path=log_path,
+            report=report,
+        )
+
+    monkeypatch.setattr("pawchestrator.epic.run_implement", fake_run_implement)
 
 
 def _patch_pipeline(
