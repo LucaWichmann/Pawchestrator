@@ -89,6 +89,7 @@ def test_issue_status_returns_epic_run_with_pipeline_shaped_sub_runs(
     assert payload["epic"]["branch"] == "paw/epic-42-parent"
     assert payload["epic"]["pr_url"] == "https://github.com/owner/repo/pull/42"
     assert payload["epic"]["epic_confirm"] is True
+    assert payload["epic"]["parent_stages"] == []
     assert [run["issue_number"] for run in payload["epic"]["sub_runs"]] == [43, 44]
 
     first_sub_run = payload["epic"]["sub_runs"][0]
@@ -116,6 +117,49 @@ def test_issue_status_returns_epic_run_with_pipeline_shaped_sub_runs(
     assert second_sub_run["stages"][0]["stage_name"] == "verify"
     assert second_sub_run["stages"][0]["status"] == "skipped"
     assert second_sub_run["stages"][0]["error"] == "verification deferred to epic level"
+
+
+def test_issue_status_returns_epic_parent_stages_in_creation_order(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    settings.pipeline.epic_confirm = True
+    _seed_token(settings)
+    _stub_runner_health(monkeypatch)
+    _insert_epic_run(settings, mode="epic", parent_stages=True)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.get(
+            "/issue/owner/repo/42/status",
+            headers=_token_headers(),
+        )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["epic"]["parent_stages"] == [
+        {
+            "stage_name": "verify",
+            "status": "failed",
+            "started_at": "2026-05-24T10:00:04Z",
+            "completed_at": "2026-05-24T10:00:05Z",
+            "error": "Tests failed",
+        },
+        {
+            "stage_name": "implement",
+            "status": "complete",
+            "started_at": "2026-05-24T10:00:06Z",
+            "completed_at": "2026-05-24T10:00:07Z",
+            "error": None,
+        },
+        {
+            "stage_name": "verify",
+            "status": "complete",
+            "started_at": "2026-05-24T10:00:08Z",
+            "completed_at": "2026-05-24T10:00:09Z",
+            "error": None,
+        },
+    ]
 
 
 def test_issue_status_dedupes_epic_child_attempts_to_latest(
@@ -481,7 +525,12 @@ def _insert_grill_run(
     asyncio.run(insert())
 
 
-def _insert_epic_run(settings: Settings) -> None:
+def _insert_epic_run(
+    settings: Settings,
+    *,
+    mode: str = "epic-with-sub-issues",
+    parent_stages: bool = False,
+) -> None:
     import asyncio
 
     async def insert() -> None:
@@ -496,10 +545,11 @@ def _insert_epic_run(settings: Settings) -> None:
                 VALUES (
                   'epic-parent', 'owner', 'repo', 42, 'epic-group', 'epic',
                   'epic_complete', 'epic', 'https://github.com/owner/repo/pull/42',
-                  'epic-with-sub-issues', '2026-05-24T10:00:00Z',
+                  ?, '2026-05-24T10:00:00Z',
                   '2026-05-24T10:00:04Z'
                 )
-                """
+                """,
+                (mode,),
             )
             await db.execute(
                 """
@@ -578,6 +628,41 @@ def _insert_epic_run(settings: Settings) -> None:
                 )
                 """
             )
+            if parent_stages:
+                await db.executemany(
+                    """
+                    INSERT INTO workflow_stages (
+                      id, run_id, stage_name, status, error, started_at, completed_at
+                    )
+                    VALUES (?, 'epic-parent', ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (
+                            "epic-parent-stage-1",
+                            "verify",
+                            "failed",
+                            "Tests failed",
+                            "2026-05-24T10:00:04Z",
+                            "2026-05-24T10:00:05Z",
+                        ),
+                        (
+                            "epic-parent-stage-2",
+                            "implement",
+                            "complete",
+                            None,
+                            "2026-05-24T10:00:06Z",
+                            "2026-05-24T10:00:07Z",
+                        ),
+                        (
+                            "epic-parent-stage-3",
+                            "verify",
+                            "complete",
+                            None,
+                            "2026-05-24T10:00:08Z",
+                            "2026-05-24T10:00:09Z",
+                        ),
+                    ],
+                )
             await db.commit()
 
     asyncio.run(insert())
