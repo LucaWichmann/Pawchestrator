@@ -344,11 +344,18 @@ def test_issue_grill_returns_run_id_and_schedules_grill(
     assert payload["workflow_type"] == "grill"
 
 
-def test_issue_epic_architect_returns_run_id_and_completes_scaffold(
+def test_issue_epic_architect_returns_run_id_and_runs_scout(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
     settings = Settings(app_dir=tmp_path)
     _seed_token(settings)
+    calls = []
+
+    async def fake_run_epic_scout(issue_url: str, settings: Settings, *, run_id: str):
+        calls.append((issue_url, settings.app_dir, run_id))
+
+    monkeypatch.setattr("pawchestrator.server.run_epic_scout", fake_run_epic_scout)
 
     with TestClient(create_app(settings)) as client:
         response = client.post(
@@ -367,6 +374,9 @@ def test_issue_epic_architect_returns_run_id_and_completes_scaffold(
     assert payload["issue_number"] == 42
     assert payload["status"] == "completed"
     assert payload["current_stage"] == "epic_architect"
+    assert calls == [
+        ("https://github.com/owner/repo/issues/42", tmp_path, run_id),
+    ]
 
 
 def test_review_start_returns_run_id_and_schedules_review(

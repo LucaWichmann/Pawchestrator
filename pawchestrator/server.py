@@ -34,6 +34,7 @@ from pawchestrator.db import (
     mark_run_failed,
 )
 from pawchestrator.epic import run_epic
+from pawchestrator.epic_scout import run_epic_scout
 from pawchestrator.github import (
     GitHubIssueClient,
     get_gh_token,
@@ -402,6 +403,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         run_id = await _prepare_epic_architect_run(url, runtime_settings)
         background_tasks.add_task(
             _run_epic_architect_background,
+            url,
             runtime_settings,
             run_id=run_id,
         )
@@ -663,12 +665,13 @@ async def _run_grill_background(
 
 
 async def _run_epic_architect_background(
+    issue_url_value: str,
     settings: Settings,
     *,
     run_id: str,
 ) -> None:
     try:
-        print(f"[run {run_id}] epic architect scaffold complete")
+        await run_epic_scout(issue_url_value, settings, run_id=run_id)
         await mark_run_completed(
             settings,
             run_id=run_id,
