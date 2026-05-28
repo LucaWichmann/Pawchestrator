@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,6 +11,36 @@ from pawchestrator.db import init_db
 from pawchestrator.github import GitHubIssueClient
 from pawchestrator.server import create_app
 from pawchestrator.sessions import save_sessions
+
+
+def test_create_app_prints_loaded_config_when_debug_enabled(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    settings = Settings(app_dir=tmp_path, debug=True)
+    settings.runners.codex.model = "gpt-test"
+
+    create_app(settings)
+
+    output = capsys.readouterr().out
+    assert "[pawchestrator:debug] config:" in output
+    assert '"debug": true' in output
+    assert '"app_dir":' in output
+    assert '"model": "gpt-test"' in output
+    _, config_json = output.split("[pawchestrator:debug] config:\n", 1)
+    payload = json.loads(config_json)
+    assert payload["app_dir"] == str(tmp_path)
+    assert payload["runners"]["codex"]["model"] == "gpt-test"
+
+
+def test_create_app_does_not_print_loaded_config_when_debug_disabled(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    create_app(Settings(app_dir=tmp_path, debug=False))
+
+    output = capsys.readouterr().out
+    assert "[pawchestrator:debug] config:" not in output
 
 
 def test_health_returns_version_and_local_bind(tmp_path: Path) -> None:

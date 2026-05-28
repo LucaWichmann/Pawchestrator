@@ -121,6 +121,7 @@ class EpicStartResponse(BaseModel):
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     runtime_settings = settings or load_settings()
+    _debug_print_settings(runtime_settings)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -419,6 +420,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return await _create_review_issues(runtime_settings, run_id)
 
     return app
+
+
+def _debug_print_settings(settings: Settings) -> None:
+    if not settings.debug:
+        return
+
+    print("[pawchestrator:debug] config:", flush=True)
+    print(
+        json.dumps(settings.model_dump(mode="json"), indent=2, sort_keys=True),
+        flush=True,
+    )
 
 
 def _is_pair_origin_allowed(origin: str | None) -> bool:
