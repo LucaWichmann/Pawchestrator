@@ -74,6 +74,13 @@ STAGE_CONFIGS: dict[str, StageLifecycleConfig] = {
         "grill_report",
         "grill",
     ),
+    "epic_scout": StageLifecycleConfig(
+        "epic_scout_running",
+        "epic_scout_complete",
+        "epic_scout_failed",
+        "epic_scout_report",
+        "epic_architect",
+    ),
     "review": StageLifecycleConfig(
         "review_running",
         "review_complete",
