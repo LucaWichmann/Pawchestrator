@@ -635,7 +635,6 @@ IssueSnapshot JSON:
 
 Implementation plan:
 {_prompt_json(prompt_plan)}
-{repair_section}
 {checkbox_section}"""
 
     return f"{data_section}\n\n{instructions}"
