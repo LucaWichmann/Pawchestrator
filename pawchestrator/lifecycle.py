@@ -307,6 +307,8 @@ async def _stale_failure_stage(
     workflow_type = str(run["workflow_type"] or "pipeline")
     if workflow_type == "grill":
         return "grill"
+    if workflow_type == "epic_architect":
+        return "epic_architect"
     if workflow_type == "repair":
         return "repair"
 

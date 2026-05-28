@@ -19,6 +19,7 @@ from pawchestrator.db import (
     create_epic_run,
     create_repair_run,
     create_review_run,
+    get_latest_epic_architect_run_by_issue,
     get_latest_epic_run_by_issue,
     get_latest_failed_epic_run_by_issue,
     get_latest_pipeline_runs_by_group_issue,
@@ -29,6 +30,7 @@ from pawchestrator.db import (
     init_db,
     is_repo_registered,
     lookup_repo_path,
+    mark_run_completed,
     mark_run_failed,
 )
 from pawchestrator.epic import run_epic
@@ -67,6 +69,12 @@ class IssueStartRequest(BaseModel):
 
 
 class IssueGrillRequest(BaseModel):
+    owner: str = Field(min_length=1)
+    repo: str = Field(min_length=1)
+    number: int = Field(gt=0)
+
+
+class IssueEpicArchitectRequest(BaseModel):
     owner: str = Field(min_length=1)
     repo: str = Field(min_length=1)
     number: int = Field(gt=0)
@@ -200,7 +208,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/issue/{owner}/{repo}/{number}/status")
     async def issue_status(owner: str, repo: str, number: int) -> dict[str, object]:
-        repo_registered, runners, pipeline, grill, epic = await asyncio.gather(
+        (
+            repo_registered,
+            runners,
+            pipeline,
+            grill,
+            epic_architect,
+            epic,
+        ) = await asyncio.gather(
             is_repo_registered(runtime_settings, owner=owner, repo=repo),
             get_runner_health(runtime_settings),
             get_latest_run_by_issue(
@@ -211,6 +226,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "pipeline",
             ),
             get_latest_grill_run_by_issue(runtime_settings, owner, repo, number),
+            get_latest_epic_architect_run_by_issue(
+                runtime_settings,
+                owner,
+                repo,
+                number,
+            ),
             get_latest_epic_run_by_issue(runtime_settings, owner, repo, number),
         )
         return {
@@ -219,6 +240,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "runners": runners,
             "pipeline": None if epic is not None else pipeline,
             "grill": grill,
+            "epic_architect": epic_architect,
             "epic": epic,
             "epic_confirm": runtime_settings.pipeline.epic_confirm,
         }
@@ -366,6 +388,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         background_tasks.add_task(
             _run_grill_background,
             url,
+            runtime_settings,
+            run_id=run_id,
+        )
+        return {"run_id": run_id}
+
+    @app.post("/issue/epic-architect")
+    async def issue_epic_architect(
+        body: IssueEpicArchitectRequest,
+        background_tasks: BackgroundTasks,
+    ) -> dict[str, str]:
+        url = f"https://github.com/{body.owner}/{body.repo}/issues/{body.number}"
+        run_id = await _prepare_epic_architect_run(url, runtime_settings)
+        background_tasks.add_task(
+            _run_epic_architect_background,
             runtime_settings,
             run_id=run_id,
         )
@@ -626,6 +662,23 @@ async def _run_grill_background(
         print(f"[run {run_id}] grill failed: {error}")
 
 
+async def _run_epic_architect_background(
+    settings: Settings,
+    *,
+    run_id: str,
+) -> None:
+    try:
+        print(f"[run {run_id}] epic architect scaffold complete")
+        await mark_run_completed(
+            settings,
+            run_id=run_id,
+            current_stage="epic_architect",
+        )
+    except Exception as error:
+        await mark_run_failed(settings, run_id=run_id)
+        print(f"[run {run_id}] epic architect failed: {error}")
+
+
 async def _run_review_background(
     settings: Settings,
     *,
@@ -676,6 +729,24 @@ async def _prepare_grill_run(issue_url_value: str, settings: Settings) -> str:
     reference = parse_issue_url(issue_url_value)
     run_id = str(uuid4())
     await create_grill_run(
+        settings,
+        run_id=run_id,
+        owner=reference.owner,
+        repo=reference.repo,
+        issue_number=reference.number,
+    )
+    return run_id
+
+
+async def _prepare_epic_architect_run(issue_url_value: str, settings: Settings) -> str:
+    from uuid import uuid4
+
+    from pawchestrator.db import create_epic_architect_run
+    from pawchestrator.github import parse_issue_url
+
+    reference = parse_issue_url(issue_url_value)
+    run_id = str(uuid4())
+    await create_epic_architect_run(
         settings,
         run_id=run_id,
         owner=reference.owner,

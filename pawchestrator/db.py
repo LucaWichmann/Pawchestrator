@@ -362,6 +362,27 @@ async def create_grill_run(
     )
 
 
+async def create_epic_architect_run(
+    settings: Settings,
+    *,
+    run_id: str,
+    owner: str,
+    repo: str,
+    issue_number: int,
+) -> None:
+    await init_db(settings)
+    now = utc_now_iso()
+    await create_run(
+        settings.database_path,
+        run_id=run_id,
+        owner=owner,
+        repo=repo,
+        issue_number=issue_number,
+        workflow_kind=WorkflowKind.EPIC_ARCHITECT,
+        now=now,
+    )
+
+
 async def set_grill_waiting(settings: Settings, *, run_id: str) -> None:
     await init_db(settings)
     now = utc_now_iso()
@@ -806,6 +827,13 @@ async def get_latest_run_by_issue(
         run.pop("artifacts", None)
         return run
 
+    if workflow_type == "epic_architect":
+        run.pop("artifacts", None)
+        run.pop("pr_url", None)
+        run["epic_analysis"] = None
+        run["created_sub_issues"] = []
+        return run
+
     grill_report = _read_latest_artifact(run, "grill_report")
     run.pop("artifacts", None)
     run.pop("pr_url", None)
@@ -820,6 +848,21 @@ async def get_latest_grill_run_by_issue(
     issue_number: int,
 ) -> dict[str, object] | None:
     return await get_latest_run_by_issue(settings, owner, repo, issue_number, "grill")
+
+
+async def get_latest_epic_architect_run_by_issue(
+    settings: Settings,
+    owner: str,
+    repo: str,
+    issue_number: int,
+) -> dict[str, object] | None:
+    return await get_latest_run_by_issue(
+        settings,
+        owner,
+        repo,
+        issue_number,
+        "epic_architect",
+    )
 
 
 async def get_latest_epic_run_by_issue(
