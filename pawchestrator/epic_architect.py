@@ -15,6 +15,7 @@ from pawchestrator.epic_scout import (
     epic_scout_report_path,
     run_epic_scout,
 )
+from pawchestrator.github import GitHubError, GitHubIssueClient, get_gh_token
 from pawchestrator.issues import snapshot_issue
 from pawchestrator.models import EpicArchitectPlan
 from pawchestrator.runners import (
@@ -27,7 +28,11 @@ from pawchestrator.stage_fallback import (
     run_task_with_usage_limit_fallback,
     usage_limit_fallback_runner,
 )
-from pawchestrator.stage_lifecycle import StageResult, run_stage_lifecycle
+from pawchestrator.stage_lifecycle import (
+    StageFailedWithArtifact,
+    StageResult,
+    run_stage_lifecycle,
+)
 
 EPIC_ARCHITECT_PLAN_SCHEMA = "pawchestrator.epic_architect_plan.v1"
 LOGGER = logging.getLogger(__name__)
@@ -40,6 +45,7 @@ async def run_epic_architect(
     run_id: str,
     repo_path: Path | None = None,
     runner: Runner | None = None,
+    github_client: GitHubIssueClient | None = None,
 ) -> StageResult:
     snapshot_path = _snapshot_artifact_path(settings, run_id)
     if not snapshot_path.exists():
@@ -86,11 +92,23 @@ async def run_epic_architect(
             logger=LOGGER,
         )
         plan = normalize_epic_architect_plan(result.artifact)
-        return await validate_epic_architect_dependencies(
+        validated_plan = await validate_epic_architect_dependencies(
             settings,
             run_id=run_id,
             plan=plan,
-        ), artifact_path
+        )
+        client = github_client or GitHubIssueClient(get_gh_token())
+        try:
+            created_plan = await create_epic_architect_sub_issues(
+                validated_plan,
+                client=client,
+                owner=str(snapshot["owner"]),
+                repo=str(snapshot["repo"]),
+                parent_number=int(snapshot["number"]),
+            )
+        except EpicArchitectSubIssueCreationError as error:
+            raise StageFailedWithArtifact(str(error), error.plan, artifact_path) from error
+        return created_plan, artifact_path
 
     return await run_stage_lifecycle(settings, run_id, "epic_architect", body)
 
@@ -143,6 +161,96 @@ def normalize_epic_architect_plan(artifact: dict[str, Any] | None) -> dict[str, 
     plan["schema"] = str(artifact.get("schema") or EPIC_ARCHITECT_PLAN_SCHEMA)
     plan["epic_analysis"] = " ".join(plan["epic_analysis"].splitlines()).strip()
     return plan
+
+
+async def create_epic_architect_sub_issues(
+    plan: dict[str, Any],
+    *,
+    client: GitHubIssueClient,
+    owner: str,
+    repo: str,
+    parent_number: int,
+) -> dict[str, Any]:
+    created_by_index: dict[int, dict[str, Any]] = {}
+    created_sub_issues: list[dict[str, Any]] = []
+
+    try:
+        for index in topological_sub_issue_order(plan["sub_issues"]):
+            sub_issue = plan["sub_issues"][index]
+            body = _description_with_dependency_references(
+                str(sub_issue["description"]),
+                sub_issue["depends_on_indexes"],
+                created_by_index,
+            )
+            created = await client.create_issue_details(
+                owner,
+                repo,
+                title=str(sub_issue["title"]),
+                body=body,
+            )
+            created_record = {
+                "number": int(created["number"]),
+                "title": str(created["title"]),
+                "url": str(created["url"]),
+            }
+            created_by_index[index] = created_record
+            created_sub_issues.append(created_record)
+            await client.link_sub_issue(
+                owner,
+                repo,
+                parent_number,
+                sub_issue_id=str(created["node_id"]),
+            )
+    except GitHubError as error:
+        plan["created_sub_issues"] = created_sub_issues
+        raise EpicArchitectSubIssueCreationError(str(error), plan) from error
+
+    plan["created_sub_issues"] = created_sub_issues
+    return plan
+
+
+class EpicArchitectSubIssueCreationError(RuntimeError):
+    def __init__(self, message: str, plan: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.plan = plan
+
+
+def topological_sub_issue_order(sub_issues: list[dict[str, Any]]) -> list[int]:
+    dependents_by_dependency: dict[int, list[int]] = {
+        index: [] for index in range(len(sub_issues))
+    }
+    indegrees = [0 for _ in sub_issues]
+    for index, sub_issue in enumerate(sub_issues):
+        for dependency in sub_issue["depends_on_indexes"]:
+            dependents_by_dependency[dependency].append(index)
+            indegrees[index] += 1
+
+    ready = [index for index, indegree in enumerate(indegrees) if indegree == 0]
+    order: list[int] = []
+    while ready:
+        dependency = ready.pop(0)
+        order.append(dependency)
+        for dependent in dependents_by_dependency[dependency]:
+            indegrees[dependent] -= 1
+            if indegrees[dependent] == 0:
+                ready.append(dependent)
+    return order
+
+
+def _description_with_dependency_references(
+    description: str,
+    depends_on_indexes: list[int],
+    created_by_index: dict[int, dict[str, Any]],
+) -> str:
+    dependency_numbers = [
+        int(created_by_index[index]["number"])
+        for index in depends_on_indexes
+        if index in created_by_index
+    ]
+    if not dependency_numbers:
+        return description
+    references = ", ".join(f"#{number}" for number in dependency_numbers)
+    return f"{description}\n\nDepends on: {references}"
 
 
 async def validate_epic_architect_dependencies(

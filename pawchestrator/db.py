@@ -836,7 +836,12 @@ async def get_latest_run_by_issue(
         run["epic_analysis"] = (
             None if epic_plan is None else epic_plan.get("epic_analysis")
         )
-        run["created_sub_issues"] = []
+        created_sub_issues = None if epic_plan is None else epic_plan.get(
+            "created_sub_issues"
+        )
+        run["created_sub_issues"] = (
+            created_sub_issues if isinstance(created_sub_issues, list) else []
+        )
         return run
 
     grill_report = _read_latest_artifact(run, "grill_report")

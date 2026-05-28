@@ -10,10 +10,13 @@ from pawchestrator.db import (
     insert_repo_registration,
 )
 from pawchestrator.epic_architect import (
+    EpicArchitectSubIssueCreationError,
+    create_epic_architect_sub_issues,
     normalize_epic_architect_plan,
     run_epic_architect,
     validate_epic_architect_dependencies,
 )
+from pawchestrator.github import GitHubError
 from pawchestrator.epic_scout import EPIC_SCOUT_REPORT_SCHEMA
 from pawchestrator.runners import Runner, RunnerResult, RunnerTask
 
@@ -44,6 +47,60 @@ class FakeRunner(Runner):
         )
 
 
+class FakeGitHubClient:
+    def __init__(self, *, fail_create_at: int | None = None) -> None:
+        self.calls: list[tuple[str, dict[str, object]]] = []
+        self._next_number = 101
+        self._fail_create_at = fail_create_at
+        self._create_count = 0
+
+    async def create_issue_details(
+        self,
+        owner: str,
+        repo: str,
+        *,
+        title: str,
+        body: str | None = None,
+    ) -> dict[str, object]:
+        self._create_count += 1
+        if self._fail_create_at == self._create_count:
+            raise GitHubError("boom")
+        number = self._next_number
+        self._next_number += 1
+        self.calls.append(
+            (
+                "create",
+                {"owner": owner, "repo": repo, "title": title, "body": body or ""},
+            )
+        )
+        return {
+            "number": number,
+            "title": title,
+            "url": f"https://github.com/{owner}/{repo}/issues/{number}",
+            "node_id": f"NODE-{number}",
+        }
+
+    async def link_sub_issue(
+        self,
+        owner: str,
+        repo: str,
+        parent_number: int,
+        *,
+        sub_issue_id: str,
+    ) -> None:
+        self.calls.append(
+            (
+                "link",
+                {
+                    "owner": owner,
+                    "repo": repo,
+                    "parent_number": parent_number,
+                    "sub_issue_id": sub_issue_id,
+                },
+            )
+        )
+
+
 def test_run_epic_architect_writes_plan_and_records_stage(tmp_path: Path) -> None:
     settings = Settings(app_dir=tmp_path)
     run_id = "run-123"
@@ -59,6 +116,7 @@ def test_run_epic_architect_writes_plan_and_records_stage(tmp_path: Path) -> Non
         )
     )
     runner = FakeRunner()
+    github_client = FakeGitHubClient()
 
     result = asyncio.run(
         run_epic_architect(
@@ -66,6 +124,7 @@ def test_run_epic_architect_writes_plan_and_records_stage(tmp_path: Path) -> Non
             settings,
             run_id=run_id,
             runner=runner,
+            github_client=github_client,
         )
     )
 
@@ -77,6 +136,18 @@ def test_run_epic_architect_writes_plan_and_records_stage(tmp_path: Path) -> Non
     report = json.loads(result.artifact_path.read_text(encoding="utf-8"))
     assert report["epic_analysis"] == "Split backend and frontend work."
     assert report["sub_issues"][1]["depends_on_indexes"] == [0]
+    assert report["created_sub_issues"] == [
+        {
+            "number": 101,
+            "title": "Backend: Add API",
+            "url": "https://github.com/owner/repo/issues/101",
+        },
+        {
+            "number": 102,
+            "title": "Frontend: Add UI",
+            "url": "https://github.com/owner/repo/issues/102",
+        },
+    ]
 
     with sqlite3.connect(settings.database_path) as db:
         run = db.execute(
@@ -102,6 +173,82 @@ def test_run_epic_architect_writes_plan_and_records_stage(tmp_path: Path) -> Non
     assert run == ("epic_architect_complete", "epic_architect")
     assert stages[-1] == ("epic_architect", "complete", None)
     assert artifact == ("epic_architect_plan", str(result.artifact_path))
+
+
+def test_create_sub_issues_happy_path_without_dependencies() -> None:
+    plan = normalize_epic_architect_plan(_plan([("A", []), ("B", [])]))
+    client = FakeGitHubClient()
+
+    result = asyncio.run(
+        create_epic_architect_sub_issues(
+            plan,
+            client=client,
+            owner="owner",
+            repo="repo",
+            parent_number=42,
+        )
+    )
+
+    assert [call[0] for call in client.calls] == ["create", "link", "create", "link"]
+    assert [call[1]["title"] for call in client.calls if call[0] == "create"] == [
+        "A",
+        "B",
+    ]
+    assert [call[1]["sub_issue_id"] for call in client.calls if call[0] == "link"] == [
+        "NODE-101",
+        "NODE-102",
+    ]
+    assert result["created_sub_issues"] == [
+        {"number": 101, "title": "A", "url": "https://github.com/owner/repo/issues/101"},
+        {"number": 102, "title": "B", "url": "https://github.com/owner/repo/issues/102"},
+    ]
+
+
+def test_create_sub_issues_uses_topological_order_and_dependency_references() -> None:
+    plan = normalize_epic_architect_plan(
+        _plan([("Foundation", []), ("Final", [0, 2]), ("Middle", [0])])
+    )
+    client = FakeGitHubClient()
+
+    asyncio.run(
+        create_epic_architect_sub_issues(
+            plan,
+            client=client,
+            owner="owner",
+            repo="repo",
+            parent_number=42,
+        )
+    )
+
+    create_calls = [call[1] for call in client.calls if call[0] == "create"]
+    assert [call["title"] for call in create_calls] == ["Foundation", "Middle", "Final"]
+    assert "Depends on: #101" in create_calls[1]["body"]
+    assert "Depends on: #101, #102" in create_calls[2]["body"]
+
+
+def test_create_sub_issues_partial_failure_records_created_issues() -> None:
+    plan = normalize_epic_architect_plan(_plan([("A", []), ("B", []), ("C", [])]))
+    client = FakeGitHubClient(fail_create_at=3)
+
+    try:
+        asyncio.run(
+            create_epic_architect_sub_issues(
+                plan,
+                client=client,
+                owner="owner",
+                repo="repo",
+                parent_number=42,
+            )
+        )
+    except EpicArchitectSubIssueCreationError as error:
+        failed_plan = error.plan
+    else:
+        raise AssertionError("expected sub-issue creation failure")
+
+    assert failed_plan["created_sub_issues"] == [
+        {"number": 101, "title": "A", "url": "https://github.com/owner/repo/issues/101"},
+        {"number": 102, "title": "B", "url": "https://github.com/owner/repo/issues/102"},
+    ]
 
 
 def test_valid_dependency_graph_passes_through_unchanged(tmp_path: Path) -> None:

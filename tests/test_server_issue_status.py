@@ -357,8 +357,14 @@ def test_issue_status_returns_latest_epic_architect_run(
         "warnings": [],
         "review_report": None,
         "created_issue_urls": [],
-        "epic_analysis": None,
-        "created_sub_issues": [],
+        "epic_analysis": "Split the work.",
+        "created_sub_issues": [
+            {
+                "number": 101,
+                "title": "Backend",
+                "url": "https://github.com/owner/repo/issues/101",
+            }
+        ],
     }
 
 
@@ -592,6 +598,32 @@ def _insert_epic_architect_run(settings: Settings) -> None:
                         "2026-05-24T10:00:01Z",
                     ),
                 ],
+            )
+            run_dir = settings.app_dir / "runs" / "epic-architect-new"
+            run_dir.mkdir(parents=True, exist_ok=True)
+            artifact_path = run_dir / "epic_architect_plan.json"
+            artifact_path.write_text(
+                json.dumps(
+                    {
+                        "epic_analysis": "Split the work.",
+                        "sub_issues": [],
+                        "created_sub_issues": [
+                            {
+                                "number": 101,
+                                "title": "Backend",
+                                "url": "https://github.com/owner/repo/issues/101",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            await db.execute(
+                """
+                INSERT INTO artifacts (run_id, artifact_type, file_path, created_at)
+                VALUES ('epic-architect-new', 'epic_architect_plan', ?, ?)
+                """,
+                (str(artifact_path), "2026-05-24T10:00:01Z"),
             )
             await db.commit()
 
