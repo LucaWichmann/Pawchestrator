@@ -12,6 +12,7 @@ import aiosqlite
 class WorkflowKind(StrEnum):
     PIPELINE = "pipeline"
     GRILL = "grill"
+    EPIC_ARCHITECT = "epic_architect"
     EPIC = "epic"
     REVIEW = "review"
     REPAIR = "repair"
@@ -32,11 +33,13 @@ REVIEW_STAGES = (
 )
 REPAIR_STAGES = ("repair", "push")
 GRILL_STAGES = ()
+EPIC_ARCHITECT_STAGES = ("epic_scout", "epic_architect")
 EPIC_STAGES = ()
 
 STAGES_BY_WORKFLOW_KIND: dict[WorkflowKind, tuple[str, ...]] = {
     WorkflowKind.PIPELINE: PIPELINE_STAGES,
     WorkflowKind.GRILL: GRILL_STAGES,
+    WorkflowKind.EPIC_ARCHITECT: EPIC_ARCHITECT_STAGES,
     WorkflowKind.EPIC: EPIC_STAGES,
     WorkflowKind.REVIEW: REVIEW_STAGES,
     WorkflowKind.REPAIR: REPAIR_STAGES,
@@ -52,6 +55,7 @@ ARTIFACT_TYPES_BY_WORKFLOW_KIND: dict[WorkflowKind, tuple[str, ...]] = {
         "pr_draft",
     ),
     WorkflowKind.GRILL: ("grill_report",),
+    WorkflowKind.EPIC_ARCHITECT: ("epic_scout_report", "epic_architect_plan"),
     WorkflowKind.EPIC: (),
     WorkflowKind.REVIEW: ("review_report", "created_issues_report"),
     WorkflowKind.REPAIR: ("repair_report", "repair_push_report"),

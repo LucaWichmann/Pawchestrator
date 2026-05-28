@@ -344,6 +344,49 @@ def test_issue_grill_returns_run_id_and_schedules_grill(
     assert payload["workflow_type"] == "grill"
 
 
+def test_issue_epic_architect_returns_run_id_and_runs_scout_then_architect(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _seed_token(settings)
+    calls = []
+
+    async def fake_run_epic_scout(issue_url: str, settings: Settings, *, run_id: str):
+        calls.append(("scout", issue_url, settings.app_dir, run_id))
+
+    async def fake_run_epic_architect(issue_url: str, settings: Settings, *, run_id: str):
+        calls.append(("architect", issue_url, settings.app_dir, run_id))
+
+    monkeypatch.setattr("pawchestrator.server.run_epic_scout", fake_run_epic_scout)
+    monkeypatch.setattr(
+        "pawchestrator.server.run_epic_architect",
+        fake_run_epic_architect,
+    )
+
+    with TestClient(create_app(settings)) as client:
+        response = client.post(
+            "/issue/epic-architect",
+            json={"owner": "owner", "repo": "repo", "number": 42},
+            headers=_token_headers(),
+        )
+        run_id = response.json()["run_id"]
+        state_response = client.get(f"/runs/{run_id}", headers=_token_headers())
+
+    assert response.status_code == 200
+    assert response.json() == {"run_id": run_id}
+    payload = state_response.json()
+    assert payload["id"] == run_id
+    assert payload["workflow_type"] == "epic_architect"
+    assert payload["issue_number"] == 42
+    assert payload["status"] == "completed"
+    assert payload["current_stage"] == "epic_architect"
+    assert calls == [
+        ("scout", "https://github.com/owner/repo/issues/42", tmp_path, run_id),
+        ("architect", "https://github.com/owner/repo/issues/42", tmp_path, run_id),
+    ]
+
+
 def test_review_start_returns_run_id_and_schedules_review(
     tmp_path: Path,
     monkeypatch,
@@ -429,6 +472,7 @@ def test_openapi_exposes_issue_grill_route(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     assert "/issue/grill" in response.json()["paths"]
+    assert "/issue/epic-architect" in response.json()["paths"]
 
 
 def test_cors_allows_github_for_issue_start_and_runs(tmp_path: Path) -> None:

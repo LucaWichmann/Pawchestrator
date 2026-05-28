@@ -27,6 +27,8 @@ def test_stage_configs_cover_known_stages() -> None:
         "snapshot",
         "pr",
         "grill",
+        "epic_scout",
+        "epic_architect",
         "review",
         "post",
         "issues",

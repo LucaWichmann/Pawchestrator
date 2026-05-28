@@ -5,12 +5,14 @@ from uuid import UUID
 
 from pawchestrator.config import Settings
 from pawchestrator.db import (
+    create_epic_architect_run,
     create_epic_run,
     create_pipeline_run,
     create_grill_run,
     create_repair_run,
     create_review_run,
     get_github_comment_id,
+    get_latest_epic_architect_run_by_issue,
     get_latest_grill_run_by_issue,
     get_runs_by_group_id,
     get_run_state,
@@ -582,6 +584,31 @@ def test_get_latest_grill_run_by_issue_returns_grill_waiting(tmp_path: Path) -> 
     assert run["workflow_type"] == "grill"
 
 
+def test_get_latest_epic_architect_run_by_issue_returns_scaffold_shape(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    asyncio.run(
+        create_epic_architect_run(
+            settings,
+            run_id="run-123",
+            owner="owner",
+            repo="repo",
+            issue_number=42,
+        )
+    )
+
+    run = asyncio.run(
+        get_latest_epic_architect_run_by_issue(settings, "owner", "repo", 42)
+    )
+
+    assert run is not None
+    assert run["run_id"] == "run-123"
+    assert run["workflow_type"] == "epic_architect"
+    assert run["epic_analysis"] is None
+    assert run["created_sub_issues"] == []
+
+
 def test_fail_stale_runs_marks_grill_failed(tmp_path: Path) -> None:
     settings = Settings(app_dir=tmp_path)
     asyncio.run(
@@ -601,6 +628,26 @@ def test_fail_stale_runs_marks_grill_failed(tmp_path: Path) -> None:
     run, stages = _fetch_run_and_stages(tmp_path, "run-123")
     assert run == ("failed", "grill", None)
     assert stages["grill"] == ("failed", STALE_RUN_ERROR)
+
+
+def test_fail_stale_runs_marks_epic_architect_failed(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    asyncio.run(
+        create_epic_architect_run(
+            settings,
+            run_id="run-123",
+            owner="owner",
+            repo="repo",
+            issue_number=42,
+        )
+    )
+
+    cleaned = asyncio.run(fail_stale_runs_on_startup(settings))
+    run, stages = _fetch_run_and_stages(tmp_path, "run-123")
+
+    assert cleaned == 1
+    assert run == ("failed", "epic_architect", None)
+    assert stages["epic_architect"] == ("failed", STALE_RUN_ERROR)
 
 
 def test_fail_stale_runs_marks_epic_parent_failed(tmp_path: Path) -> None:
