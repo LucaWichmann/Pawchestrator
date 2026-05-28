@@ -23,6 +23,7 @@
   const PR_PANEL_ID = "pawchestrator-pr-panel";
   const START_ID = "pawchestrator-start";
   const GRILL_ID = "pawchestrator-grill";
+  const EPIC_ARCHITECT_ID = "pawchestrator-epic-architect";
   const PR_REVIEW_ID = "pawchestrator-review";
   const PR_REPAIR_ID = "pawchestrator-repair";
   const CREATE_ISSUES_ID = "pawchestrator-create-issues";
@@ -33,8 +34,10 @@
   const PIPELINE_STAGES = ["snapshot", "scout", "plan", "implement", "verify", "pr"];
   const REVIEW_STAGES = ["review", "post", "issues"];
   const REPAIR_STAGES = ["repair", "push"];
+  const EPIC_ARCHITECT_STAGES = ["epic_scout", "epic_architect", "creating"];
   const PAW = "\uD83D\uDC3E";
   const FIRE = "\uD83D\uDD25";
+  const CONSTRUCTION = "\uD83C\uDFD7\uFE0F";
   const WARNING = "\u26A0";
   const OFFLINE_MESSAGE = "Pawchestrator not running \u2014 start with `pawchestrator serve`";
   const GRILL_WAITING_STATUS = "grill_waiting";
@@ -61,6 +64,8 @@
     "repair_failed",
     "push_complete",
     "push_failed",
+    "epic_architect_complete",
+    "epic_architect_failed",
   ]);
   const PIPELINE_ACTIVE = new Set([
     "snapshot_running",
@@ -96,6 +101,7 @@
   GM_addStyle(`
     #${START_ID},
     #${GRILL_ID},
+    #${EPIC_ARCHITECT_ID},
     #${PR_REVIEW_ID},
     #${PR_REPAIR_ID},
     #${CREATE_ISSUES_ID} {
@@ -104,6 +110,7 @@
 
     #${START_ID}:disabled,
     #${GRILL_ID}:disabled,
+    #${EPIC_ARCHITECT_ID}:disabled,
     #${PR_REVIEW_ID}:disabled,
     #${PR_REPAIR_ID}:disabled,
     #${CREATE_ISSUES_ID}:disabled {
@@ -245,6 +252,12 @@
       padding-top: 10px;
     }
 
+    #${PANEL_ID} .pawchestrator-epic-architect-section {
+      border-top: 1px solid var(--borderColor-muted, #d8dee4);
+      margin-top: 10px;
+      padding-top: 10px;
+    }
+
     #${PANEL_ID} .pawchestrator-epic-section {
       border-top: 1px solid var(--borderColor-muted, #d8dee4);
       margin-top: 10px;
@@ -262,6 +275,31 @@
       color: var(--fgColor-muted, #59636e);
       font-weight: 600;
       margin-bottom: 6px;
+    }
+
+    #${PANEL_ID} .pawchestrator-epic-architect-title {
+      color: var(--fgColor-muted, #59636e);
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+
+    #${PANEL_ID} .pawchestrator-epic-architect-analysis {
+      margin-top: 8px;
+    }
+
+    #${PANEL_ID} .pawchestrator-epic-architect-created {
+      margin: 6px 0 0;
+      padding-left: 18px;
+    }
+
+    #${PANEL_ID} .pawchestrator-epic-architect-error {
+      color: var(--fgColor-danger, #cf222e);
+      margin-top: 8px;
+    }
+
+    #${PANEL_ID} .pawchestrator-epic-architect-partial {
+      color: var(--fgColor-muted, #59636e);
+      margin-top: 4px;
     }
 
     #${PANEL_ID} .pawchestrator-epic-title {
@@ -573,6 +611,10 @@
     return `pawchestrator_pr_run:${window.location.pathname}`;
   }
 
+  function epicArchitectRunKey() {
+    return `pawchestrator_epic_architect_run:${window.location.pathname}`;
+  }
+
   function findPrConversationContainer() {
     const selectors = [
       "#discussion_bucket",
@@ -628,6 +670,7 @@
       status && (
         status.pipeline ||
         status.grill ||
+        status.epic_architect ||
         epicSubRuns(status.epic).some((run) => run.status === "running" || /_running$/.test(run.status || ""))
       )
     );
@@ -656,7 +699,7 @@
     if (!status) {
       return null;
     }
-    const runs = [epicSummaryRun(status.epic), status.pipeline, status.grill].filter(Boolean);
+    const runs = [epicSummaryRun(status.epic), status.pipeline, status.grill, status.epic_architect].filter(Boolean);
     return runs.find((run) => !isRunDone(run)) || runs[0] || null;
   }
 
@@ -730,6 +773,16 @@
     if (run.status === "grill_failed") {
       return summarizeError(run);
     }
+    if (run.workflow_type === "epic_architect") {
+      if (isRunDone(run)) {
+        return run.status === "completed" || run.status === "epic_architect_complete"
+          ? "Epic created"
+          : summarizeError(run);
+      }
+      const stage = run.current_stage || "epic_scout";
+      const stageStatus = (run.status || "pending").replace(/^(epic_scout|epic_architect)_/, "");
+      return `[${stage}] ${stageStatus}...`;
+    }
     if (run.workflow_type === "epic") {
       return `Epic ${run.status || "running"}`;
     }
@@ -756,7 +809,8 @@
       run.status === "issues_complete" ||
       run.status === "issues_skipped" ||
       run.status === "repair_complete" ||
-      run.status === "push_complete"
+      run.status === "push_complete" ||
+      run.status === "epic_architect_complete"
     ) {
       return "done";
     }
@@ -767,7 +821,8 @@
       run.status === "post_failed" ||
       run.status === "issues_failed" ||
       run.status === "repair_failed" ||
-      run.status === "push_failed"
+      run.status === "push_failed" ||
+      run.status === "epic_architect_failed"
     ) {
       return "failed";
     }
@@ -888,6 +943,34 @@
     return -1;
   }
 
+  function renderNamedTimeline(parent, run, stageNames, options = {}) {
+    const steps = collapseNamedStages(run.stages, stageNames);
+    const activeIndex = activeNamedStageIndex(run, steps);
+    const timeline = document.createElement("div");
+    timeline.className = "pawchestrator-timeline";
+    timeline.style.gridTemplateColumns = `repeat(${stageNames.length}, minmax(72px, 1fr))`;
+    steps.forEach((step, index) => {
+      const doneByRun = options.markComplete && index <= activeIndex;
+      const status = doneByRun ? "done" : normalizeStepStatus(step.stage, activeIndex >= 0 && index > activeIndex);
+      const item = document.createElement("div");
+      item.className = "pawchestrator-step";
+      item.dataset.status = status;
+      item.dataset.active = String(!options.suppressActive && index === activeIndex && !isRunDone(run));
+
+      const indicator = document.createElement("span");
+      indicator.className = "pawchestrator-step-indicator";
+      indicator.textContent = status === "done" ? "\u2713" : status === "failed" ? "\u00D7" : "\u2022";
+
+      const label = document.createElement("span");
+      label.className = "pawchestrator-step-label";
+      label.textContent = step.label;
+
+      item.append(indicator, label);
+      timeline.append(item);
+    });
+    parent.append(timeline);
+  }
+
   function renderPipelineTimeline(parent, pipeline, options = {}) {
     const steps = collapseStages(pipeline.stages);
     const activeIndex = activeStageIndex(pipeline, steps);
@@ -917,32 +1000,7 @@
   }
 
   function renderReviewTimeline(parent, run) {
-    const steps = collapseNamedStages(
-      run.stages,
-      run.workflow_type === "repair" ? REPAIR_STAGES : REVIEW_STAGES,
-    );
-    const activeIndex = activeNamedStageIndex(run, steps);
-    const timeline = document.createElement("div");
-    timeline.className = "pawchestrator-timeline";
-    steps.forEach((step, index) => {
-      const status = normalizeStepStatus(step.stage, activeIndex >= 0 && index > activeIndex);
-      const item = document.createElement("div");
-      item.className = "pawchestrator-step";
-      item.dataset.status = status;
-      item.dataset.active = String(index === activeIndex && !isRunDone(run));
-
-      const indicator = document.createElement("span");
-      indicator.className = "pawchestrator-step-indicator";
-      indicator.textContent = status === "done" ? "\u2713" : status === "failed" ? "\u00D7" : "\u2022";
-
-      const label = document.createElement("span");
-      label.className = "pawchestrator-step-label";
-      label.textContent = step.label;
-
-      item.append(indicator, label);
-      timeline.append(item);
-    });
-    parent.append(timeline);
+    renderNamedTimeline(parent, run, run.workflow_type === "repair" ? REPAIR_STAGES : REVIEW_STAGES);
   }
 
   function renderPipeline(parent, pipeline) {
@@ -1087,6 +1145,88 @@
         status: epic.status || epicStatus(epic),
       }, { suppressActive: epicDone });
       section.append(verification);
+    }
+
+    parent.append(section);
+  }
+
+  function epicArchitectCreatedIssues(run) {
+    return Array.isArray(run?.created_sub_issues) ? run.created_sub_issues : [];
+  }
+
+  function issueAlreadyHasSubIssues(status) {
+    if (epicArchitectCreatedIssues(status?.epic_architect).length > 0) {
+      return true;
+    }
+    const summary = status?.issue?.sub_issues_summary || status?.sub_issues_summary;
+    return Number(summary?.total || summary?.completed || summary?.percent_completed) > 0;
+  }
+
+  function epicArchitectTimelineRun(run) {
+    const stages = Array.isArray(run?.stages) ? [...run.stages] : [];
+    const created = epicArchitectCreatedIssues(run);
+    if (created.length > 0 || run?.status === "completed" || run?.status === "epic_architect_complete") {
+      stages.push({ stage_name: "creating", status: "complete" });
+    }
+    return {
+      ...run,
+      current_stage: created.length > 0 || run?.status === "completed" ? "creating" : run?.current_stage,
+      stages,
+    };
+  }
+
+  function renderCreatedSubIssueLinks(parent, created) {
+    const list = document.createElement("ul");
+    list.className = "pawchestrator-epic-architect-created";
+    created.forEach((issue) => {
+      const item = document.createElement("li");
+      const link = document.createElement("a");
+      link.href = issue.url;
+      link.textContent = `#${issue.number}${issue.title ? ` ${issue.title}` : ""}`;
+      item.append(link);
+      list.append(item);
+    });
+    parent.append(list);
+  }
+
+  function renderEpicArchitectSection(parent, run) {
+    if (!run) {
+      return;
+    }
+
+    const section = document.createElement("section");
+    section.className = "pawchestrator-epic-architect-section";
+
+    const title = document.createElement("div");
+    title.className = "pawchestrator-epic-architect-title";
+    title.textContent = "EpicArchitect";
+    section.append(title);
+
+    renderNamedTimeline(section, epicArchitectTimelineRun(run), EPIC_ARCHITECT_STAGES, {
+      markComplete: run.status === "completed" || run.status === "epic_architect_complete",
+    });
+
+    const created = epicArchitectCreatedIssues(run);
+    if (run.epic_analysis && (run.status === "completed" || run.status === "epic_architect_complete")) {
+      const analysis = document.createElement("div");
+      analysis.className = "pawchestrator-epic-architect-analysis";
+      analysis.textContent = run.epic_analysis;
+      section.append(analysis);
+    }
+    if (created.length > 0 && (run.status === "completed" || run.status === "epic_architect_complete")) {
+      renderCreatedSubIssueLinks(section, created);
+    }
+    if (isRunDone(run) && !(run.status === "completed" || run.status === "epic_architect_complete")) {
+      const error = document.createElement("div");
+      error.className = "pawchestrator-epic-architect-error";
+      error.textContent = summarizeError(run);
+      section.append(error);
+      if (created.length > 0) {
+        const partial = document.createElement("div");
+        partial.className = "pawchestrator-epic-architect-partial";
+        partial.textContent = `Created before failure: ${created.map((issue) => `#${issue.number}`).join(", ")}`;
+        section.append(partial);
+      }
     }
 
     parent.append(section);
@@ -1389,6 +1529,7 @@
       return;
     }
     updateGrillButton(status.grill);
+    updateEpicArchitectButton(status);
 
     const run = currentRun(status);
     setPanelSummary(summarizeRun(run));
@@ -1427,9 +1568,10 @@
       body.append(line);
     }
 
+    renderGrillSection(body, status.grill);
+    renderEpicArchitectSection(body, status.epic_architect);
     renderPipeline(body, status.pipeline);
     renderEpicSection(body, status.epic);
-    renderGrillSection(body, status.grill);
     if (status.grill?.status === "grill_waiting") {
       attachGrillReplyObserver(status.grill);
     } else {
@@ -1737,12 +1879,13 @@
     const anyActive = Boolean(
       (status.pipeline && !isRunDone(status.pipeline)) ||
       (status.grill && !isRunDone(status.grill)) ||
+      (status.epic_architect && !isRunDone(status.epic_architect)) ||
       (status.epic && !isEpicDone(status.epic)) ||
       (!isEpicDone(status.epic) && epicSubRuns(status.epic).some((run) => !isRunDone(run)))
     );
     const shouldDisable = !issueOpen || anyActive;
     const closedTitle = !issueOpen ? "Issue is closed" : "";
-    for (const id of [START_ID, GRILL_ID]) {
+    for (const id of [START_ID, GRILL_ID, EPIC_ARCHITECT_ID]) {
       const btn = document.getElementById(id);
       if (!btn) continue;
       btn.toggleAttribute("disabled", shouldDisable);
@@ -1760,6 +1903,7 @@
         if (isIssueOpen()) {
           document.getElementById(START_ID)?.removeAttribute("disabled");
           document.getElementById(GRILL_ID)?.removeAttribute("disabled");
+          document.getElementById(EPIC_ARCHITECT_ID)?.removeAttribute("disabled");
         }
       });
     }, POLL_INTERVAL_MS);
@@ -1887,6 +2031,49 @@
         statusSetter: setPanelSummary,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(issue),
+      });
+      startIssueStatusPolling();
+    } catch (error) {
+      setPanelSummary(error.message);
+      if (button) {
+        button.disabled = false;
+      }
+    }
+  }
+
+  async function startEpicArchitect() {
+    const button = document.getElementById(EPIC_ARCHITECT_ID);
+    if (button) {
+      button.disabled = true;
+    }
+
+    try {
+      const issue = parseIssueReference();
+      await getOrAcquireToken(setPanelSummary);
+      setPanelSummary("[epic_scout] starting...");
+      panelExpandedByUser = true;
+      setPanelExpanded(true);
+      const response = await requestJson("/issue/epic-architect", {
+        method: "POST",
+        label: "EpicArchitect request",
+        statusSetter: setPanelSummary,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(issue),
+      });
+      await GM_setValue(epicArchitectRunKey(), response.run_id);
+      renderStatus({
+        ...(latestIssueStatus || {}),
+        epic_architect: {
+          run_id: response.run_id,
+          workflow_type: "epic_architect",
+          status: "epic_scout_running",
+          current_stage: "epic_scout",
+          stages: EPIC_ARCHITECT_STAGES.map((stage_name) => ({
+            stage_name,
+            status: stage_name === "epic_scout" ? "running" : "pending",
+          })),
+          created_sub_issues: [],
+        },
       });
       startIssueStatusPolling();
     } catch (error) {
@@ -2097,6 +2284,39 @@
     return createButton(GRILL_ID, "pawchestrator-grill-button", grillButtonLabel(grill), startGrill);
   }
 
+  function createEpicArchitectButton() {
+    return createButton(
+      EPIC_ARCHITECT_ID,
+      "pawchestrator-epic-architect-button",
+      `${CONSTRUCTION} Turn into Epic`,
+      startEpicArchitect,
+    );
+  }
+
+  function updateEpicArchitectButton(status = latestIssueStatus) {
+    const bar = document.getElementById(PANEL_ID)?.querySelector(".pawchestrator-panel-bar");
+    let button = document.getElementById(EPIC_ARCHITECT_ID);
+    if (!bar) {
+      return;
+    }
+    if (issueAlreadyHasSubIssues(status)) {
+      button?.remove();
+      return;
+    }
+    if (!button) {
+      button = createEpicArchitectButton();
+      const grill = document.getElementById(GRILL_ID);
+      if (grill?.nextSibling) {
+        bar.insertBefore(button, grill.nextSibling);
+      } else {
+        bar.append(button);
+      }
+    }
+    const run = status?.epic_architect;
+    button.toggleAttribute("disabled", Boolean(run && !isRunDone(run)) || !isIssueOpen());
+    button.title = isIssueOpen() ? "" : "Issue is closed";
+  }
+
   function createPanel() {
     const panel = document.createElement("div");
     panel.id = PANEL_ID;
@@ -2138,7 +2358,7 @@
     const body = document.createElement("div");
     body.className = "pawchestrator-panel-body";
 
-    bar.append(toggle, summary, createStartButton(), createGrillButton());
+    bar.append(toggle, summary, createStartButton(), createGrillButton(), createEpicArchitectButton());
     panel.append(bar, body);
     return panel;
   }
