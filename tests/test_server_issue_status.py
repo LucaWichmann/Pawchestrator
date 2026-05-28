@@ -113,6 +113,9 @@ def test_issue_status_returns_epic_run_with_pipeline_shaped_sub_runs(
     assert second_sub_run["run_id"] == "epic-child-2"
     assert second_sub_run["status"] == "completed"
     assert second_sub_run["pr_url"] == "https://github.com/owner/repo/pull/44"
+    assert second_sub_run["stages"][0]["stage_name"] == "verify"
+    assert second_sub_run["stages"][0]["status"] == "skipped"
+    assert second_sub_run["stages"][0]["error"] == "verification deferred to epic level"
 
 
 def test_issue_status_dedupes_epic_child_attempts_to_latest(
@@ -555,10 +558,11 @@ def _insert_epic_run(settings: Settings) -> None:
             await db.execute(
                 """
                 INSERT INTO workflow_stages (
-                  id, run_id, stage_name, status, completed_at
+                  id, run_id, stage_name, status, error, completed_at
                 )
                 VALUES (
-                  'epic-stage-2', 'epic-child-2', 'pr', 'complete',
+                  'epic-stage-2', 'epic-child-2', 'verify', 'skipped',
+                  'verification deferred to epic level',
                   '2026-05-24T10:00:03Z'
                 )
                 """

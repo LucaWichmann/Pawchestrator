@@ -130,6 +130,48 @@ def test_run_pipeline_skips_verify_for_non_code_changes(
     )
 
 
+def test_run_pipeline_defers_verification_without_running_verify(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    calls: list[str] = []
+    progress: list[str] = []
+    _patch_successful_stages(monkeypatch, calls)
+
+    result = asyncio.run(
+        run_pipeline(
+            "https://github.com/owner/repo/issues/42",
+            settings,
+            repo_path=tmp_path,
+            defer_verification=True,
+            progress=progress.append,
+        )
+    )
+
+    assert calls == ["snapshot", "scout", "plan", "implement", "pr"]
+    assert "[verify] skipped - verification deferred to epic level" in progress
+    artifact_path = settings.app_dir / "runs" / result.run_id / "verification_report.json"
+    report = json.loads(artifact_path.read_text(encoding="utf-8"))
+    assert report == {
+        "schema": "pawchestrator.verification_report.v1",
+        "status": "skipped",
+        "skip_reason": "verification deferred to epic level",
+        "commands": [],
+    }
+    with sqlite3.connect(settings.database_path) as db:
+        verify_stage = db.execute(
+            """
+            SELECT status, error
+            FROM workflow_stages
+            WHERE run_id = ? AND stage_name = 'verify'
+            """,
+            (result.run_id,),
+        ).fetchone()
+
+    assert verify_stage == ("skipped", "verification deferred to epic level")
+
+
 def test_run_pipeline_verify_non_code_changes_forces_verify(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
