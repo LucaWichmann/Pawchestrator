@@ -102,11 +102,15 @@ async def run_implement(
             raise FileNotFoundError(f"issue snapshot not found: {snapshot_path}")
 
         plan_path = _plan_artifact_path(settings, run_id)
-        if not plan_path.exists():
+        if not plan_path.exists() and repair_context is None:
             raise FileNotFoundError(f"implementation plan not found: {plan_path}")
 
         snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
-        implementation_plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        implementation_plan = (
+            json.loads(plan_path.read_text(encoding="utf-8"))
+            if plan_path.exists()
+            else {}
+        )
         worktree_kwargs: dict[str, Any] = {
             "snapshot": snapshot,
             "source_repo_path": source_repo_path,
@@ -586,6 +590,7 @@ async def _prepare_base_branch(source_repo_path: Path, base_branch: str) -> None
 
 
 _IMPLEMENT_FALLBACK = "Implement the changes described in the plan. Make granular, well-named commits as you go. Commit message format: `type(scope): description` (conventional commits). Do not run build or test commands - verification is handled separately."
+_REPAIR_VERIFICATION_FALLBACK = "Your task: verification or tests failed after implementation. Inspect the failure output and fix the failing tests or build errors. Do not re-implement the feature; only repair what is failing. Make focused commits using `type(scope): description`. Do not run build or test commands - verification is handled separately."
 
 
 def build_implement_prompt(
@@ -599,8 +604,27 @@ def build_implement_prompt(
     app_dir: Path | None = None,
 ) -> str:
     prompt_plan = _prompt_implementation_plan(implementation_plan)
-    repair_section = _prompt_repair_context(repair_context, repair_attempt)
     checkbox_section = _prompt_checkbox_criteria(snapshot, run_id)
+    if repair_context is not None:
+        instructions = (
+            load_skill("RepairVerification", app_dir) or _REPAIR_VERIFICATION_FALLBACK
+        )
+        data_section = f"""Verification failure:
+{_prompt_repair_context(repair_context, repair_attempt)}
+
+Background (what was implemented):
+Issue: #{snapshot.get("number")} - {snapshot.get("title", "")}
+Repository: {snapshot.get("owner", "")}/{snapshot.get("repo", "")}
+Working directory: {worktree_path}
+
+Issue body:
+{snapshot.get("body", "")}
+
+Implementation plan:
+{_prompt_json(prompt_plan)}
+{checkbox_section}"""
+        return f"{data_section}\n\n{instructions}"
+
     instructions = load_skill("WorkOnIssue", app_dir) or _IMPLEMENT_FALLBACK
 
     data_section = f"""Issue: #{snapshot.get("number")} - {snapshot.get("title", "")}
@@ -615,7 +639,6 @@ IssueSnapshot JSON:
 
 Implementation plan:
 {_prompt_json(prompt_plan)}
-{repair_section}
 {checkbox_section}"""
 
     return f"{data_section}\n\n{instructions}"
@@ -655,12 +678,8 @@ def _prompt_repair_context(
     if repair_context is None:
         return ""
     attempt = repair_attempt if repair_attempt is not None else 1
-    return f"""
-Verification failed after implementation. Repair attempt: {attempt}
-
-Use this verification feedback to repair the existing worktree changes:
-{_prompt_json(repair_context)}
-"""
+    return f"""Repair attempt: {attempt}
+{_prompt_json(repair_context)}"""
 
 
 def _prompt_json(value: dict[str, Any]) -> str:

@@ -195,10 +195,26 @@ def test_build_implement_prompt_includes_repair_context(tmp_path: Path) -> None:
         repair_attempt=2,
     )
 
-    assert "Verification failed after implementation" in prompt
+    assert prompt.startswith("Verification failure:")
+    assert "Your task: verification or tests failed after implementation." in prompt
     assert "Repair attempt: 2" in prompt
     assert "FAILED tests/test_x.py" in prompt
     assert '"command": "pytest"' in prompt
+    assert "Background (what was implemented):" in prompt
+    assert "Issue body:\nIssue body" in prompt
+    assert "IssueSnapshot JSON" not in prompt
+    assert "Implement the changes described in the plan" not in prompt
+
+
+def test_build_implement_prompt_keeps_non_repair_shape(tmp_path: Path) -> None:
+    prompt = build_implement_prompt(_snapshot(), {"steps": []}, tmp_path)
+
+    assert prompt.startswith("Issue: #42 - Add implement")
+    assert "IssueSnapshot JSON:" in prompt
+    assert "Issue body:\nIssue body" in prompt
+    assert "Background (what was implemented):" not in prompt
+    assert "Verification failure:" not in prompt
+    assert "Implement the changes described in the plan" in prompt
 
 
 def test_files_changed_from_diff_dedupes_paths() -> None:

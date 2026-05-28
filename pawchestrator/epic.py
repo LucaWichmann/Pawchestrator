@@ -25,9 +25,17 @@ from pawchestrator.github import (
     with_generated_attribution,
 )
 from pawchestrator.implement import DEFAULT_BASE_BRANCH, ensure_issue_worktree, slugify
-from pawchestrator.pipeline import run_pipeline
+from pawchestrator.implement import run_implement
+from pawchestrator.pipeline import (
+    VerificationFailedError,
+    _tail_text,
+    _verification_failure_message,
+    _verification_status,
+    run_pipeline,
+)
 from pawchestrator.pr import create_worktree_pr
 from pawchestrator.stage_lifecycle import StageResult
+from pawchestrator.verify import run_verify
 
 ProgressFn = Callable[[str], None]
 
@@ -101,6 +109,13 @@ async def run_epic(
             branch=epic_worktree.branch,
             path=epic_worktree.path,
         )
+        await _store_epic_issue_snapshot(
+            settings,
+            run_id=parent_run_id,
+            client=client,
+            reference=reference,
+            title=title,
+        )
 
         if mode == "epic-with-sub-issues":
             if parent_pr_url:
@@ -166,6 +181,7 @@ async def run_epic(
                     ),
                     pr_base_branch=epic_worktree.branch,
                     allow_dirty_existing_worktree=mode == "epic",
+                    defer_verification=mode == "epic",
                 )
             except Exception:
                 if settings.pipeline.epic_fail_fast:
@@ -187,6 +203,16 @@ async def run_epic(
                 raise RuntimeError(
                     "epic final PR blocked because not all sub-issues completed"
                 )
+            await _run_epic_verify_repair(
+                settings,
+                run_id=parent_run_id,
+                repo_path=repo_path,
+                worktree_branch=epic_worktree.branch,
+                worktree_path=epic_worktree.path,
+                title=title,
+                sub_runs=sub_runs,
+                progress=progress,
+            )
             epic_pr = await _create_epic_pr(
                 settings=settings,
                 run_id=parent_run_id,
@@ -211,6 +237,118 @@ async def run_epic(
         raise
 
     return EpicResult(group_id=group_id, sub_runs=sub_runs)
+
+
+async def _store_epic_issue_snapshot(
+    settings: Settings,
+    *,
+    run_id: str,
+    client: GitHubIssueClient,
+    reference: IssueReference,
+    title: str,
+) -> None:
+    try:
+        snapshot = await client.fetch_snapshot(reference, settings.checkboxes.headings)
+    except AttributeError:
+        snapshot = {
+            "schema": "pawchestrator.issue_snapshot.v1",
+            "owner": reference.owner,
+            "repo": reference.repo,
+            "number": reference.number,
+            "title": title,
+            "body": "",
+            "assignees": [],
+            "labels": [],
+            "checkboxes": [],
+            "comments": [],
+            "source_url": (
+                f"https://github.com/{reference.owner}/{reference.repo}/issues/"
+                f"{reference.number}"
+            ),
+        }
+
+    snapshot_path = settings.app_dir / "runs" / run_id / "issue.snapshot.json"
+    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+    snapshot_path.write_text(json.dumps(snapshot, sort_keys=True), encoding="utf-8")
+
+
+async def _run_epic_verify_repair(
+    settings: Settings,
+    *,
+    run_id: str,
+    repo_path: Path,
+    worktree_branch: str,
+    worktree_path: Path,
+    title: str,
+    sub_runs: list[SubRunResult],
+    progress: ProgressFn,
+) -> StageResult:
+    verification = await run_verify(
+        run_id,
+        settings,
+        base_branch=DEFAULT_BASE_BRANCH,
+    )
+    progress(f"[epic verify] status: {verification.report.get('status', 'unknown')}")
+
+    repair_attempt = 0
+    max_repair_attempts = settings.pipeline.verify_repair_attempts
+    while _verification_status(verification) == "failed" and repair_attempt < max_repair_attempts:
+        repair_attempt += 1
+        progress(
+            f"[epic verify] failed - repair attempt {repair_attempt}/"
+            f"{max_repair_attempts}"
+        )
+        await run_implement(
+            run_id,
+            settings,
+            repo_path=repo_path,
+            repair_context=_epic_verification_repair_context(
+                verification,
+                title=title,
+                sub_runs=sub_runs,
+            ),
+            repair_attempt=repair_attempt,
+            allow_dirty_existing_worktree=True,
+            worktree_branch=worktree_branch,
+            worktree_path=worktree_path,
+            base_branch=DEFAULT_BASE_BRANCH,
+        )
+        verification = await run_verify(
+            run_id,
+            settings,
+            base_branch=DEFAULT_BASE_BRANCH,
+        )
+        progress(f"[epic verify] status: {verification.report.get('status', 'unknown')}")
+
+    if _verification_status(verification) == "failed":
+        raise VerificationFailedError(_verification_failure_message(verification))
+    if _verification_status(verification) not in {"passed", "skipped"}:
+        raise VerificationFailedError(
+            f"verification did not pass: {_verification_status(verification)}"
+        )
+    return verification
+
+
+def _epic_verification_repair_context(
+    verification: StageResult,
+    *,
+    title: str,
+    sub_runs: list[SubRunResult],
+) -> dict[str, Any]:
+    snapshot = _read_optional_json(verification.artifact_path.parent / "issue.snapshot.json")
+    issue_number = snapshot.get("number") if snapshot is not None else ""
+    issue_body = str((snapshot or {}).get("body") or "")
+    sub_issue_refs = ", ".join(f"#{sub_run.issue_number}" for sub_run in sub_runs)
+    return {
+        "status": _verification_status(verification),
+        "commands": verification.report.get("commands") or [],
+        "skip_reason": verification.report.get("skip_reason"),
+        "verify_log_tail": _tail_text(verification.log_path),
+        "background": (
+            f"Epic #{issue_number} - {title}. "
+            f"Sub-issues implemented: {sub_issue_refs}\n\n{issue_body}"
+        ),
+    }
 
 
 async def _mark_epic_status(

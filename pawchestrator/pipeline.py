@@ -71,6 +71,7 @@ async def run_pipeline(
     base_branch: str = "main",
     pr_base_branch: str = "main",
     allow_dirty_existing_worktree: bool = False,
+    defer_verification: bool = False,
     progress: ProgressFn = print,
 ) -> PipelineResult:
     reference = parse_issue_url(issue_url)
@@ -132,6 +133,21 @@ async def run_pipeline(
         verify_module.all_files_match_non_code = all_files_match_non_code
         verify_module._changed_files = _changed_files
         return await run_verify(active_run_id, settings, base_branch=base_branch)
+
+    async def deferred_verify_skip_stage() -> StageResult:
+        reason = "verification deferred to epic level"
+        report = verify_module.build_verification_report(
+            status="skipped",
+            commands=[],
+            skip_reason=reason,
+        )
+        artifact_path = settings.app_dir / "runs" / active_run_id / "verification_report.json"
+
+        async def skip_body(log_path: Path):
+            verify_module._write_verify_log(log_path, reason + "\n", [])
+            raise StageSkipped(reason, report, artifact_path)
+
+        return await run_stage_lifecycle(settings, active_run_id, "verify", skip_body)
 
     async def maybe_skip_verify_stage() -> StageResult | None:
         if settings.pipeline.verify_non_code_changes:
@@ -196,7 +212,11 @@ async def run_pipeline(
         await reconcile_marks("implement")
         await _edit_run_comment(settings, active_run_id, comment_client)
         await _swap_stage_label(settings, active_run_id, comment_client, "verifying")
-        verification = await maybe_skip_verify_stage()
+        verification = (
+            await deferred_verify_skip_stage()
+            if defer_verification
+            else await maybe_skip_verify_stage()
+        )
         if verification is None:
             verification = await _run_stage("verify", verify_stage, progress)
             _print_done(
@@ -204,6 +224,8 @@ async def run_pipeline(
                 "verify",
                 f"status: {verification.report.get('status', 'unknown')}",
             )
+        elif defer_verification:
+            progress("[verify] skipped - verification deferred to epic level")
         else:
             progress("[verify] skipped - no code files changed")
         await _edit_run_comment(settings, active_run_id, comment_client)

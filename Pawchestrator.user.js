@@ -280,7 +280,18 @@
       gap: 6px;
     }
 
+    #${PANEL_ID} .pawchestrator-epic-verification {
+      display: grid;
+      gap: 6px;
+    }
+
     #${PANEL_ID} .pawchestrator-epic-run-title {
+      color: var(--fgColor-default, #24292f);
+      font-weight: 600;
+      overflow-wrap: anywhere;
+    }
+
+    #${PANEL_ID} .pawchestrator-epic-verification-title {
       color: var(--fgColor-default, #24292f);
       font-weight: 600;
       overflow-wrap: anywhere;
@@ -984,6 +995,15 @@
     return Array.isArray(epic?.sub_runs) ? epic.sub_runs : [];
   }
 
+  function epicParentStages(epic) {
+    return Array.isArray(epic?.parent_stages)
+      ? epic.parent_stages.filter((stage) => {
+        const name = stage.stage_name || stage.name;
+        return name === "verify" || name === "implement";
+      })
+      : [];
+  }
+
   function epicStatus(epic) {
     if (epic?.status === "epic_complete") {
       return "completed";
@@ -1050,6 +1070,25 @@
       list.append(row);
     });
     section.append(list);
+
+    const parentStages = epicParentStages(epic);
+    if (parentStages.length > 0) {
+      const verification = document.createElement("div");
+      verification.className = "pawchestrator-epic-verification";
+
+      const verificationTitle = document.createElement("div");
+      verificationTitle.className = "pawchestrator-epic-verification-title";
+      verificationTitle.textContent = "Epic Verification";
+
+      verification.append(verificationTitle);
+      renderPipelineTimeline(verification, {
+        stages: parentStages,
+        current_stage: epic.current_stage,
+        status: epic.status || epicStatus(epic),
+      }, { suppressActive: epicDone });
+      section.append(verification);
+    }
+
     parent.append(section);
   }
 

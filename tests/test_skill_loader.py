@@ -36,6 +36,7 @@ def test_load_skill_all_bundled_skills_present() -> None:
         "RepoScout",
         "ImplementationPlan",
         "WorkOnIssue",
+        "RepairVerification",
         "IssueGrill",
         "CriteriaDedupe",
         "PullRequestReview",

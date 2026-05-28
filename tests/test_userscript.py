@@ -110,6 +110,24 @@ def test_userscript_renders_epic_section_with_sub_run_timelines() -> None:
     assert source.index("renderEpicSection(body, status.epic)") < source.index("renderGrillSection(body, status.grill)")
 
 
+def test_userscript_renders_epic_verification_timeline() -> None:
+    source = _read_userscript()
+
+    assert 'verification.className = "pawchestrator-epic-verification"' in source
+    assert 'verificationTitle.className = "pawchestrator-epic-verification-title"' in source
+    assert 'verificationTitle.textContent = "Epic Verification"' in source
+    assert "function epicParentStages(epic)" in source
+    assert "Array.isArray(epic?.parent_stages)" in source
+    assert 'return name === "verify" || name === "implement"' in source
+    assert "if (parentStages.length > 0)" in source
+    assert "renderPipelineTimeline(verification, {" in source
+    assert "stages: parentStages" in source
+    assert "current_stage: epic.current_stage" in source
+    assert "status: epic.status || epicStatus(epic)" in source
+    assert "}, { suppressActive: epicDone })" in source
+    assert source.index('section.append(list)') < source.index('verification.className = "pawchestrator-epic-verification"')
+
+
 def test_userscript_epic_updates_panel_status_and_auto_expand() -> None:
     source = _read_userscript()
 

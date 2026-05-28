@@ -850,6 +850,19 @@ async def get_latest_epic_run_by_issue(
         return None
 
     parent_run_id = str(row["id"])
+    async with aiosqlite.connect(settings.database_path) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT stage_name, status, started_at, completed_at, error
+            FROM workflow_stages
+            WHERE run_id = ?
+            ORDER BY rowid
+            """,
+            (parent_run_id,),
+        )
+        parent_stages = [dict(stage) for stage in await cursor.fetchall()]
+
     group_id = str(row["group_id"])
     parent_worktree = await get_worktree_record(settings, run_id=parent_run_id)
     latest_runs_by_issue = await get_latest_pipeline_runs_by_group_issue(
@@ -874,6 +887,7 @@ async def get_latest_epic_run_by_issue(
         "branch": None if parent_worktree is None else str(parent_worktree["branch"]),
         "pr_url": row["pr_url"],
         "epic_confirm": settings.pipeline.epic_confirm,
+        "parent_stages": parent_stages,
         "sub_runs": sub_runs,
     }
 
