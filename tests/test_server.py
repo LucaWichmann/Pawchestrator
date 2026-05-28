@@ -344,6 +344,31 @@ def test_issue_grill_returns_run_id_and_schedules_grill(
     assert payload["workflow_type"] == "grill"
 
 
+def test_issue_epic_architect_returns_run_id_and_completes_scaffold(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _seed_token(settings)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.post(
+            "/issue/epic-architect",
+            json={"owner": "owner", "repo": "repo", "number": 42},
+            headers=_token_headers(),
+        )
+        run_id = response.json()["run_id"]
+        state_response = client.get(f"/runs/{run_id}", headers=_token_headers())
+
+    assert response.status_code == 200
+    assert response.json() == {"run_id": run_id}
+    payload = state_response.json()
+    assert payload["id"] == run_id
+    assert payload["workflow_type"] == "epic_architect"
+    assert payload["issue_number"] == 42
+    assert payload["status"] == "completed"
+    assert payload["current_stage"] == "epic_architect"
+
+
 def test_review_start_returns_run_id_and_schedules_review(
     tmp_path: Path,
     monkeypatch,
@@ -429,6 +454,7 @@ def test_openapi_exposes_issue_grill_route(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     assert "/issue/grill" in response.json()["paths"]
+    assert "/issue/epic-architect" in response.json()["paths"]
 
 
 def test_cors_allows_github_for_issue_start_and_runs(tmp_path: Path) -> None:

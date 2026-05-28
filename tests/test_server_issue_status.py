@@ -32,6 +32,7 @@ def test_issue_status_returns_null_runs_when_no_run_exists(
         "epic_confirm": False,
         "pipeline": None,
         "grill": None,
+        "epic_architect": None,
         "epic": None,
     }
 
@@ -322,6 +323,45 @@ def test_issue_status_returns_waiting_grill_comment_id(
     assert payload["grill"]["github_comment_id"] == "12345"
 
 
+def test_issue_status_returns_latest_epic_architect_run(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _seed_token(settings)
+    _stub_runner_health(monkeypatch)
+    _insert_epic_architect_run(settings)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.get(
+            "/issue/owner/repo/42/status",
+            headers=_token_headers(),
+        )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["epic_architect"] == {
+        "run_id": "epic-architect-new",
+        "owner": "owner",
+        "repo": "repo",
+        "issue_number": 42,
+        "pr_number": None,
+        "workflow_type": "epic_architect",
+        "status": "completed",
+        "current_stage": "epic_architect",
+        "github_comment_id": None,
+        "epic_branch_mode": None,
+        "created_at": "2026-05-24T10:00:00Z",
+        "updated_at": "2026-05-24T10:00:01Z",
+        "stages": [],
+        "warnings": [],
+        "review_report": None,
+        "created_issue_urls": [],
+        "epic_analysis": None,
+        "created_sub_issues": [],
+    }
+
+
 def test_issue_status_reports_unregistered_repo(tmp_path: Path, monkeypatch) -> None:
     settings = Settings(app_dir=tmp_path)
     _seed_token(settings)
@@ -519,6 +559,39 @@ def _insert_grill_run(
                 )
                 """,
                 (str(report_path),),
+            )
+            await db.commit()
+
+    asyncio.run(insert())
+
+
+def _insert_epic_architect_run(settings: Settings) -> None:
+    import asyncio
+
+    async def insert() -> None:
+        await init_db(settings)
+        async with aiosqlite.connect(settings.database_path) as db:
+            await db.executemany(
+                """
+                INSERT INTO workflow_runs (
+                  id, owner, repo, issue_number, workflow_type, status,
+                  current_stage, created_at, updated_at
+                )
+                VALUES (?, 'owner', 'repo', 42, 'epic_architect', 'completed',
+                        'epic_architect', ?, ?)
+                """,
+                [
+                    (
+                        "epic-architect-old",
+                        "2026-05-24T09:00:00Z",
+                        "2026-05-24T09:00:01Z",
+                    ),
+                    (
+                        "epic-architect-new",
+                        "2026-05-24T10:00:00Z",
+                        "2026-05-24T10:00:01Z",
+                    ),
+                ],
             )
             await db.commit()
 
