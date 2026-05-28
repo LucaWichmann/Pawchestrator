@@ -612,6 +612,64 @@ class GitHubIssueClient:
             raise GitHubError("GitHub issue creation response did not include a URL")
         return issue_url
 
+    async def create_issue_details(
+        self,
+        owner: str,
+        repo: str,
+        *,
+        title: str,
+        body: str | None = None,
+    ) -> dict[str, Any]:
+        request_body: dict[str, str] = {"title": title}
+        if body is not None:
+            request_body["body"] = body
+        async with httpx.AsyncClient(
+            base_url=self._api_base,
+            headers=self._headers(),
+            transport=self._transport,
+        ) as client:
+            response = await client.post(
+                f"/repos/{owner}/{repo}/issues",
+                json=request_body,
+            )
+            self._raise_for_status(response)
+            payload = response.json()
+        if not isinstance(payload, dict):
+            raise GitHubError("GitHub issue creation response was not an object")
+        for field in ("number", "title", "node_id"):
+            if field not in payload:
+                raise GitHubError(
+                    f"GitHub issue creation response did not include {field}"
+                )
+        issue_url = payload.get("html_url") or payload.get("url")
+        if not isinstance(issue_url, str) or not issue_url:
+            raise GitHubError("GitHub issue creation response did not include a URL")
+        return {
+            "number": int(payload["number"]),
+            "title": str(payload["title"]),
+            "url": issue_url,
+            "node_id": str(payload["node_id"]),
+        }
+
+    async def link_sub_issue(
+        self,
+        owner: str,
+        repo: str,
+        parent_number: int,
+        *,
+        sub_issue_id: str,
+    ) -> None:
+        async with httpx.AsyncClient(
+            base_url=self._api_base,
+            headers=self._headers(),
+            transport=self._transport,
+        ) as client:
+            response = await client.post(
+                f"/repos/{owner}/{repo}/issues/{parent_number}/sub_issues",
+                json={"sub_issue_id": sub_issue_id},
+            )
+            self._raise_for_status(response)
+
     async def fetch_admin_collaborators(self, owner: str, repo: str) -> list[str]:
         async with httpx.AsyncClient(
             base_url=self._api_base,

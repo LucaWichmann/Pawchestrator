@@ -322,6 +322,71 @@ def test_github_issue_client_creates_issue_and_returns_html_url() -> None:
     assert len(requests) == 1
 
 
+def test_create_issue_details_returns_native_sub_issue_fields() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.method == "POST"
+        assert request.url.path == "/repos/owner/repo/issues"
+        assert json.loads(request.read()) == {"title": "Follow up", "body": "Body"}
+        return httpx.Response(
+            201,
+            json={
+                "number": 99,
+                "title": "Follow up",
+                "html_url": "https://github.com/owner/repo/issues/99",
+                "node_id": "I_kwDOABC",
+            },
+        )
+
+    client = GitHubIssueClient(
+        "token",
+        api_base="https://api.github.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    issue = asyncio.run(
+        client.create_issue_details("owner", "repo", title="Follow up", body="Body")
+    )
+
+    assert issue == {
+        "number": 99,
+        "title": "Follow up",
+        "url": "https://github.com/owner/repo/issues/99",
+        "node_id": "I_kwDOABC",
+    }
+    assert len(requests) == 1
+
+
+def test_link_sub_issue_posts_node_id_to_native_endpoint() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.method == "POST"
+        assert request.url.path == "/repos/owner/repo/issues/42/sub_issues"
+        assert json.loads(request.read()) == {"sub_issue_id": "I_kwDOABC"}
+        return httpx.Response(201, json={})
+
+    client = GitHubIssueClient(
+        "token",
+        api_base="https://api.github.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    asyncio.run(
+        client.link_sub_issue(
+            "owner",
+            "repo",
+            42,
+            sub_issue_id="I_kwDOABC",
+        )
+    )
+
+    assert len(requests) == 1
+
+
 def test_parse_diff_positions_maps_added_lines_to_github_positions() -> None:
     diff = """diff --git a/app.py b/app.py
 index 1111111..2222222 100644
