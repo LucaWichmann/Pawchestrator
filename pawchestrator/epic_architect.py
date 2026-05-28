@@ -292,28 +292,32 @@ async def validate_epic_architect_dependencies(
 
 
 def _cyclic_dependency_nodes(sub_issues: list[dict[str, Any]]) -> set[int]:
-    dependents_by_dependency: dict[int, list[int]] = {
-        index: [] for index in range(len(sub_issues))
-    }
-    indegrees = [0 for _ in sub_issues]
-    for index, sub_issue in enumerate(sub_issues):
-        for dependency in sub_issue["depends_on_indexes"]:
-            dependents_by_dependency[dependency].append(index)
-            indegrees[index] += 1
+    visiting: set[int] = set()
+    visited: set[int] = set()
+    stack: list[int] = []
+    stack_indexes: dict[int, int] = {}
+    cyclic: set[int] = set()
 
-    ready = [index for index, indegree in enumerate(indegrees) if indegree == 0]
-    visited = 0
-    while ready:
-        dependency = ready.pop(0)
-        visited += 1
-        for dependent in dependents_by_dependency[dependency]:
-            indegrees[dependent] -= 1
-            if indegrees[dependent] == 0:
-                ready.append(dependent)
+    def visit(index: int) -> None:
+        if index in visited:
+            return
+        if index in visiting:
+            cyclic.update(stack[stack_indexes[index] :])
+            return
 
-    if visited == len(sub_issues):
-        return set()
-    return {index for index, indegree in enumerate(indegrees) if indegree > 0}
+        visiting.add(index)
+        stack_indexes[index] = len(stack)
+        stack.append(index)
+        for dependency in sub_issues[index]["depends_on_indexes"]:
+            visit(dependency)
+        stack.pop()
+        stack_indexes.pop(index)
+        visiting.remove(index)
+        visited.add(index)
+
+    for index in range(len(sub_issues)):
+        visit(index)
+    return cyclic
 
 
 def epic_architect_plan_path(settings: Settings, run_id: str) -> Path:

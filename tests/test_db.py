@@ -643,7 +643,7 @@ def test_fail_stale_runs_marks_epic_architect_failed(tmp_path: Path) -> None:
     )
 
     cleaned = asyncio.run(fail_stale_runs_on_startup(settings))
-    run, stages = _run_and_stages(tmp_path, "run-123")
+    run, stages = _fetch_run_and_stages(tmp_path, "run-123")
 
     assert cleaned == 1
     assert run == ("failed", "epic_architect", None)
