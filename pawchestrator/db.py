@@ -755,11 +755,13 @@ async def get_run_state(settings: Settings, run_id: str) -> dict[str, object] | 
                 WHEN 'implement' THEN 4
                 WHEN 'verify' THEN 5
                 WHEN 'pr' THEN 6
-                WHEN 'review' THEN 7
-                WHEN 'post' THEN 8
-                WHEN 'issues' THEN 9
-                WHEN 'repair' THEN 10
-                WHEN 'push' THEN 11
+                WHEN 'epic_scout' THEN 7
+                WHEN 'epic_architect' THEN 8
+                WHEN 'review' THEN 9
+                WHEN 'post' THEN 10
+                WHEN 'issues' THEN 11
+                WHEN 'repair' THEN 12
+                WHEN 'push' THEN 13
                 ELSE 99
               END,
               started_at,
@@ -828,9 +830,12 @@ async def get_latest_run_by_issue(
         return run
 
     if workflow_type == "epic_architect":
+        epic_plan = _read_latest_artifact(run, "epic_architect_plan")
         run.pop("artifacts", None)
         run.pop("pr_url", None)
-        run["epic_analysis"] = None
+        run["epic_analysis"] = (
+            None if epic_plan is None else epic_plan.get("epic_analysis")
+        )
         run["created_sub_issues"] = []
         return run
 

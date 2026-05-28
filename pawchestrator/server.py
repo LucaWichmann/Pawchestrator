@@ -34,6 +34,7 @@ from pawchestrator.db import (
     mark_run_failed,
 )
 from pawchestrator.epic import run_epic
+from pawchestrator.epic_architect import run_epic_architect
 from pawchestrator.epic_scout import run_epic_scout
 from pawchestrator.github import (
     GitHubIssueClient,
@@ -672,6 +673,7 @@ async def _run_epic_architect_background(
 ) -> None:
     try:
         await run_epic_scout(issue_url_value, settings, run_id=run_id)
+        await run_epic_architect(issue_url_value, settings, run_id=run_id)
         await mark_run_completed(
             settings,
             run_id=run_id,
