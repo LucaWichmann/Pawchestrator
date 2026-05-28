@@ -36,6 +36,7 @@ def test_userscript_uses_issue_status_backend_contract() -> None:
     assert 'requestJson(`/issue/${issue.owner}/${issue.repo}/${issue.number}/status`' in source
     assert 'requestJson("/issue/start"' in source
     assert 'requestJson("/issue/grill"' in source
+    assert 'requestJson("/issue/epic-architect"' in source
     assert "requestJson(`/runs/${runId}`" not in source
     assert "fetchRun" not in source
     assert "body: JSON.stringify(issue)" in source
@@ -72,6 +73,7 @@ def test_userscript_renders_pipeline_timeline_section() -> None:
     source = _read_userscript()
 
     assert 'const PIPELINE_STAGES = ["snapshot", "scout", "plan", "implement", "verify", "pr"]' in source
+    assert 'const EPIC_ARCHITECT_STAGES = ["epic_scout", "epic_architect", "creating"]' in source
     assert "function collapseStages(stages)" in source
     assert "function renderPipeline(parent, pipeline)" in source
     assert 'section.className = "pawchestrator-pipeline"' in source
@@ -93,7 +95,29 @@ def test_userscript_renders_independent_grill_section() -> None:
     assert 'title.textContent = "Grill"' in source
     assert "renderPipeline(body, status.pipeline)" in source
     assert "renderGrillSection(body, status.grill)" in source
-    assert source.index("renderPipeline(body, status.pipeline)") < source.index("renderGrillSection(body, status.grill)")
+    assert source.index("renderGrillSection(body, status.grill)") < source.index("renderPipeline(body, status.pipeline)")
+
+
+def test_userscript_renders_epic_architect_section_states() -> None:
+    source = _read_userscript()
+
+    assert "function renderEpicArchitectSection(parent, run)" in source
+    assert 'section.className = "pawchestrator-epic-architect-section"' in source
+    assert 'title.textContent = "EpicArchitect"' in source
+    assert "renderNamedTimeline(section, epicArchitectTimelineRun(run), EPIC_ARCHITECT_STAGES" in source
+    assert 'analysis.className = "pawchestrator-epic-architect-analysis"' in source
+    assert "analysis.textContent = run.epic_analysis" in source
+    assert "function renderCreatedSubIssueLinks(parent, created)" in source
+    assert "link.href = issue.url" in source
+    assert 'link.textContent = `#${issue.number}${issue.title ? ` ${issue.title}` : ""}`' in source
+    assert 'error.className = "pawchestrator-epic-architect-error"' in source
+    assert "error.textContent = summarizeError(run)" in source
+    assert 'partial.textContent = `Created before failure: ${created.map((issue) => `#${issue.number}`).join(", ")}`' in source
+    assert "renderGrillSection(body, status.grill)" in source
+    assert "renderEpicArchitectSection(body, status.epic_architect)" in source
+    assert source.index("renderGrillSection(body, status.grill)") < source.index(
+        "renderEpicArchitectSection(body, status.epic_architect)"
+    )
 
 
 def test_userscript_renders_epic_section_with_sub_run_timelines() -> None:
@@ -107,7 +131,7 @@ def test_userscript_renders_epic_section_with_sub_run_timelines() -> None:
     assert "renderPipelineTimeline(row, subRun, { suppressActive: epicDone })" in source
     assert "renderEpicSection(body, status.epic)" in source
     assert source.index("renderPipeline(body, status.pipeline)") < source.index("renderEpicSection(body, status.epic)")
-    assert source.index("renderEpicSection(body, status.epic)") < source.index("renderGrillSection(body, status.grill)")
+    assert source.index("renderGrillSection(body, status.grill)") < source.index("renderPipeline(body, status.pipeline)")
 
 
 def test_userscript_renders_epic_verification_timeline() -> None:
@@ -133,13 +157,14 @@ def test_userscript_epic_updates_panel_status_and_auto_expand() -> None:
 
     assert "function epicSummaryRun(epic)" in source
     assert 'workflow_type: "epic"' in source
-    assert "const runs = [epicSummaryRun(status.epic), status.pipeline, status.grill].filter(Boolean)" in source
+    assert "const runs = [epicSummaryRun(status.epic), status.pipeline, status.grill, status.epic_architect].filter(Boolean)" in source
     assert "function epicStatus(epic)" in source
     assert "function isRunDone(run)" in source
     assert "function isEpicDone(epic)" in source
     assert 'RUN_DONE.has(status) || /_failed$/.test(status)' in source
     assert 'run.status === "running" || /_running$/.test(run.status || "")' in source
     assert "epicSubRuns(status.epic).some((run) => !isRunDone(run))" in source
+    assert "(status.epic_architect && !isRunDone(status.epic_architect))" in source
     assert "const running = run && !isRunDone(run)" in source
 
 
@@ -231,9 +256,11 @@ def test_userscript_renders_action_buttons_inside_panel_bar() -> None:
     assert 'bar.className = "pawchestrator-panel-bar"' in source
     assert "createStartButton" in source
     assert "createGrillButton" in source
-    assert "bar.append(toggle, summary, createStartButton(), createGrillButton())" in source
+    assert "createEpicArchitectButton" in source
+    assert "bar.append(toggle, summary, createStartButton(), createGrillButton(), createEpicArchitectButton())" in source
     assert source.index("createStartButton()") < source.index("panel.append(bar, body)")
     assert source.index("createGrillButton()") < source.index("panel.append(bar, body)")
+    assert source.index("createEpicArchitectButton()") < source.index("panel.append(bar, body)")
     assert "injectHeaderActions" not in source
     assert "findHeaderActions" not in source
     assert "findNewIssueHost" not in source
@@ -246,6 +273,22 @@ def test_userscript_renders_action_buttons_inside_panel_bar() -> None:
     assert 'label.className = "prc-Button-Label-FWkx3"' in source
     assert "STATUS_ID" not in source
     assert "GRILL_STATUS_ID" not in source
+
+
+def test_userscript_epic_architect_button_visibility_and_start_contract() -> None:
+    source = _read_userscript()
+
+    assert 'const EPIC_ARCHITECT_ID = "pawchestrator-epic-architect"' in source
+    assert 'const CONSTRUCTION = "\\uD83C\\uDFD7\\uFE0F"' in source
+    assert '`${CONSTRUCTION} Turn into Epic`' in source
+    assert "function issueAlreadyHasSubIssues(status)" in source
+    assert "epicArchitectCreatedIssues(status?.epic_architect).length > 0" in source
+    assert "status?.issue?.sub_issues_summary || status?.sub_issues_summary" in source
+    assert "button?.remove()" in source
+    assert "function startEpicArchitect()" in source
+    assert 'requestJson("/issue/epic-architect"' in source
+    assert "await GM_setValue(epicArchitectRunKey(), response.run_id)" in source
+    assert "button.toggleAttribute(\"disabled\", Boolean(run && !isRunDone(run)) || !isIssueOpen())" in source
 
 
 def test_userscript_panel_uses_github_css_variables_and_button_classes() -> None:
