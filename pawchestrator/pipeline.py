@@ -373,6 +373,7 @@ async def _run_plan_until_approved(
         if decision != "reject":
             return
 
+        clear_approval_event(run_id)
         rejections = load_plan_rejections(settings, run_id)
         attempts = len(rejections)
         max_attempts = settings.pipeline.plan_approval_max_attempts
