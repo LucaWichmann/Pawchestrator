@@ -27,6 +27,7 @@
   const PR_REVIEW_ID = "pawchestrator-review";
   const PR_REPAIR_ID = "pawchestrator-repair";
   const CREATE_ISSUES_ID = "pawchestrator-create-issues";
+  const PLAN_APPROVAL_ID = "pawchestrator-plan-approval";
   const CONFIRM_OVERLAY_ID = "pawchestrator-confirm-overlay";
   const POLL_INTERVAL_MS = 3000;
   const REINJECT_DEBOUNCE_MS = 100;
@@ -74,6 +75,7 @@
     "scout_complete",
     "plan_running",
     "plan_complete",
+    "awaiting_plan_approval",
     "implement_running",
     "implement_complete",
     "verify_running",
@@ -269,6 +271,74 @@
       color: var(--fgColor-muted, #59636e);
       font-weight: 600;
       margin-bottom: 8px;
+    }
+
+    #${PANEL_ID} #${PLAN_APPROVAL_ID} {
+      border-top: 1px solid var(--borderColor-muted, #d8dee4);
+      display: grid;
+      gap: 10px;
+      margin-top: 10px;
+      padding-top: 10px;
+    }
+
+    #${PANEL_ID} .pawchestrator-plan-approval-header {
+      align-items: center;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      justify-content: space-between;
+    }
+
+    #${PANEL_ID} .pawchestrator-plan-approval-title,
+    #${PANEL_ID} .pawchestrator-plan-approval-section-title {
+      color: var(--fgColor-muted, #59636e);
+      font-weight: 600;
+      margin: 0;
+    }
+
+    #${PANEL_ID} .pawchestrator-plan-approval-summary {
+      color: var(--fgColor-default, #24292f);
+      white-space: pre-wrap;
+    }
+
+    #${PANEL_ID} .risk-badge {
+      border: 1px solid transparent;
+      border-radius: 999px;
+      display: inline-flex;
+      font-size: 12px;
+      font-weight: 600;
+      line-height: 18px;
+      padding: 0 8px;
+      white-space: nowrap;
+    }
+
+    #${PANEL_ID} .risk-low {
+      background: var(--bgColor-success-muted, #dafbe1);
+      border-color: var(--borderColor-success-muted, #4ac26b);
+      color: var(--fgColor-success, #1a7f37);
+    }
+
+    #${PANEL_ID} .risk-medium {
+      background: var(--bgColor-attention-muted, #fff8c5);
+      border-color: var(--borderColor-attention-muted, #d4a72c);
+      color: var(--fgColor-attention, #9a6700);
+    }
+
+    #${PANEL_ID} .risk-high {
+      background: var(--bgColor-danger-muted, #ffebe9);
+      border-color: var(--borderColor-danger-muted, #ff8182);
+      color: var(--fgColor-danger, #cf222e);
+    }
+
+    #${PANEL_ID} .pawchestrator-plan-approval-list {
+      margin: 4px 0 0;
+      padding-left: 18px;
+    }
+
+    #${PANEL_ID} .pawchestrator-plan-step-files,
+    #${PANEL_ID} .pawchestrator-plan-step-notes {
+      color: var(--fgColor-muted, #59636e);
+      margin-top: 2px;
     }
 
     #${PANEL_ID} .pawchestrator-grill-title {
@@ -1049,6 +1119,130 @@
     parent.append(section);
   }
 
+  function normalizePlanItems(items) {
+    return Array.isArray(items) ? items : [];
+  }
+
+  function planFileOperations(plan) {
+    return normalizePlanItems(plan?.file_operations || plan?.files || plan?.files_to_modify);
+  }
+
+  function operationType(operation) {
+    return String(operation?.type || operation?.operation || "modify").toLowerCase();
+  }
+
+  function operationPath(operation) {
+    return operation?.path || operation?.file_path || operation?.file || String(operation || "");
+  }
+
+  function operationDescription(operation) {
+    return operation?.description || operation?.summary || "";
+  }
+
+  function renderPlanFileSection(parent, titleText, operations) {
+    if (operations.length === 0) {
+      return;
+    }
+
+    const title = document.createElement("h4");
+    title.className = "pawchestrator-plan-approval-section-title";
+    title.textContent = titleText;
+    parent.append(title);
+
+    const list = document.createElement("ul");
+    list.className = "pawchestrator-plan-approval-list";
+    operations.forEach((operation) => {
+      const item = document.createElement("li");
+      const code = document.createElement("code");
+      code.textContent = operationPath(operation);
+      item.append(code);
+      const description = operationDescription(operation);
+      if (description) {
+        item.append(document.createTextNode(` - ${description}`));
+      }
+      list.append(item);
+    });
+    parent.append(list);
+  }
+
+  function renderPlanApprovalSubView(plan) {
+    const panel = document.getElementById(PANEL_ID);
+    const body = panel?.querySelector(".pawchestrator-panel-body");
+    if (!body) {
+      return;
+    }
+
+    document.getElementById(PLAN_APPROVAL_ID)?.remove();
+    const view = document.createElement("div");
+    view.id = PLAN_APPROVAL_ID;
+
+    const header = document.createElement("div");
+    header.className = "pawchestrator-plan-approval-header";
+    const title = document.createElement("h4");
+    title.className = "pawchestrator-plan-approval-title";
+    title.textContent = "Plan Approval";
+    const risk = String(plan?.estimated_risk || "medium").toLowerCase();
+    const badge = document.createElement("span");
+    badge.className = `risk-badge risk-${["low", "medium", "high"].includes(risk) ? risk : "medium"}`;
+    badge.textContent = `Risk: ${risk}`;
+    header.append(title, badge);
+    view.append(header);
+
+    const summary = document.createElement("div");
+    summary.className = "pawchestrator-plan-approval-summary prc-Text-Text-0ima0";
+    summary.textContent = plan?.approach_summary || "";
+    view.append(summary);
+
+    const filesTitle = document.createElement("h4");
+    filesTitle.className = "pawchestrator-plan-approval-section-title";
+    filesTitle.textContent = "Files";
+    view.append(filesTitle);
+
+    const operations = planFileOperations(plan);
+    const grouped = {
+      Modify: operations.filter((operation) => operationType(operation) === "modify"),
+      Create: operations.filter((operation) => operationType(operation) === "create"),
+      Delete: operations.filter((operation) => operationType(operation) === "delete"),
+    };
+    renderPlanFileSection(view, "Modify", grouped.Modify);
+    renderPlanFileSection(view, "Create", grouped.Create);
+    renderPlanFileSection(view, "Delete", grouped.Delete);
+
+    const stepsTitle = document.createElement("h4");
+    stepsTitle.className = "pawchestrator-plan-approval-section-title";
+    stepsTitle.textContent = "Steps";
+    view.append(stepsTitle);
+
+    const steps = document.createElement("ol");
+    steps.className = "pawchestrator-plan-approval-list";
+    normalizePlanItems(plan?.steps).forEach((step) => {
+      const item = document.createElement("li");
+      const description = document.createElement("div");
+      description.textContent = step?.description || String(step || "");
+      item.append(description);
+
+      const affectedFiles = normalizePlanItems(step?.affected_files || step?.files_to_modify || step?.files);
+      if (affectedFiles.length > 0) {
+        const files = document.createElement("div");
+        files.className = "pawchestrator-plan-step-files";
+        files.textContent = `Affected files: ${affectedFiles.join(", ")}`;
+        item.append(files);
+      }
+
+      if (step?.notes) {
+        const notes = document.createElement("div");
+        notes.className = "pawchestrator-plan-step-notes";
+        notes.textContent = step.notes;
+        item.append(notes);
+      }
+      steps.append(item);
+    });
+    view.append(steps);
+
+    body.append(view);
+    setPanelExpanded(true);
+  }
+
   function epicSubRuns(epic) {
     return Array.isArray(epic?.sub_runs) ? epic.sub_runs : [];
   }
@@ -1571,6 +1765,9 @@
     renderGrillSection(body, status.grill);
     renderEpicArchitectSection(body, status.epic_architect);
     renderPipeline(body, status.pipeline);
+    if (status.pipeline?.status === "awaiting_plan_approval" && status.plan_approval_plan) {
+      renderPlanApprovalSubView(status.plan_approval_plan);
+    }
     renderEpicSection(body, status.epic);
     if (status.grill?.status === "grill_waiting") {
       attachGrillReplyObserver(status.grill);
@@ -1682,6 +1879,12 @@
   async function fetchIssueStatus(issue = parseIssueReference()) {
     return requestJson(`/issue/${issue.owner}/${issue.repo}/${issue.number}/status`, {
       label: "Issue status request",
+    });
+  }
+
+  async function fetchPlan(runId) {
+    return requestJson(`/runs/${runId}/plan`, {
+      label: "Plan request",
     });
   }
 
@@ -1872,6 +2075,9 @@
   async function pollIssueStatusOnce() {
     const issue = parseIssueReference();
     const status = await fetchIssueStatus(issue);
+    if (status.pipeline?.status === "awaiting_plan_approval" && status.pipeline.run_id) {
+      status.plan_approval_plan = await fetchPlan(status.pipeline.run_id);
+    }
     renderStatus(status);
     const run = currentRun(status);
     const running = run && !isRunDone(run);
