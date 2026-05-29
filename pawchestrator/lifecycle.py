@@ -42,6 +42,7 @@ def _utc_now_iso() -> str:
 
 
 async def fail_stale_runs_on_startup(settings: Settings) -> int:
+    from pawchestrator.approval_gate import has_approval_event
     from pawchestrator.db import init_db
 
     await init_db(settings)
@@ -65,6 +66,8 @@ async def fail_stale_runs_on_startup(settings: Settings) -> int:
         for run in runs:
             run_id = str(run["id"])
             if run["status"] == "grill_waiting":
+                continue
+            if run["status"] == "awaiting_plan_approval" and has_approval_event(run_id):
                 continue
 
             if run["status"] == "pr_complete" and run["pr_url"]:
