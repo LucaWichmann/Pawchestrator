@@ -86,6 +86,64 @@ def test_userscript_renders_pipeline_timeline_section() -> None:
     assert "renderPipeline(body, status.pipeline)" in source
 
 
+def test_userscript_detects_awaiting_plan_approval_and_fetches_plan() -> None:
+    source = _read_userscript()
+
+    assert '"awaiting_plan_approval"' in source
+    assert 'status.pipeline?.status === "awaiting_plan_approval"' in source
+    assert "status.plan_approval_plan = await fetchPlan(status.pipeline.run_id)" in source
+    assert "function fetchPlan(runId)" in source
+    assert "requestJson(`/runs/${runId}/plan`" in source
+    assert "renderPlanApprovalSubView(status.plan_approval_plan)" in source
+
+
+def test_userscript_renders_plan_approval_subview_content() -> None:
+    source = _read_userscript()
+
+    assert 'const PLAN_APPROVAL_ID = "pawchestrator-plan-approval"' in source
+    assert "function renderPlanApprovalSubView(plan)" in source
+    assert "view.id = PLAN_APPROVAL_ID" in source
+    assert "summary.textContent = plan?.approach_summary" in source
+    assert "badge.textContent = `Risk: ${risk}`" in source
+    assert 'badge.className = `risk-badge risk-${["low", "medium", "high"].includes(risk) ? risk : "medium"}`' in source
+    assert 'stepsTitle.textContent = "Steps"' in source
+    assert 'description.textContent = step?.description || String(step || "")' in source
+    assert 'files.textContent = `Affected files: ${affectedFiles.join(", ")}`' in source
+    assert "notes.textContent = step.notes" in source
+
+
+def test_userscript_groups_plan_file_operations_by_type() -> None:
+    source = _read_userscript()
+
+    assert "function planFileOperations(plan)" in source
+    assert "function renderPlanFileSection(parent, titleText, operations)" in source
+    assert 'filesTitle.textContent = "Files"' in source
+    assert 'Modify: operations.filter((operation) => operationType(operation) === "modify")' in source
+    assert 'Create: operations.filter((operation) => operationType(operation) === "create")' in source
+    assert 'Delete: operations.filter((operation) => operationType(operation) === "delete")' in source
+    assert 'renderPlanFileSection(view, "Modify", grouped.Modify)' in source
+    assert 'renderPlanFileSection(view, "Create", grouped.Create)' in source
+    assert 'renderPlanFileSection(view, "Delete", grouped.Delete)' in source
+    assert "code.textContent = operationPath(operation)" in source
+
+
+def test_userscript_plan_approval_is_idempotent_and_uses_panel_styles() -> None:
+    source = _read_userscript()
+
+    assert "document.getElementById(PLAN_APPROVAL_ID)?.remove()" in source
+    assert "body.textContent = \"\"" in source
+    assert "setPanelExpanded(true)" in source
+    assert "#${PANEL_ID} #${PLAN_APPROVAL_ID}" in source
+    assert "prc-Text-Text-0ima0" in source
+    assert ".risk-badge" in source
+    assert ".risk-low" in source
+    assert "var(--bgColor-success-muted" in source
+    assert ".risk-medium" in source
+    assert "var(--bgColor-attention-muted" in source
+    assert ".risk-high" in source
+    assert "var(--bgColor-danger-muted" in source
+
+
 def test_userscript_renders_independent_grill_section() -> None:
     source = _read_userscript()
 
