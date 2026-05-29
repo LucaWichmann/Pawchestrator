@@ -341,6 +341,18 @@
       margin-top: 2px;
     }
 
+    #${PANEL_ID} .pawchestrator-plan-approval-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      justify-content: flex-end;
+    }
+
+    #${PANEL_ID} .pawchestrator-plan-approval-error {
+      color: var(--fgColor-danger, #cf222e);
+      font-weight: 600;
+    }
+
     #${PANEL_ID} .pawchestrator-grill-title {
       color: var(--fgColor-muted, #59636e);
       font-weight: 600;
@@ -1165,14 +1177,18 @@
     parent.append(list);
   }
 
-  function renderPlanApprovalSubView(plan) {
+  function removePlanApprovalSubView() {
+    document.getElementById(PLAN_APPROVAL_ID)?.remove();
+  }
+
+  function renderPlanApprovalSubView(plan, runId) {
     const panel = document.getElementById(PANEL_ID);
     const body = panel?.querySelector(".pawchestrator-panel-body");
     if (!body) {
       return;
     }
 
-    document.getElementById(PLAN_APPROVAL_ID)?.remove();
+    removePlanApprovalSubView();
     const view = document.createElement("div");
     view.id = PLAN_APPROVAL_ID;
 
@@ -1239,8 +1255,70 @@
     });
     view.append(steps);
 
+    const error = document.createElement("div");
+    error.className = "pawchestrator-plan-approval-error";
+    error.hidden = true;
+    view.append(error);
+
+    const actions = document.createElement("div");
+    actions.className = "pawchestrator-plan-approval-actions";
+    const abortBtn = createButton("", "pawchestrator-plan-abort-button", "Abort", () => {
+      handlePlanApprovalAction(runId, "abort", abortBtn, approveBtn, error);
+    });
+    abortBtn.classList.add("btn-danger");
+    const approveBtn = createButton("", "pawchestrator-plan-approve-button", "Approve", () => {
+      handlePlanApprovalAction(runId, "approve", approveBtn, abortBtn, error);
+    });
+    approveBtn.classList.add("btn-primary");
+    actions.append(abortBtn, approveBtn);
+    view.append(actions);
+
     body.append(view);
     setPanelExpanded(true);
+  }
+
+  function setPlanApprovalButtonsDisabled(primaryButton, secondaryButton, disabled) {
+    [primaryButton, secondaryButton].forEach((button) => {
+      button.disabled = disabled;
+    });
+    setButtonText(primaryButton, disabled ? "\u2026" : primaryButton.dataset.idleLabel);
+    setButtonText(secondaryButton, secondaryButton.dataset.idleLabel);
+  }
+
+  async function handlePlanApprovalAction(runId, action, primaryButton, secondaryButton, errorElement) {
+    if (!runId) {
+      errorElement.textContent = "No run id found for this plan approval.";
+      errorElement.hidden = false;
+      return;
+    }
+
+    errorElement.hidden = true;
+    errorElement.textContent = "";
+    setPlanApprovalButtonsDisabled(primaryButton, secondaryButton, true);
+    try {
+      const run = await requestJson(`/runs/${runId}/${action}`, {
+        method: "POST",
+        label: `Plan ${action} request`,
+      });
+      removePlanApprovalSubView();
+      if (action === "abort") {
+        renderStatus({
+          ...(latestIssueStatus || {}),
+          pipeline: {
+            ...((latestIssueStatus || {}).pipeline || {}),
+            ...(run || {}),
+            run_id: run?.run_id || run?.id || runId,
+            status: run?.status || "failed",
+          },
+        });
+        return;
+      }
+      startIssueStatusPolling();
+    } catch (error) {
+      errorElement.textContent = error.message;
+      errorElement.hidden = false;
+      setPlanApprovalButtonsDisabled(primaryButton, secondaryButton, false);
+    }
   }
 
   function epicSubRuns(epic) {
@@ -1766,7 +1844,7 @@
     renderEpicArchitectSection(body, status.epic_architect);
     renderPipeline(body, status.pipeline);
     if (status.pipeline?.status === "awaiting_plan_approval" && status.plan_approval_plan) {
-      renderPlanApprovalSubView(status.plan_approval_plan);
+      renderPlanApprovalSubView(status.plan_approval_plan, status.pipeline.run_id);
     }
     renderEpicSection(body, status.epic);
     if (status.grill?.status === "grill_waiting") {
@@ -2397,7 +2475,9 @@
 
   function createButton(id, testid, labelText, onClick) {
     const button = document.createElement("button");
-    button.id = id;
+    if (id) {
+      button.id = id;
+    }
     button.type = "button";
     button.dataset.component = "Button";
     button.dataset.testid = testid;
@@ -2405,6 +2485,7 @@
     button.dataset.noVisuals = "true";
     button.dataset.size = "medium";
     button.dataset.variant = "default";
+    button.dataset.idleLabel = labelText;
     button.className = "prc-Button-ButtonBase-9n-Xk";
     button.addEventListener("click", onClick);
 
