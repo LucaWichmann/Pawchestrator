@@ -150,6 +150,9 @@ class PipelineSettings(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore")
 
     verify_repair_attempts: int = Field(default=3, ge=0)
+    plan_approval: bool = True
+    plan_approval_max_attempts: int = Field(default=3, ge=1)
+    plan_approval_timeout_hours: int | None = Field(default=None)
     epic_fail_fast: bool = True
     epic_confirm: bool = False
     verify_non_code_changes: StrictBool = False

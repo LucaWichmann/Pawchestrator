@@ -31,6 +31,9 @@ sync_policy = "safe-lazy"
 
 [pipeline]
 verify_repair_attempts = 3
+plan_approval = true
+plan_approval_max_attempts = 3
+plan_approval_timeout_hours = null
 epic_fail_fast = true
 epic_confirm = false
 epic_branch_mode = "epic"
@@ -41,6 +44,9 @@ epic_branch_mode = "epic"
 - `debug = true` prints runner argv plus captured stdout/stderr.
 - `execution = "auto"` on Codex tries native first and may fall back to WSL on known Windows sandbox failures.
 - `previous_response_not_found_attempts` caps Codex recovery attempts including the original attempt.
+- `plan_approval = true` pauses after planning until the browser extension approves or aborts the run.
+- `plan_approval_max_attempts` caps future plan revision loops.
+- `plan_approval_timeout_hours` can auto-fail a run left waiting for plan approval; omit it for no timeout.
 
 ## Per-stage runner
 
