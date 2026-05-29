@@ -7,7 +7,11 @@ from types import SimpleNamespace
 import pytest
 
 from pawchestrator.config import PipelineSettings, Settings
-from pawchestrator.approval_gate import has_approval_event, signal_approval
+from pawchestrator.approval_gate import (
+    has_approval_event,
+    signal_approval,
+    signal_approval_decision,
+)
 from pawchestrator.db import (
     get_run_warnings,
     set_run_pr_url,
@@ -139,6 +143,94 @@ def test_run_pipeline_abort_plan_approval_marks_failed(
         assert run == ("failed", "plan")
         assert calls == ["snapshot", "scout", "plan"]
         assert has_approval_event(run_id) is False
+
+    asyncio.run(scenario())
+
+
+def test_run_pipeline_rejects_plan_then_replans(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        settings = Settings(app_dir=tmp_path)
+        calls: list[str] = []
+        replan_feedback: list[list[dict[str, object]] | None] = []
+        _patch_successful_stages(monkeypatch, calls, replan_feedback=replan_feedback)
+
+        task = asyncio.create_task(
+            run_pipeline(
+                "https://github.com/owner/repo/issues/42",
+                settings,
+                repo_path=tmp_path,
+            )
+        )
+        await _wait_for_approval_gate(settings)
+        run_id = next(iter(_run_ids(settings)))
+        _write_rejections(
+            settings,
+            run_id,
+            [{"attempt": 1, "feedback": "Use axios instead of fetch."}],
+        )
+        assert signal_approval_decision(run_id, "reject") is True
+
+        await _wait_for_plan_call_count(calls, 2)
+        await _wait_for_approval_gate(settings)
+        assert signal_approval(run_id, approved=True) is True
+
+        result = await task
+        assert result.pr_url == "https://github.com/owner/repo/pull/99"
+        assert calls == ["snapshot", "scout", "plan", "plan", "implement", "verify", "pr"]
+        assert replan_feedback == [
+            None,
+            [{"attempt": 1, "feedback": "Use axios instead of fetch."}],
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_run_pipeline_reject_at_max_attempts_marks_failed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        settings = Settings(
+            app_dir=tmp_path,
+            pipeline=PipelineSettings(plan_approval_max_attempts=1),
+        )
+        calls: list[str] = []
+        _patch_successful_stages(monkeypatch, calls)
+
+        task = asyncio.create_task(
+            run_pipeline(
+                "https://github.com/owner/repo/issues/42",
+                settings,
+                repo_path=tmp_path,
+            )
+        )
+        await _wait_for_approval_gate(settings)
+        run_id = next(iter(_run_ids(settings)))
+        _write_rejections(
+            settings,
+            run_id,
+            [{"attempt": 1, "feedback": "Use axios instead of fetch."}],
+        )
+        assert signal_approval_decision(run_id, "reject") is True
+
+        with pytest.raises(RuntimeError, match=r"plan approval max attempts \(1\) reached"):
+            await task
+
+        with sqlite3.connect(settings.database_path) as db:
+            run = db.execute(
+                "SELECT status, current_stage FROM workflow_runs WHERE id = ?",
+                (run_id,),
+            ).fetchone()
+            plan_stage = db.execute(
+                "SELECT error FROM workflow_stages WHERE run_id = ? AND stage_name = 'plan'",
+                (run_id,),
+            ).fetchone()
+        assert run == ("failed", "plan")
+        assert plan_stage == ("plan approval max attempts (1) reached",)
+        assert calls == ["snapshot", "scout", "plan"]
 
     asyncio.run(scenario())
 
@@ -377,7 +469,13 @@ def test_run_pipeline_stops_on_failure_and_marks_run_failed(
     progress: list[str] = []
     _patch_successful_stages(monkeypatch, calls)
 
-    async def fake_plan(run_id: str, settings: Settings, *, repo_path: Path | None = None):
+    async def fake_plan(
+        run_id: str,
+        settings: Settings,
+        *,
+        repo_path: Path | None = None,
+        rejections: list[dict[str, object]] | None = None,
+    ):
         calls.append("plan")
         async def body(log_path: Path):
             raise RuntimeError("plan exploded")
@@ -773,7 +871,13 @@ def test_run_pipeline_sets_failed_label_on_failure(
         _fake_post_initial_run_comment(client),
     )
 
-    async def fake_plan(run_id: str, settings: Settings, *, repo_path: Path | None = None):
+    async def fake_plan(
+        run_id: str,
+        settings: Settings,
+        *,
+        repo_path: Path | None = None,
+        rejections: list[dict[str, object]] | None = None,
+    ):
         calls.append("plan")
         async def body(log_path: Path):
             raise RuntimeError("plan exploded")
@@ -920,6 +1024,14 @@ async def _wait_for_approval_gate(settings: Settings) -> None:
     raise AssertionError("approval gate did not open")
 
 
+async def _wait_for_plan_call_count(calls: list[str], count: int) -> None:
+    for _ in range(100):
+        if calls.count("plan") >= count:
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"plan stage was not called {count} times")
+
+
 def _run_ids(settings: Settings) -> set[str]:
     if not settings.database_path.exists():
         return set()
@@ -935,6 +1047,7 @@ def _patch_successful_stages(
     allow_empty_commit_values: list[bool] | None = None,
     repair_contexts: list[tuple[dict[str, object] | None, int | None]] | None = None,
     allow_dirty_existing_worktree_values: list[bool] | None = None,
+    replan_feedback: list[list[dict[str, object]] | None] | None = None,
 ) -> None:
     async def fake_snapshot(issue_url: str, settings: Settings, *, run_id: str):
         calls.append("snapshot")
@@ -954,8 +1067,16 @@ def _patch_successful_stages(
 
         return await run_stage_lifecycle(settings, run_id, "scout", body)
 
-    async def fake_plan(run_id: str, settings: Settings, *, repo_path: Path | None = None):
+    async def fake_plan(
+        run_id: str,
+        settings: Settings,
+        *,
+        repo_path: Path | None = None,
+        rejections: list[dict[str, object]] | None = None,
+    ):
         calls.append("plan")
+        if replan_feedback is not None:
+            replan_feedback.append(rejections)
         artifact_path = settings.app_dir / "runs" / run_id / "implementation_plan.json"
 
         async def body(log_path: Path):
@@ -1026,6 +1147,16 @@ def _patch_successful_stages(
     monkeypatch.setattr("pawchestrator.pipeline.run_implement", fake_implement)
     monkeypatch.setattr("pawchestrator.pipeline.run_verify", fake_verify)
     monkeypatch.setattr("pawchestrator.pipeline.run_pr", fake_pr)
+
+
+def _write_rejections(
+    settings: Settings,
+    run_id: str,
+    rejections: list[dict[str, object]],
+) -> None:
+    path = settings.app_dir / "runs" / run_id / "plan_rejections.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(rejections), encoding="utf-8")
 
 
 def _patch_implement_with_worktree(

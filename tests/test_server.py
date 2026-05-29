@@ -248,6 +248,69 @@ def test_abort_signals_plan_approval_event(tmp_path: Path) -> None:
     assert event.is_set() is True
 
 
+def test_reject_non_awaiting_run_returns_409(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _insert_run_state(settings)
+    _seed_token(settings)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.post(
+            "/runs/run-123/reject",
+            headers=_token_headers(),
+            json={"feedback": "Use axios instead of fetch."},
+        )
+
+    assert response.status_code == 409
+
+
+def test_reject_signals_plan_approval_event_and_writes_feedback(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _insert_run_state(settings, status="awaiting_plan_approval", current_stage="plan")
+    _seed_token(settings)
+    event = register_approval_event("run-123")
+
+    with TestClient(create_app(settings)) as client:
+        response = client.post(
+            "/runs/run-123/reject",
+            headers=_token_headers(),
+            json={"feedback": "Use axios instead of fetch."},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"run_id": "run-123", "decision": "reject"}
+    assert event.is_set() is True
+    path = tmp_path / "runs" / "run-123" / "plan_rejections.json"
+    assert json.loads(path.read_text(encoding="utf-8")) == [
+        {"attempt": 1, "feedback": "Use axios instead of fetch."}
+    ]
+
+
+def test_reject_appends_feedback(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _insert_run_state(settings, status="awaiting_plan_approval", current_stage="plan")
+    _seed_token(settings)
+    rejections_path = tmp_path / "runs" / "run-123" / "plan_rejections.json"
+    rejections_path.parent.mkdir(parents=True)
+    rejections_path.write_text(
+        json.dumps([{"attempt": 1, "feedback": "Use axios instead of fetch."}]),
+        encoding="utf-8",
+    )
+    register_approval_event("run-123")
+
+    with TestClient(create_app(settings)) as client:
+        response = client.post(
+            "/runs/run-123/reject",
+            headers=_token_headers(),
+            json={"feedback": "Move logic into a service class."},
+        )
+
+    assert response.status_code == 200
+    assert json.loads(rejections_path.read_text(encoding="utf-8")) == [
+        {"attempt": 1, "feedback": "Use axios instead of fetch."},
+        {"attempt": 2, "feedback": "Move logic into a service class."},
+    ]
+
+
 def test_issue_start_returns_run_id_and_schedules_pipeline(
     tmp_path: Path,
     monkeypatch,

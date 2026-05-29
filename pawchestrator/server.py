@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from pawchestrator import __version__
-from pawchestrator.approval_gate import signal_approval
+from pawchestrator.approval_gate import signal_approval, signal_approval_decision
 from pawchestrator.config import LOCAL_HOST, Settings, load_settings
 from pawchestrator.db import (
     create_epic_run,
@@ -46,6 +46,7 @@ from pawchestrator.grill import run_grill
 from pawchestrator.implement import run_repair
 from pawchestrator.lifecycle import fail_stale_runs_on_startup
 from pawchestrator.pipeline import run_pipeline
+from pawchestrator.plan import append_plan_rejection
 from pawchestrator.review import run_review
 from pawchestrator.review import review_report_path
 from pawchestrator.review_issues import format_and_create_issues
@@ -97,6 +98,10 @@ class RepairStartRequest(BaseModel):
 
 class PairResponse(BaseModel):
     token: str
+
+
+class PlanRejectRequest(BaseModel):
+    feedback: str = Field(min_length=1)
 
 
 class PipelineStartResponse(BaseModel):
@@ -258,6 +263,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not signal_approval(run_id, approved=False):
             raise HTTPException(status_code=409, detail="approval gate is not active")
         return {"run_id": run_id, "decision": "abort"}
+
+    @app.post("/runs/{run_id}/reject")
+    async def reject_run(run_id: str, body: PlanRejectRequest) -> dict[str, str]:
+        state = await get_run_state(runtime_settings, run_id)
+        if state is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        if state.get("status") != "awaiting_plan_approval":
+            raise HTTPException(status_code=409, detail="run is not awaiting plan approval")
+        append_plan_rejection(runtime_settings, run_id, body.feedback)
+        if not signal_approval_decision(run_id, "reject"):
+            raise HTTPException(status_code=409, detail="approval gate is not active")
+        return {"run_id": run_id, "decision": "reject"}
 
     @app.get("/issue/{owner}/{repo}/{number}/status")
     async def issue_status(owner: str, repo: str, number: int) -> dict[str, object]:

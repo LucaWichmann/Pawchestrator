@@ -6,7 +6,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import Literal
 
-ApprovalDecision = Literal["approve", "abort"]
+ApprovalDecision = Literal["approve", "reject", "abort"]
 
 
 @dataclass
@@ -29,6 +29,15 @@ def signal_approval(run_id: str, *, approved: bool) -> bool:
     if gate is None:
         return False
     gate.decision = "approve" if approved else "abort"
+    gate.event.set()
+    return True
+
+
+def signal_approval_decision(run_id: str, decision: ApprovalDecision) -> bool:
+    gate = _approval_gates.get(run_id)
+    if gate is None:
+        return False
+    gate.decision = decision
     gate.event.set()
     return True
 
