@@ -116,11 +116,79 @@ def test_userscript_plan_approval_renders_approve_and_abort_actions() -> None:
     source = _read_userscript()
 
     assert 'actions.className = "pawchestrator-plan-approval-actions"' in source
+    assert '"pawchestrator-plan-reject-button", "Reject"' in source
     assert '"pawchestrator-plan-approve-button", "Approve"' in source
     assert 'approveBtn.classList.add("btn-primary")' in source
     assert '"pawchestrator-plan-abort-button", "Abort"' in source
     assert 'abortBtn.classList.add("btn-danger")' in source
+    assert "actions.append(abortBtn, rejectBtn, approveBtn)" in source
     assert ".pawchestrator-plan-approval-actions" in source
+
+
+def test_userscript_plan_approval_reject_reveals_inline_feedback() -> None:
+    source = _read_userscript()
+
+    assert 'feedbackArea.className = "pawchestrator-plan-feedback"' in source
+    assert 'feedbackArea.style.display = "none"' in source
+    assert 'feedback.placeholder = "Describe what should change\\u2026"' in source
+    assert '"pawchestrator-plan-submit-feedback-button", "Submit Feedback"' in source
+    assert 'rejectBtn.style.display = "none"' in source
+    assert 'feedbackArea.style.display = "grid"' in source
+
+
+def test_userscript_plan_approval_reject_requires_non_empty_feedback() -> None:
+    source = _read_userscript()
+
+    assert "submitFeedbackBtn.disabled = true" in source
+    assert 'feedback.addEventListener("input"' in source
+    assert "submitFeedbackBtn.disabled = feedback.value.trim().length === 0" in source
+    assert "const trimmedFeedback = feedback.trim()" in source
+    assert "if (!trimmedFeedback)" in source
+
+
+def test_userscript_plan_approval_reject_posts_feedback_and_renders_replanning() -> None:
+    source = _read_userscript()
+
+    assert "async function handlePlanRejection(runId, feedback, submitButton, cancelButton, feedbackArea, errorElement)" in source
+    assert "await requestJson(`/runs/${runId}/reject`" in source
+    assert 'body: JSON.stringify({ feedback: trimmedFeedback })' in source
+    assert "function renderRePlanningState()" in source
+    assert 'view.className = "re-planning"' in source
+    assert 'spinner.className = "spinner"' in source
+    assert 'document.createTextNode(" Re-planning\\u2026")' in source
+    assert "startIssueStatusPolling()" in source
+
+
+def test_userscript_plan_approval_tracks_replan_attempts() -> None:
+    source = _read_userscript()
+
+    assert "const PLAN_APPROVAL_MAX_ATTEMPTS = 3" in source
+    assert "let planAttempt = 1" in source
+    assert "const rejectedPlanRunIds = new Set()" in source
+    assert "rejectedPlanRunIds.add(runId)" in source
+    assert "planAttempt += 1" in source
+    assert 'attempt.textContent = `Plan attempt ${planAttempt} of ${PLAN_APPROVAL_MAX_ATTEMPTS}`' in source
+
+
+def test_userscript_plan_approval_cancel_restores_action_bar_without_request() -> None:
+    source = _read_userscript()
+
+    assert '"pawchestrator-plan-reject-cancel-button", "Cancel"' in source
+    assert 'feedbackArea.style.display = "none"' in source
+    assert 'rejectBtn.style.display = ""' in source
+    assert source.index('"pawchestrator-plan-reject-cancel-button", "Cancel"') < source.index(
+        "handlePlanRejection(runId, feedback.value"
+    )
+
+
+def test_userscript_plan_approval_reject_error_keeps_feedback_open() -> None:
+    source = _read_userscript()
+
+    assert "catch (error)" in source
+    assert "errorElement.textContent = error.message" in source
+    assert "errorElement.hidden = false" in source
+    assert 'feedbackArea.style.display = "grid"' in source
+    assert "setPlanFeedbackButtonsDisabled(submitButton, cancelButton, false)" in source
 
 
 def test_userscript_plan_approval_approve_posts_and_resumes_polling() -> None:
