@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from pawchestrator import __version__
+from pawchestrator.approval_gate import signal_approval
 from pawchestrator.config import LOCAL_HOST, Settings, load_settings
 from pawchestrator.db import (
     create_epic_run,
@@ -207,6 +208,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if state is None:
             raise HTTPException(status_code=404, detail="run not found")
         return state
+
+    @app.post("/runs/{run_id}/approve")
+    async def approve_run(run_id: str) -> dict[str, str]:
+        state = await get_run_state(runtime_settings, run_id)
+        if state is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        if state.get("status") != "awaiting_plan_approval":
+            raise HTTPException(status_code=409, detail="run is not awaiting plan approval")
+        if not signal_approval(run_id, approved=True):
+            raise HTTPException(status_code=409, detail="approval gate is not active")
+        return {"run_id": run_id, "decision": "approve"}
+
+    @app.post("/runs/{run_id}/abort")
+    async def abort_run(run_id: str) -> dict[str, str]:
+        state = await get_run_state(runtime_settings, run_id)
+        if state is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        if state.get("status") != "awaiting_plan_approval":
+            raise HTTPException(status_code=409, detail="run is not awaiting plan approval")
+        if not signal_approval(run_id, approved=False):
+            raise HTTPException(status_code=409, detail="approval gate is not active")
+        return {"run_id": run_id, "decision": "abort"}
 
     @app.get("/issue/{owner}/{repo}/{number}/status")
     async def issue_status(owner: str, repo: str, number: int) -> dict[str, object]:

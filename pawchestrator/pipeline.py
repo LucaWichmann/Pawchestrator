@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,6 +10,11 @@ from typing import Any, Awaitable, Callable
 from uuid import uuid4
 
 import pawchestrator.verify as verify_module
+from pawchestrator.approval_gate import (
+    approval_decision,
+    clear_approval_event,
+    register_approval_event,
+)
 from pawchestrator.checkbox import reconcile_checkbox_marks
 from pawchestrator.config import Settings
 from pawchestrator.db import (
@@ -21,6 +27,7 @@ from pawchestrator.db import (
     lookup_repo_path,
     mark_run_completed,
     mark_run_failed,
+    set_run_awaiting_plan_approval,
     skip_pr_stage,
     store_github_comment_id,
 )
@@ -207,6 +214,7 @@ async def run_pipeline(
         await _swap_stage_label(settings, active_run_id, comment_client, "planning")
         await _run_stage("plan", plan_stage, progress)
         await _edit_run_comment(settings, active_run_id, comment_client)
+        await _await_plan_approval(settings, active_run_id, progress)
         await _swap_stage_label(settings, active_run_id, comment_client, "implementing")
         await _run_stage("implement", implement_stage, progress)
         await reconcile_marks("implement")
@@ -273,6 +281,8 @@ async def run_pipeline(
         await _edit_run_comment(settings, active_run_id, comment_client)
         await _swap_stage_label(settings, active_run_id, comment_client, "failed")
         raise
+    finally:
+        clear_approval_event(active_run_id)
 
     if not create_pr:
         await skip_pr_stage(
@@ -290,6 +300,45 @@ async def run_pipeline(
     if pr_url:
         progress(pr_url)
     return PipelineResult(run_id=active_run_id, pr_url=pr_url)
+
+
+async def _await_plan_approval(
+    settings: Settings,
+    run_id: str,
+    progress: ProgressFn,
+) -> None:
+    if not settings.pipeline.plan_approval:
+        return
+
+    event = register_approval_event(run_id)
+    await set_run_awaiting_plan_approval(settings, run_id=run_id)
+    progress("[plan] awaiting approval")
+
+    try:
+        timeout_hours = settings.pipeline.plan_approval_timeout_hours
+        if timeout_hours is None:
+            await event.wait()
+        else:
+            await asyncio.wait_for(event.wait(), timeout=timeout_hours * 60 * 60)
+    except TimeoutError as error:
+        reason = "plan approval timed out"
+        await mark_run_failed(
+            settings,
+            run_id=run_id,
+            error=reason,
+            current_stage="plan",
+        )
+        raise RuntimeError(reason) from error
+
+    if approval_decision(run_id) == "abort":
+        reason = "plan approval aborted"
+        await mark_run_failed(
+            settings,
+            run_id=run_id,
+            error=reason,
+            current_stage="plan",
+        )
+        raise RuntimeError(reason)
 
 
 async def _run_stage[T](

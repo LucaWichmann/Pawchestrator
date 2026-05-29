@@ -710,17 +710,54 @@ async def skip_pr_stage(settings: Settings, *, run_id: str, reason: str) -> None
         await db.commit()
 
 
-async def mark_run_failed(settings: Settings, *, run_id: str) -> None:
+async def set_run_awaiting_plan_approval(settings: Settings, *, run_id: str) -> None:
     now = utc_now_iso()
     async with aiosqlite.connect(settings.database_path) as db:
         await db.execute(
             """
             UPDATE workflow_runs
-            SET status = 'failed', updated_at = ?
+            SET status = 'awaiting_plan_approval',
+                current_stage = 'plan',
+                updated_at = ?
             WHERE id = ?
             """,
             (now, run_id),
         )
+        await db.commit()
+
+
+async def mark_run_failed(
+    settings: Settings,
+    *,
+    run_id: str,
+    error: str | None = None,
+    current_stage: str | None = None,
+) -> None:
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        assignments = ["status = 'failed'", "updated_at = ?"]
+        values: list[object] = [now]
+        if current_stage is not None:
+            assignments.insert(1, "current_stage = ?")
+            values.insert(0, current_stage)
+        values.append(run_id)
+        await db.execute(
+            f"""
+            UPDATE workflow_runs
+            SET {", ".join(assignments)}
+            WHERE id = ?
+            """,
+            tuple(values),
+        )
+        if error is not None:
+            await db.execute(
+                """
+                UPDATE workflow_stages
+                SET error = ?
+                WHERE run_id = ? AND stage_name = ?
+                """,
+                (error, run_id, current_stage or "plan"),
+            )
         await db.commit()
 
 
