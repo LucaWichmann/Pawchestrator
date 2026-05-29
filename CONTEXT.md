@@ -52,6 +52,10 @@ Grill is multi-round: if questions are posted, the run transitions to `grill_wai
 
 Verification behaviour is implicit in `epic_branch_mode`. In `epic` mode all sub-pipeline verify stages are skipped (recorded as `skipped` with `skip_reason = "verification deferred to epic level"`); a single verify runs on the epic worktree after all sub-issues complete, stored as a `workflow_stages` entry on the parent_run_id. In `epic-with-sub-issues` mode verify runs per sub-issue (unchanged). Epic-level repair attempts reuse `verify_repair_attempts` and are also stored on the parent_run_id. See ADR 0018.
 
+**PlanApprovalGate** — An explicit human checkpoint inserted between the Plan stage and the Implement stage. When `plan_approval = true` (default), the pipeline transitions to `awaiting_plan_approval` after writing `implementation_plan.json`, suspends execution, and waits for the developer to approve, reject, or abort via the Tampermonkey panel. The panel auto-expands and renders a plan approval sub-view showing `approach_summary`, `file_operations` (per-file operation type and description), `estimated_risk`, and ordered steps. Enabled by default. See ADR 0019.
+
+**PlanRejectionCycle** — One iteration of the developer providing textual feedback on a proposed plan, triggering the Plan stage to re-run with accumulated feedback injected into the prompt. Bounded by `plan_approval_max_attempts` (default 3). Each rejection appends feedback to `plan_rejections.json` (an artifact on disk); the re-plan prompt builder reads all previous rejections so the LLM does not repeat rejected approaches. If the cap is reached, the run transitions to `failed`. See ADR 0019.
+
 **EpicArchitect** — A standalone action triggered from a plain (non-Epic) GitHub issue that decomposes it into sub-issues and promotes it to an Epic. `workflow_type = "epic_architect"`. Two stages: `epic_scout` (small-model, read-only — finds relevant source files and tech context) → `epic_architect` (LLM decomposes issue into sub-issues, respecting dependency order). Sub-issues are linked to the parent via GitHub's native sub-issues API (`POST /repos/{owner}/{repo}/issues/{number}/sub_issues`). No worktree created. No GitHub comment posted — GitHub's native sub-issues UI surfaces results. Button "Turn into Epic" is hidden when the issue already has sub-issues. Triggered via `POST /issue/epic-architect`. Gate mechanism (user approval before creation) is deferred to a future iteration. See [[EpicArchitectPlan]], [[EpicScoutReport]].
 
 **EpicScoutReport** — Artifact produced by the `epic_scout` stage of an `EpicArchitect` run. Schema: `{relevant_files: [{path, reason, snippet}], tech_context: string}`. `relevant_files` is capped at 3–5 entries. `tech_context` is a one-line tech stack summary. Passed as context to the `epic_architect` stage.
@@ -69,14 +73,18 @@ Tampermonkey button click on GitHub issue
   → POST /issue/start {owner, repo, number}
   → Snapshot    GitHub API              → IssueSnapshot artifact (includes CheckboxCriteria)
   → Scout       ClaudeRunner            → ScoutReport artifact
-  → Plan        ClaudeRunner            → ImplementationPlan artifact
+  → Plan        ClaudeRunner            → ImplementationPlan artifact + FileOperations
+  → [PlanApprovalGate]                  ← awaiting_plan_approval (if plan_approval=true)
+       Approve → continue
+       Reject  → re-run Plan with feedback (bounded by plan_approval_max_attempts)
+       Abort   → failed
   → Implement   CodexRunner             → ImplementationReport + file edits
                                            (agent calls `pawchestrator checkbox check` per criterion)
   → Verify      ShellRunner             → VerificationReport artifact
   → PR          gh pr create             → PR URL + assignment
 ```
 
-No human gates in MVP 0. No repair loop. No YAML workflow engine. No pairing security token. All hardcoded.
+No repair loop in MVP 0. No YAML workflow engine. No pairing security token. All hardcoded. PlanApprovalGate is on by default (post-MVP0 addition).
 
 ---
 
@@ -197,6 +205,8 @@ run_warnings    (id, run_id, stage_name, code, message, created_at)
 
 Grill run statuses: `pending` → `grill_running` → `grill_waiting` (questions posted, paused for reply) → `grill_running` (resumed) → `grill_complete` | `grill_failed`. `grill_waiting` is excluded from `fail_stale_runs_on_startup` — it survives server restarts. Terminal statuses: `grill_complete`, `grill_failed` (plus pipeline terminals).
 
+Pipeline run pause status: `awaiting_plan_approval` — written to `workflow_runs.status` before the pipeline suspends on an `asyncio.Event`. Included in `fail_stale_runs_on_startup` — runs in this state at daemon startup are failed immediately with reason `"daemon restarted during plan approval"`. Future resume support: artifact-complete runs in `awaiting_plan_approval` can be resumed (plan artifact exists; re-prompt user for approval), but resume logic is not yet implemented.
+
 `IssueSnapshot.comments` includes `in_reply_to_id: int | null` per comment entry (populated from GitHub API). Used by re-grill context builder to filter reply comments to the questions comment.
 
 **Artifact files on disk:**
@@ -206,6 +216,7 @@ Grill run statuses: `pending` → `grill_running` → `grill_waiting` (questions
   issue.snapshot.json
   scout_report.json
   implementation_plan.json
+  plan_rejections.json            ← written on first rejection; accumulates all rejection feedback
   implementation_report.json
   verification_report.json
   pr_draft.json
