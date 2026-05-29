@@ -37,6 +37,9 @@ def test_runner_settings_defaults_match_low_token_profile() -> None:
     assert settings.review.default_runner == "claude"
     assert settings.review.cross_review is True
     assert settings.pipeline.verify_repair_attempts == 3
+    assert settings.pipeline.plan_approval is True
+    assert settings.pipeline.plan_approval_max_attempts == 3
+    assert settings.pipeline.plan_approval_timeout_hours is None
     assert settings.pipeline.epic_fail_fast is True
     assert settings.pipeline.epic_confirm is False
     assert settings.pipeline.verify_non_code_changes is False
@@ -102,6 +105,9 @@ cross_review = false
 
 [pipeline]
 verify_repair_attempts = 2
+plan_approval = false
+plan_approval_max_attempts = 4
+plan_approval_timeout_hours = 12
 epic_fail_fast = false
 epic_confirm = true
 verify_non_code_changes = true
@@ -158,6 +164,9 @@ approval_policy = "never"
     assert settings.review.default_runner == "codex"
     assert settings.review.cross_review is False
     assert settings.pipeline.verify_repair_attempts == 2
+    assert settings.pipeline.plan_approval is False
+    assert settings.pipeline.plan_approval_max_attempts == 4
+    assert settings.pipeline.plan_approval_timeout_hours == 12
     assert settings.pipeline.epic_fail_fast is False
     assert settings.pipeline.epic_confirm is True
     assert settings.pipeline.verify_non_code_changes is True

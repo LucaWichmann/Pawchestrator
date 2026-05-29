@@ -6,6 +6,7 @@ import aiosqlite
 import httpx
 from fastapi.testclient import TestClient
 
+from pawchestrator.approval_gate import register_approval_event
 from pawchestrator.config import LOCAL_HOST, Settings
 from pawchestrator.db import init_db
 from pawchestrator.github import GitHubIssueClient
@@ -83,6 +84,56 @@ def test_run_state_returns_404_for_missing_run(tmp_path: Path) -> None:
         response = client.get("/runs/missing", headers=_token_headers())
 
     assert response.status_code == 404
+
+
+def test_approve_non_awaiting_run_returns_409(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _insert_run_state(settings)
+    _seed_token(settings)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.post("/runs/run-123/approve", headers=_token_headers())
+
+    assert response.status_code == 409
+
+
+def test_abort_non_awaiting_run_returns_409(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _insert_run_state(settings)
+    _seed_token(settings)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.post("/runs/run-123/abort", headers=_token_headers())
+
+    assert response.status_code == 409
+
+
+def test_approve_signals_plan_approval_event(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _insert_run_state(settings, status="awaiting_plan_approval", current_stage="plan")
+    _seed_token(settings)
+    event = register_approval_event("run-123")
+
+    with TestClient(create_app(settings)) as client:
+        response = client.post("/runs/run-123/approve", headers=_token_headers())
+
+    assert response.status_code == 200
+    assert response.json() == {"run_id": "run-123", "decision": "approve"}
+    assert event.is_set() is True
+
+
+def test_abort_signals_plan_approval_event(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _insert_run_state(settings, status="awaiting_plan_approval", current_stage="plan")
+    _seed_token(settings)
+    event = register_approval_event("run-123")
+
+    with TestClient(create_app(settings)) as client:
+        response = client.post("/runs/run-123/abort", headers=_token_headers())
+
+    assert response.status_code == 200
+    assert response.json() == {"run_id": "run-123", "decision": "abort"}
+    assert event.is_set() is True
 
 
 def test_issue_start_returns_run_id_and_schedules_pipeline(
@@ -768,7 +819,12 @@ def test_pair_returns_403_after_terminal_denial(tmp_path: Path, monkeypatch) -> 
     assert response.status_code == 403
 
 
-def _insert_run_state(settings: Settings) -> None:
+def _insert_run_state(
+    settings: Settings,
+    *,
+    status: str = "snapshot_complete",
+    current_stage: str = "snapshot",
+) -> None:
     import asyncio
 
     async def insert() -> None:
@@ -781,10 +837,11 @@ def _insert_run_state(settings: Settings) -> None:
                   created_at, updated_at
                 )
                 VALUES (
-                  'run-123', 'owner', 'repo', 42, 'snapshot_complete', 'snapshot',
+                  'run-123', 'owner', 'repo', 42, ?, ?,
                   '2026-05-23T00:00:00Z', '2026-05-23T00:00:01Z'
                 )
-                """
+                """,
+                (status, current_stage),
             )
             await db.execute(
                 """
