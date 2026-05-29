@@ -30,6 +30,7 @@
   const PLAN_APPROVAL_ID = "pawchestrator-plan-approval";
   const CONFIRM_OVERLAY_ID = "pawchestrator-confirm-overlay";
   const POLL_INTERVAL_MS = 3000;
+  const PLAN_APPROVAL_MAX_ATTEMPTS = 3;
   const REINJECT_DEBOUNCE_MS = 100;
   const TOKEN_KEY = "pawchestrator_token";
   const PIPELINE_STAGES = ["snapshot", "scout", "plan", "implement", "verify", "pr"];
@@ -99,6 +100,9 @@
   let latestIssueStatus = null;
   let latestPrRun = null;
   let latestPrReviewState = null;
+  let planAttempt = 1;
+  let planAttemptRunId = null;
+  const rejectedPlanRunIds = new Set();
 
   GM_addStyle(`
     #${START_ID},
@@ -281,6 +285,29 @@
       padding-top: 10px;
     }
 
+    #${PANEL_ID} #${PLAN_APPROVAL_ID}.re-planning {
+      align-items: center;
+      color: var(--fgColor-muted, #59636e);
+      display: flex;
+      gap: 8px;
+    }
+
+    #${PANEL_ID} #${PLAN_APPROVAL_ID} .spinner {
+      animation: pawchestrator-spin 0.8s linear infinite;
+      border: 2px solid var(--borderColor-muted, #d8dee4);
+      border-top-color: var(--fgColor-accent, #0969da);
+      border-radius: 50%;
+      display: inline-block;
+      height: 14px;
+      width: 14px;
+    }
+
+    @keyframes pawchestrator-spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
     #${PANEL_ID} .pawchestrator-plan-approval-header {
       align-items: center;
       display: flex;
@@ -299,6 +326,12 @@
     #${PANEL_ID} .pawchestrator-plan-approval-summary {
       color: var(--fgColor-default, #24292f);
       white-space: pre-wrap;
+    }
+
+    #${PANEL_ID} .pawchestrator-plan-approval-attempt {
+      color: var(--fgColor-muted, #59636e);
+      font-size: 12px;
+      font-weight: 600;
     }
 
     #${PANEL_ID} .risk-badge {
@@ -346,6 +379,23 @@
       flex-wrap: wrap;
       gap: 8px;
       justify-content: flex-end;
+    }
+
+    #${PANEL_ID} .pawchestrator-plan-feedback {
+      display: grid;
+      gap: 8px;
+    }
+
+    #${PANEL_ID} .pawchestrator-plan-feedback textarea {
+      background: var(--bgColor-default, #ffffff);
+      border: 1px solid var(--borderColor-default, #d0d7de);
+      border-radius: 6px;
+      color: var(--fgColor-default, #24292f);
+      font: inherit;
+      min-height: 84px;
+      padding: 8px;
+      resize: vertical;
+      width: 100%;
     }
 
     #${PANEL_ID} .pawchestrator-plan-approval-error {
@@ -1181,7 +1231,34 @@
     document.getElementById(PLAN_APPROVAL_ID)?.remove();
   }
 
+  function resetPlanAttemptForRun(runId) {
+    if (runId && planAttemptRunId !== runId) {
+      planAttemptRunId = runId;
+      planAttempt = 1;
+      rejectedPlanRunIds.clear();
+    }
+  }
+
+  function renderRePlanningState() {
+    const panel = document.getElementById(PANEL_ID);
+    const body = panel?.querySelector(".pawchestrator-panel-body");
+    if (!body) {
+      return;
+    }
+
+    removePlanApprovalSubView();
+    const view = document.createElement("div");
+    view.id = PLAN_APPROVAL_ID;
+    view.className = "re-planning";
+    const spinner = document.createElement("span");
+    spinner.className = "spinner";
+    view.append(spinner, document.createTextNode(" Re-planning\u2026"));
+    body.append(view);
+    setPanelExpanded(true);
+  }
+
   function renderPlanApprovalSubView(plan, runId) {
+    resetPlanAttemptForRun(runId);
     const panel = document.getElementById(PANEL_ID);
     const body = panel?.querySelector(".pawchestrator-panel-body");
     if (!body) {
@@ -1197,11 +1274,14 @@
     const title = document.createElement("h4");
     title.className = "pawchestrator-plan-approval-title";
     title.textContent = "Plan Approval";
+    const attempt = document.createElement("span");
+    attempt.className = "pawchestrator-plan-approval-attempt";
+    attempt.textContent = `Plan attempt ${planAttempt} of ${PLAN_APPROVAL_MAX_ATTEMPTS}`;
     const risk = String(plan?.estimated_risk || "medium").toLowerCase();
     const badge = document.createElement("span");
     badge.className = `risk-badge risk-${["low", "medium", "high"].includes(risk) ? risk : "medium"}`;
     badge.textContent = `Risk: ${risk}`;
-    header.append(title, badge);
+    header.append(title, attempt, badge);
     view.append(header);
 
     const summary = document.createElement("div");
@@ -1260,17 +1340,47 @@
     error.hidden = true;
     view.append(error);
 
+    const feedbackArea = document.createElement("div");
+    feedbackArea.className = "pawchestrator-plan-feedback";
+    feedbackArea.style.display = "none";
+    const feedback = document.createElement("textarea");
+    feedback.placeholder = "Describe what should change\u2026";
+    const feedbackActions = document.createElement("div");
+    feedbackActions.className = "pawchestrator-plan-approval-actions";
+    const cancelBtn = createButton("", "pawchestrator-plan-reject-cancel-button", "Cancel", () => {
+      feedback.value = "";
+      error.hidden = true;
+      error.textContent = "";
+      feedbackArea.style.display = "none";
+      rejectBtn.style.display = "";
+    });
+    const submitFeedbackBtn = createButton("", "pawchestrator-plan-submit-feedback-button", "Submit Feedback", () => {
+      handlePlanRejection(runId, feedback.value, submitFeedbackBtn, cancelBtn, feedbackArea, error);
+    });
+    submitFeedbackBtn.disabled = true;
+    feedback.addEventListener("input", () => {
+      submitFeedbackBtn.disabled = feedback.value.trim().length === 0;
+    });
+    feedbackActions.append(cancelBtn, submitFeedbackBtn);
+    feedbackArea.append(feedback, feedbackActions);
+    view.append(feedbackArea);
+
     const actions = document.createElement("div");
     actions.className = "pawchestrator-plan-approval-actions";
     const abortBtn = createButton("", "pawchestrator-plan-abort-button", "Abort", () => {
       handlePlanApprovalAction(runId, "abort", abortBtn, approveBtn, error);
     });
     abortBtn.classList.add("btn-danger");
+    const rejectBtn = createButton("", "pawchestrator-plan-reject-button", "Reject", () => {
+      rejectBtn.style.display = "none";
+      feedbackArea.style.display = "grid";
+      feedback.focus();
+    });
     const approveBtn = createButton("", "pawchestrator-plan-approve-button", "Approve", () => {
       handlePlanApprovalAction(runId, "approve", approveBtn, abortBtn, error);
     });
     approveBtn.classList.add("btn-primary");
-    actions.append(abortBtn, approveBtn);
+    actions.append(abortBtn, rejectBtn, approveBtn);
     view.append(actions);
 
     body.append(view);
@@ -1283,6 +1393,46 @@
     });
     setButtonText(primaryButton, disabled ? "\u2026" : primaryButton.dataset.idleLabel);
     setButtonText(secondaryButton, secondaryButton.dataset.idleLabel);
+  }
+
+  function setPlanFeedbackButtonsDisabled(submitButton, cancelButton, disabled) {
+    submitButton.disabled = disabled;
+    cancelButton.disabled = disabled;
+    setButtonText(submitButton, disabled ? "\u2026" : submitButton.dataset.idleLabel);
+  }
+
+  async function handlePlanRejection(runId, feedback, submitButton, cancelButton, feedbackArea, errorElement) {
+    const trimmedFeedback = feedback.trim();
+    if (!runId) {
+      errorElement.textContent = "No run id found for this plan approval.";
+      errorElement.hidden = false;
+      return;
+    }
+    if (!trimmedFeedback) {
+      submitButton.disabled = true;
+      return;
+    }
+
+    errorElement.hidden = true;
+    errorElement.textContent = "";
+    setPlanFeedbackButtonsDisabled(submitButton, cancelButton, true);
+    try {
+      await requestJson(`/runs/${runId}/reject`, {
+        method: "POST",
+        body: JSON.stringify({ feedback: trimmedFeedback }),
+        label: "Plan rejection request",
+      });
+      rejectedPlanRunIds.add(runId);
+      feedbackArea.style.display = "none";
+      renderRePlanningState();
+      startIssueStatusPolling();
+    } catch (error) {
+      errorElement.textContent = error.message;
+      errorElement.hidden = false;
+      feedbackArea.style.display = "grid";
+      setPlanFeedbackButtonsDisabled(submitButton, cancelButton, false);
+      submitButton.disabled = trimmedFeedback.length === 0;
+    }
   }
 
   async function handlePlanApprovalAction(runId, action, primaryButton, secondaryButton, errorElement) {
@@ -2153,7 +2303,14 @@
   async function pollIssueStatusOnce() {
     const issue = parseIssueReference();
     const status = await fetchIssueStatus(issue);
+    if (status.pipeline?.run_id && status.pipeline.run_id !== planAttemptRunId) {
+      resetPlanAttemptForRun(status.pipeline.run_id);
+    }
     if (status.pipeline?.status === "awaiting_plan_approval" && status.pipeline.run_id) {
+      if (rejectedPlanRunIds.has(status.pipeline.run_id)) {
+        planAttempt += 1;
+        rejectedPlanRunIds.delete(status.pipeline.run_id);
+      }
       status.plan_approval_plan = await fetchPlan(status.pipeline.run_id);
     }
     renderStatus(status);
