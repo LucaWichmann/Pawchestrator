@@ -94,14 +94,14 @@ def test_userscript_detects_awaiting_plan_approval_and_fetches_plan() -> None:
     assert "status.plan_approval_plan = await fetchPlan(status.pipeline.run_id)" in source
     assert "function fetchPlan(runId)" in source
     assert "requestJson(`/runs/${runId}/plan`" in source
-    assert "renderPlanApprovalSubView(status.plan_approval_plan)" in source
+    assert "renderPlanApprovalSubView(status.plan_approval_plan, status.pipeline.run_id)" in source
 
 
 def test_userscript_renders_plan_approval_subview_content() -> None:
     source = _read_userscript()
 
     assert 'const PLAN_APPROVAL_ID = "pawchestrator-plan-approval"' in source
-    assert "function renderPlanApprovalSubView(plan)" in source
+    assert "function renderPlanApprovalSubView(plan, runId)" in source
     assert "view.id = PLAN_APPROVAL_ID" in source
     assert "summary.textContent = plan?.approach_summary" in source
     assert "badge.textContent = `Risk: ${risk}`" in source
@@ -110,6 +110,56 @@ def test_userscript_renders_plan_approval_subview_content() -> None:
     assert 'description.textContent = step?.description || String(step || "")' in source
     assert 'files.textContent = `Affected files: ${affectedFiles.join(", ")}`' in source
     assert "notes.textContent = step.notes" in source
+
+
+def test_userscript_plan_approval_renders_approve_and_abort_actions() -> None:
+    source = _read_userscript()
+
+    assert 'actions.className = "pawchestrator-plan-approval-actions"' in source
+    assert '"pawchestrator-plan-approve-button", "Approve"' in source
+    assert 'approveBtn.classList.add("btn-primary")' in source
+    assert '"pawchestrator-plan-abort-button", "Abort"' in source
+    assert 'abortBtn.classList.add("btn-danger")' in source
+    assert ".pawchestrator-plan-approval-actions" in source
+
+
+def test_userscript_plan_approval_approve_posts_and_resumes_polling() -> None:
+    source = _read_userscript()
+
+    assert "function handlePlanApprovalAction(runId, action, primaryButton, secondaryButton, errorElement)" in source
+    assert "await requestJson(`/runs/${runId}/${action}`" in source
+    assert 'method: "POST"' in source
+    assert 'handlePlanApprovalAction(runId, "approve", approveBtn, abortBtn, error)' in source
+    assert "removePlanApprovalSubView()" in source
+    assert "startIssueStatusPolling()" in source
+
+
+def test_userscript_plan_approval_abort_posts_and_marks_failed() -> None:
+    source = _read_userscript()
+
+    assert 'handlePlanApprovalAction(runId, "abort", abortBtn, approveBtn, error)' in source
+    assert 'if (action === "abort")' in source
+    assert 'status: run?.status || "failed"' in source
+    assert "renderStatus({" in source
+
+
+def test_userscript_plan_approval_disables_buttons_during_request() -> None:
+    source = _read_userscript()
+
+    assert "function setPlanApprovalButtonsDisabled(primaryButton, secondaryButton, disabled)" in source
+    assert "button.disabled = disabled" in source
+    assert 'setButtonText(primaryButton, disabled ? "\\u2026" : primaryButton.dataset.idleLabel)' in source
+    assert "setPlanApprovalButtonsDisabled(primaryButton, secondaryButton, true)" in source
+    assert "setPlanApprovalButtonsDisabled(primaryButton, secondaryButton, false)" in source
+
+
+def test_userscript_plan_approval_error_reenables_buttons() -> None:
+    source = _read_userscript()
+
+    assert 'error.className = "pawchestrator-plan-approval-error"' in source
+    assert "errorElement.textContent = error.message" in source
+    assert "errorElement.hidden = false" in source
+    assert "setPlanApprovalButtonsDisabled(primaryButton, secondaryButton, false)" in source
 
 
 def test_userscript_groups_plan_file_operations_by_type() -> None:
