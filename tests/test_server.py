@@ -86,6 +86,118 @@ def test_run_state_returns_404_for_missing_run(tmp_path: Path) -> None:
     assert response.status_code == 404
 
 
+def test_run_plan_returns_projection_with_file_operations(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _insert_run_state(settings)
+    _seed_token(settings)
+    _write_implementation_plan(
+        settings,
+        "run-123",
+        {
+            "approach_summary": "Add a route.",
+            "estimated_risk": "low",
+            "file_operations": [
+                {
+                    "path": "src/api/users.py",
+                    "type": "modify",
+                    "description": "Add GET /users route.",
+                }
+            ],
+            "steps": [
+                {
+                    "order": 1,
+                    "description": "Add route.",
+                    "files_to_modify": ["src/api/users.py"],
+                    "notes": "Keep it small.",
+                }
+            ],
+        },
+    )
+
+    with TestClient(create_app(settings)) as client:
+        response = client.get("/runs/run-123/plan", headers=_token_headers())
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "approach_summary": "Add a route.",
+        "estimated_risk": "low",
+        "file_operations": [
+            {
+                "path": "src/api/users.py",
+                "type": "modify",
+                "description": "Add GET /users route.",
+            }
+        ],
+        "steps": [
+            {
+                "order": 1,
+                "description": "Add route.",
+                "files_to_modify": ["src/api/users.py"],
+                "notes": "Keep it small.",
+            }
+        ],
+    }
+
+
+def test_run_plan_falls_back_to_files_to_modify(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _insert_run_state(settings)
+    _seed_token(settings)
+    _write_implementation_plan(
+        settings,
+        "run-123",
+        {
+            "approach_summary": "Update files.",
+            "files_to_modify": ["pawchestrator/server.py", "tests/test_server.py"],
+        },
+    )
+
+    with TestClient(create_app(settings)) as client:
+        response = client.get("/runs/run-123/plan", headers=_token_headers())
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "approach_summary": "Update files.",
+        "estimated_risk": "medium",
+        "file_operations": [
+            {"path": "pawchestrator/server.py", "type": "modify", "description": ""},
+            {"path": "tests/test_server.py", "type": "modify", "description": ""},
+        ],
+        "steps": [],
+    }
+
+
+def test_run_plan_returns_404_for_missing_run(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _seed_token(settings)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.get("/runs/missing/plan", headers=_token_headers())
+
+    assert response.status_code == 404
+
+
+def test_run_plan_returns_404_for_missing_artifact(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _insert_run_state(settings)
+    _seed_token(settings)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.get("/runs/run-123/plan", headers=_token_headers())
+
+    assert response.status_code == 404
+
+
+def test_run_plan_requires_pairing_token(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _insert_run_state(settings)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.get("/runs/run-123/plan")
+
+    assert response.status_code == 403
+
+
 def test_approve_non_awaiting_run_returns_409(tmp_path: Path) -> None:
     settings = Settings(app_dir=tmp_path)
     _insert_run_state(settings)
@@ -870,6 +982,16 @@ def _insert_run_state(
 
 def _seed_token(settings: Settings, token: str = "known-token") -> None:
     save_sessions(settings, {"tokens": [token]})
+
+
+def _write_implementation_plan(
+    settings: Settings,
+    run_id: str,
+    payload: dict[str, object],
+) -> None:
+    path = settings.app_dir / "runs" / run_id / "implementation_plan.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
 
 
 class _FakeSubIssueClient:

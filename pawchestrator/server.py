@@ -209,6 +209,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="run not found")
         return state
 
+    @app.get("/runs/{run_id}/plan")
+    async def run_plan(run_id: str) -> dict[str, object]:
+        state = await get_run_state(runtime_settings, run_id)
+        if state is None:
+            raise HTTPException(status_code=404, detail="run not found")
+
+        plan_path = (
+            runtime_settings.app_dir / "runs" / run_id / "implementation_plan.json"
+        )
+        try:
+            plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        except FileNotFoundError as error:
+            raise HTTPException(
+                status_code=404,
+                detail="implementation plan not found",
+            ) from error
+
+        file_operations = plan.get("file_operations") or [
+            {"path": path, "type": "modify", "description": ""}
+            for path in plan.get("files_to_modify", [])
+        ]
+        return {
+            "approach_summary": plan["approach_summary"],
+            "estimated_risk": plan.get("estimated_risk", "medium"),
+            "file_operations": file_operations,
+            "steps": plan.get("steps", []),
+        }
+
     @app.post("/runs/{run_id}/approve")
     async def approve_run(run_id: str) -> dict[str, str]:
         state = await get_run_state(runtime_settings, run_id)
