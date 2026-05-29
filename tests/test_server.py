@@ -6,6 +6,7 @@ import aiosqlite
 import httpx
 from fastapi.testclient import TestClient
 
+from pawchestrator.approval_gate import register_approval_event
 from pawchestrator.config import LOCAL_HOST, Settings
 from pawchestrator.db import init_db
 from pawchestrator.github import GitHubIssueClient
@@ -83,6 +84,231 @@ def test_run_state_returns_404_for_missing_run(tmp_path: Path) -> None:
         response = client.get("/runs/missing", headers=_token_headers())
 
     assert response.status_code == 404
+
+
+def test_run_plan_returns_projection_with_file_operations(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _insert_run_state(settings)
+    _seed_token(settings)
+    _write_implementation_plan(
+        settings,
+        "run-123",
+        {
+            "approach_summary": "Add a route.",
+            "estimated_risk": "low",
+            "file_operations": [
+                {
+                    "path": "src/api/users.py",
+                    "type": "modify",
+                    "description": "Add GET /users route.",
+                }
+            ],
+            "steps": [
+                {
+                    "order": 1,
+                    "description": "Add route.",
+                    "files_to_modify": ["src/api/users.py"],
+                    "notes": "Keep it small.",
+                }
+            ],
+        },
+    )
+
+    with TestClient(create_app(settings)) as client:
+        response = client.get("/runs/run-123/plan", headers=_token_headers())
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "approach_summary": "Add a route.",
+        "estimated_risk": "low",
+        "file_operations": [
+            {
+                "path": "src/api/users.py",
+                "type": "modify",
+                "description": "Add GET /users route.",
+            }
+        ],
+        "steps": [
+            {
+                "order": 1,
+                "description": "Add route.",
+                "files_to_modify": ["src/api/users.py"],
+                "notes": "Keep it small.",
+            }
+        ],
+    }
+
+
+def test_run_plan_falls_back_to_files_to_modify(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _insert_run_state(settings)
+    _seed_token(settings)
+    _write_implementation_plan(
+        settings,
+        "run-123",
+        {
+            "approach_summary": "Update files.",
+            "files_to_modify": ["pawchestrator/server.py", "tests/test_server.py"],
+        },
+    )
+
+    with TestClient(create_app(settings)) as client:
+        response = client.get("/runs/run-123/plan", headers=_token_headers())
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "approach_summary": "Update files.",
+        "estimated_risk": "medium",
+        "file_operations": [
+            {"path": "pawchestrator/server.py", "type": "modify", "description": ""},
+            {"path": "tests/test_server.py", "type": "modify", "description": ""},
+        ],
+        "steps": [],
+    }
+
+
+def test_run_plan_returns_404_for_missing_run(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _seed_token(settings)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.get("/runs/missing/plan", headers=_token_headers())
+
+    assert response.status_code == 404
+
+
+def test_run_plan_returns_404_for_missing_artifact(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _insert_run_state(settings)
+    _seed_token(settings)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.get("/runs/run-123/plan", headers=_token_headers())
+
+    assert response.status_code == 404
+
+
+def test_run_plan_requires_pairing_token(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _insert_run_state(settings)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.get("/runs/run-123/plan")
+
+    assert response.status_code == 403
+
+
+def test_approve_non_awaiting_run_returns_409(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _insert_run_state(settings)
+    _seed_token(settings)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.post("/runs/run-123/approve", headers=_token_headers())
+
+    assert response.status_code == 409
+
+
+def test_abort_non_awaiting_run_returns_409(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _insert_run_state(settings)
+    _seed_token(settings)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.post("/runs/run-123/abort", headers=_token_headers())
+
+    assert response.status_code == 409
+
+
+def test_approve_signals_plan_approval_event(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _insert_run_state(settings, status="awaiting_plan_approval", current_stage="plan")
+    _seed_token(settings)
+    event = register_approval_event("run-123")
+
+    with TestClient(create_app(settings)) as client:
+        response = client.post("/runs/run-123/approve", headers=_token_headers())
+
+    assert response.status_code == 200
+    assert response.json() == {"run_id": "run-123", "decision": "approve"}
+    assert event.is_set() is True
+
+
+def test_abort_signals_plan_approval_event(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _insert_run_state(settings, status="awaiting_plan_approval", current_stage="plan")
+    _seed_token(settings)
+    event = register_approval_event("run-123")
+
+    with TestClient(create_app(settings)) as client:
+        response = client.post("/runs/run-123/abort", headers=_token_headers())
+
+    assert response.status_code == 200
+    assert response.json() == {"run_id": "run-123", "decision": "abort"}
+    assert event.is_set() is True
+
+
+def test_reject_non_awaiting_run_returns_409(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _insert_run_state(settings)
+    _seed_token(settings)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.post(
+            "/runs/run-123/reject",
+            headers=_token_headers(),
+            json={"feedback": "Use axios instead of fetch."},
+        )
+
+    assert response.status_code == 409
+
+
+def test_reject_signals_plan_approval_event_and_writes_feedback(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _insert_run_state(settings, status="awaiting_plan_approval", current_stage="plan")
+    _seed_token(settings)
+    event = register_approval_event("run-123")
+
+    with TestClient(create_app(settings)) as client:
+        response = client.post(
+            "/runs/run-123/reject",
+            headers=_token_headers(),
+            json={"feedback": "Use axios instead of fetch."},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"run_id": "run-123", "decision": "reject"}
+    assert event.is_set() is True
+    path = tmp_path / "runs" / "run-123" / "plan_rejections.json"
+    assert json.loads(path.read_text(encoding="utf-8")) == [
+        {"attempt": 1, "feedback": "Use axios instead of fetch."}
+    ]
+
+
+def test_reject_appends_feedback(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _insert_run_state(settings, status="awaiting_plan_approval", current_stage="plan")
+    _seed_token(settings)
+    rejections_path = tmp_path / "runs" / "run-123" / "plan_rejections.json"
+    rejections_path.parent.mkdir(parents=True)
+    rejections_path.write_text(
+        json.dumps([{"attempt": 1, "feedback": "Use axios instead of fetch."}]),
+        encoding="utf-8",
+    )
+    register_approval_event("run-123")
+
+    with TestClient(create_app(settings)) as client:
+        response = client.post(
+            "/runs/run-123/reject",
+            headers=_token_headers(),
+            json={"feedback": "Move logic into a service class."},
+        )
+
+    assert response.status_code == 200
+    assert json.loads(rejections_path.read_text(encoding="utf-8")) == [
+        {"attempt": 1, "feedback": "Use axios instead of fetch."},
+        {"attempt": 2, "feedback": "Move logic into a service class."},
+    ]
 
 
 def test_issue_start_returns_run_id_and_schedules_pipeline(
@@ -768,7 +994,12 @@ def test_pair_returns_403_after_terminal_denial(tmp_path: Path, monkeypatch) -> 
     assert response.status_code == 403
 
 
-def _insert_run_state(settings: Settings) -> None:
+def _insert_run_state(
+    settings: Settings,
+    *,
+    status: str = "snapshot_complete",
+    current_stage: str = "snapshot",
+) -> None:
     import asyncio
 
     async def insert() -> None:
@@ -781,10 +1012,11 @@ def _insert_run_state(settings: Settings) -> None:
                   created_at, updated_at
                 )
                 VALUES (
-                  'run-123', 'owner', 'repo', 42, 'snapshot_complete', 'snapshot',
+                  'run-123', 'owner', 'repo', 42, ?, ?,
                   '2026-05-23T00:00:00Z', '2026-05-23T00:00:01Z'
                 )
-                """
+                """,
+                (status, current_stage),
             )
             await db.execute(
                 """
@@ -813,6 +1045,16 @@ def _insert_run_state(settings: Settings) -> None:
 
 def _seed_token(settings: Settings, token: str = "known-token") -> None:
     save_sessions(settings, {"tokens": [token]})
+
+
+def _write_implementation_plan(
+    settings: Settings,
+    run_id: str,
+    payload: dict[str, object],
+) -> None:
+    path = settings.app_dir / "runs" / run_id / "implementation_plan.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
 
 
 class _FakeSubIssueClient:

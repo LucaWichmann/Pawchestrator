@@ -86,6 +86,182 @@ def test_userscript_renders_pipeline_timeline_section() -> None:
     assert "renderPipeline(body, status.pipeline)" in source
 
 
+def test_userscript_detects_awaiting_plan_approval_and_fetches_plan() -> None:
+    source = _read_userscript()
+
+    assert '"awaiting_plan_approval"' in source
+    assert 'status.pipeline?.status === "awaiting_plan_approval"' in source
+    assert "status.plan_approval_plan = await fetchPlan(status.pipeline.run_id)" in source
+    assert "function fetchPlan(runId)" in source
+    assert "requestJson(`/runs/${runId}/plan`" in source
+    assert "renderPlanApprovalSubView(status.plan_approval_plan, status.pipeline.run_id)" in source
+
+
+def test_userscript_renders_plan_approval_subview_content() -> None:
+    source = _read_userscript()
+
+    assert 'const PLAN_APPROVAL_ID = "pawchestrator-plan-approval"' in source
+    assert "function renderPlanApprovalSubView(plan, runId)" in source
+    assert "view.id = PLAN_APPROVAL_ID" in source
+    assert "summary.textContent = plan?.approach_summary" in source
+    assert "badge.textContent = `Risk: ${risk}`" in source
+    assert 'badge.className = `risk-badge risk-${["low", "medium", "high"].includes(risk) ? risk : "medium"}`' in source
+    assert 'stepsTitle.textContent = "Steps"' in source
+    assert 'description.textContent = step?.description || String(step || "")' in source
+    assert 'files.textContent = `Affected files: ${affectedFiles.join(", ")}`' in source
+    assert "notes.textContent = step.notes" in source
+
+
+def test_userscript_plan_approval_renders_approve_and_abort_actions() -> None:
+    source = _read_userscript()
+
+    assert 'actions.className = "pawchestrator-plan-approval-actions"' in source
+    assert '"pawchestrator-plan-reject-button", "Reject"' in source
+    assert '"pawchestrator-plan-approve-button", "Approve"' in source
+    assert 'approveBtn.classList.add("btn-primary")' in source
+    assert '"pawchestrator-plan-abort-button", "Abort"' in source
+    assert 'abortBtn.classList.add("btn-danger")' in source
+    assert "actions.append(abortBtn, rejectBtn, approveBtn)" in source
+    assert ".pawchestrator-plan-approval-actions" in source
+
+
+def test_userscript_plan_approval_reject_reveals_inline_feedback() -> None:
+    source = _read_userscript()
+
+    assert 'feedbackArea.className = "pawchestrator-plan-feedback"' in source
+    assert 'feedbackArea.style.display = "none"' in source
+    assert 'feedback.placeholder = "Describe what should change\\u2026"' in source
+    assert '"pawchestrator-plan-submit-feedback-button", "Submit Feedback"' in source
+    assert 'rejectBtn.style.display = "none"' in source
+    assert 'feedbackArea.style.display = "grid"' in source
+
+
+def test_userscript_plan_approval_reject_requires_non_empty_feedback() -> None:
+    source = _read_userscript()
+
+    assert "submitFeedbackBtn.disabled = true" in source
+    assert 'feedback.addEventListener("input"' in source
+    assert "submitFeedbackBtn.disabled = feedback.value.trim().length === 0" in source
+    assert "const trimmedFeedback = feedback.trim()" in source
+    assert "if (!trimmedFeedback)" in source
+
+
+def test_userscript_plan_approval_reject_posts_feedback_and_renders_replanning() -> None:
+    source = _read_userscript()
+
+    assert "async function handlePlanRejection(runId, feedback, submitButton, cancelButton, feedbackArea, errorElement)" in source
+    assert "await requestJson(`/runs/${runId}/reject`" in source
+    assert 'body: JSON.stringify({ feedback: trimmedFeedback })' in source
+    assert "function renderRePlanningState()" in source
+    assert 'view.className = "re-planning"' in source
+    assert 'spinner.className = "spinner"' in source
+    assert 'document.createTextNode(" Re-planning\\u2026")' in source
+    assert "startIssueStatusPolling()" in source
+
+
+def test_userscript_plan_approval_tracks_replan_attempts() -> None:
+    source = _read_userscript()
+
+    assert "const PLAN_APPROVAL_MAX_ATTEMPTS = 3" in source
+    assert "let planAttempt = 1" in source
+    assert "const rejectedPlanRunIds = new Set()" in source
+    assert "rejectedPlanRunIds.add(runId)" in source
+    assert "planAttempt += 1" in source
+    assert 'attempt.textContent = `Plan attempt ${planAttempt} of ${PLAN_APPROVAL_MAX_ATTEMPTS}`' in source
+
+
+def test_userscript_plan_approval_cancel_restores_action_bar_without_request() -> None:
+    source = _read_userscript()
+
+    assert '"pawchestrator-plan-reject-cancel-button", "Cancel"' in source
+    assert 'feedbackArea.style.display = "none"' in source
+    assert 'rejectBtn.style.display = ""' in source
+    assert source.index('"pawchestrator-plan-reject-cancel-button", "Cancel"') < source.index(
+        "handlePlanRejection(runId, feedback.value"
+    )
+
+
+def test_userscript_plan_approval_reject_error_keeps_feedback_open() -> None:
+    source = _read_userscript()
+
+    assert "catch (error)" in source
+    assert "errorElement.textContent = error.message" in source
+    assert "errorElement.hidden = false" in source
+    assert 'feedbackArea.style.display = "grid"' in source
+    assert "setPlanFeedbackButtonsDisabled(submitButton, cancelButton, false)" in source
+
+
+def test_userscript_plan_approval_approve_posts_and_resumes_polling() -> None:
+    source = _read_userscript()
+
+    assert "function handlePlanApprovalAction(runId, action, primaryButton, secondaryButton, errorElement)" in source
+    assert "await requestJson(`/runs/${runId}/${action}`" in source
+    assert 'method: "POST"' in source
+    assert 'handlePlanApprovalAction(runId, "approve", approveBtn, abortBtn, error)' in source
+    assert "removePlanApprovalSubView()" in source
+    assert "startIssueStatusPolling()" in source
+
+
+def test_userscript_plan_approval_abort_posts_and_marks_failed() -> None:
+    source = _read_userscript()
+
+    assert 'handlePlanApprovalAction(runId, "abort", abortBtn, approveBtn, error)' in source
+    assert 'if (action === "abort")' in source
+    assert 'status: run?.status || "failed"' in source
+    assert "renderStatus({" in source
+
+
+def test_userscript_plan_approval_disables_buttons_during_request() -> None:
+    source = _read_userscript()
+
+    assert "function setPlanApprovalButtonsDisabled(primaryButton, secondaryButton, disabled)" in source
+    assert "button.disabled = disabled" in source
+    assert 'setButtonText(primaryButton, disabled ? "\\u2026" : primaryButton.dataset.idleLabel)' in source
+    assert "setPlanApprovalButtonsDisabled(primaryButton, secondaryButton, true)" in source
+    assert "setPlanApprovalButtonsDisabled(primaryButton, secondaryButton, false)" in source
+
+
+def test_userscript_plan_approval_error_reenables_buttons() -> None:
+    source = _read_userscript()
+
+    assert 'error.className = "pawchestrator-plan-approval-error"' in source
+    assert "errorElement.textContent = error.message" in source
+    assert "errorElement.hidden = false" in source
+    assert "setPlanApprovalButtonsDisabled(primaryButton, secondaryButton, false)" in source
+
+
+def test_userscript_groups_plan_file_operations_by_type() -> None:
+    source = _read_userscript()
+
+    assert "function planFileOperations(plan)" in source
+    assert "function renderPlanFileSection(parent, titleText, operations)" in source
+    assert 'filesTitle.textContent = "Files"' in source
+    assert 'Modify: operations.filter((operation) => operationType(operation) === "modify")' in source
+    assert 'Create: operations.filter((operation) => operationType(operation) === "create")' in source
+    assert 'Delete: operations.filter((operation) => operationType(operation) === "delete")' in source
+    assert 'renderPlanFileSection(view, "Modify", grouped.Modify)' in source
+    assert 'renderPlanFileSection(view, "Create", grouped.Create)' in source
+    assert 'renderPlanFileSection(view, "Delete", grouped.Delete)' in source
+    assert "code.textContent = operationPath(operation)" in source
+
+
+def test_userscript_plan_approval_is_idempotent_and_uses_panel_styles() -> None:
+    source = _read_userscript()
+
+    assert "document.getElementById(PLAN_APPROVAL_ID)?.remove()" in source
+    assert "body.textContent = \"\"" in source
+    assert "setPanelExpanded(true)" in source
+    assert "#${PANEL_ID} #${PLAN_APPROVAL_ID}" in source
+    assert "prc-Text-Text-0ima0" in source
+    assert ".risk-badge" in source
+    assert ".risk-low" in source
+    assert "var(--bgColor-success-muted" in source
+    assert ".risk-medium" in source
+    assert "var(--bgColor-attention-muted" in source
+    assert ".risk-high" in source
+    assert "var(--bgColor-danger-muted" in source
+
+
 def test_userscript_renders_independent_grill_section() -> None:
     source = _read_userscript()
 

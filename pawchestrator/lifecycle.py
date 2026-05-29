@@ -34,6 +34,7 @@ TERMINAL_RUN_STATUSES = (
     "push_failed",
 )
 STALE_RUN_ERROR = "Run aborted: Pawchestrator stopped before this run finished."
+PLAN_APPROVAL_RESTART_ERROR = "daemon restarted during plan approval"
 
 
 def _utc_now_iso() -> str:
@@ -41,6 +42,7 @@ def _utc_now_iso() -> str:
 
 
 async def fail_stale_runs_on_startup(settings: Settings) -> int:
+    from pawchestrator.approval_gate import has_approval_event
     from pawchestrator.db import init_db
 
     await init_db(settings)
@@ -64,6 +66,8 @@ async def fail_stale_runs_on_startup(settings: Settings) -> int:
         for run in runs:
             run_id = str(run["id"])
             if run["status"] == "grill_waiting":
+                continue
+            if run["status"] == "awaiting_plan_approval" and has_approval_event(run_id):
                 continue
 
             if run["status"] == "pr_complete" and run["pr_url"]:
@@ -95,6 +99,11 @@ async def fail_stale_runs_on_startup(settings: Settings) -> int:
                 continue
 
             stage_name = await _stale_failure_stage(db, run)
+            error = (
+                PLAN_APPROVAL_RESTART_ERROR
+                if run["status"] == "awaiting_plan_approval"
+                else STALE_RUN_ERROR
+            )
             await db.execute(
                 """
                 UPDATE workflow_runs
@@ -109,6 +118,7 @@ async def fail_stale_runs_on_startup(settings: Settings) -> int:
                 db,
                 run_id=run_id,
                 stage_name=stage_name,
+                error=error,
                 now=now,
             )
             cleaned += 1
@@ -383,6 +393,7 @@ async def _fail_stale_stage(
     *,
     run_id: str,
     stage_name: str,
+    error: str = STALE_RUN_ERROR,
     now: str,
 ) -> None:
     cursor = await db.execute(
@@ -411,7 +422,7 @@ async def _fail_stale_stage(
             )
             VALUES (?, ?, ?, 'failed', ?, ?, ?)
             """,
-            (str(uuid4()), run_id, stage_name, STALE_RUN_ERROR, now, now),
+            (str(uuid4()), run_id, stage_name, error, now, now),
         )
         return
 
@@ -424,5 +435,5 @@ async def _fail_stale_stage(
             completed_at = ?
         WHERE id = ?
         """,
-        (STALE_RUN_ERROR, now, now, str(row["id"])),
+        (error, now, now, str(row["id"])),
     )

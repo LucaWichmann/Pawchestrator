@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,6 +10,11 @@ from typing import Any, Awaitable, Callable
 from uuid import uuid4
 
 import pawchestrator.verify as verify_module
+from pawchestrator.approval_gate import (
+    approval_decision,
+    clear_approval_event,
+    register_approval_event,
+)
 from pawchestrator.checkbox import reconcile_checkbox_marks
 from pawchestrator.config import Settings
 from pawchestrator.db import (
@@ -21,6 +27,7 @@ from pawchestrator.db import (
     lookup_repo_path,
     mark_run_completed,
     mark_run_failed,
+    set_run_awaiting_plan_approval,
     skip_pr_stage,
     store_github_comment_id,
 )
@@ -35,6 +42,7 @@ from pawchestrator.github import (
 from pawchestrator.implement import run_implement
 from pawchestrator.issues import snapshot_issue
 from pawchestrator.plan import run_plan
+from pawchestrator.plan import load_plan_rejections
 from pawchestrator.pr import run_pr
 from pawchestrator.scout import run_scout
 from pawchestrator.stage_lifecycle import StageResult, StageSkipped, run_stage_lifecycle
@@ -107,8 +115,15 @@ async def run_pipeline(
     async def scout_stage() -> StageResult:
         return await run_scout(active_run_id, settings, repo_path=resolved_repo_path)
 
-    async def plan_stage() -> StageResult:
-        return await run_plan(active_run_id, settings, repo_path=resolved_repo_path)
+    async def plan_stage(
+        rejections: list[dict[str, Any]] | None = None,
+    ) -> StageResult:
+        return await run_plan(
+            active_run_id,
+            settings,
+            repo_path=resolved_repo_path,
+            rejections=rejections,
+        )
 
     async def implement_stage(
         repair_context: dict[str, Any] | None = None,
@@ -205,7 +220,13 @@ async def run_pipeline(
         _print_done(progress, "scout", f"readiness: {scout.report.get('readiness', 'unknown')}")
         await _edit_run_comment(settings, active_run_id, comment_client)
         await _swap_stage_label(settings, active_run_id, comment_client, "planning")
-        await _run_stage("plan", plan_stage, progress)
+        await _run_plan_until_approved(
+            settings,
+            active_run_id,
+            plan_stage,
+            comment_client,
+            progress,
+        )
         await _edit_run_comment(settings, active_run_id, comment_client)
         await _swap_stage_label(settings, active_run_id, comment_client, "implementing")
         await _run_stage("implement", implement_stage, progress)
@@ -273,6 +294,8 @@ async def run_pipeline(
         await _edit_run_comment(settings, active_run_id, comment_client)
         await _swap_stage_label(settings, active_run_id, comment_client, "failed")
         raise
+    finally:
+        clear_approval_event(active_run_id)
 
     if not create_pr:
         await skip_pr_stage(
@@ -290,6 +313,80 @@ async def run_pipeline(
     if pr_url:
         progress(pr_url)
     return PipelineResult(run_id=active_run_id, pr_url=pr_url)
+
+
+async def _await_plan_approval(
+    settings: Settings,
+    run_id: str,
+    progress: ProgressFn,
+) -> str:
+    if not settings.pipeline.plan_approval:
+        return "approve"
+
+    event = register_approval_event(run_id)
+    await set_run_awaiting_plan_approval(settings, run_id=run_id)
+    progress("[plan] awaiting approval")
+
+    try:
+        timeout_hours = settings.pipeline.plan_approval_timeout_hours
+        if timeout_hours is None:
+            await event.wait()
+        else:
+            await asyncio.wait_for(event.wait(), timeout=timeout_hours * 60 * 60)
+    except TimeoutError as error:
+        reason = "plan approval timed out"
+        await mark_run_failed(
+            settings,
+            run_id=run_id,
+            error=reason,
+            current_stage="plan",
+        )
+        raise RuntimeError(reason) from error
+
+    if approval_decision(run_id) == "abort":
+        reason = "plan approval aborted"
+        await mark_run_failed(
+            settings,
+            run_id=run_id,
+            error=reason,
+            current_stage="plan",
+        )
+        raise RuntimeError(reason)
+
+    return approval_decision(run_id) or "approve"
+
+
+async def _run_plan_until_approved(
+    settings: Settings,
+    run_id: str,
+    plan_stage: Callable[[list[dict[str, Any]] | None], Awaitable[StageResult]],
+    comment_client: GitHubIssueClient | None,
+    progress: ProgressFn,
+) -> None:
+    rejections: list[dict[str, Any]] | None = None
+    while True:
+        await _run_stage("plan", lambda: plan_stage(rejections), progress)
+        await _edit_run_comment(settings, run_id, comment_client)
+        decision = await _await_plan_approval(settings, run_id, progress)
+        if decision == "approve":
+            return
+        if decision != "reject":
+            return
+
+        clear_approval_event(run_id)
+        rejections = load_plan_rejections(settings, run_id)
+        attempts = len(rejections)
+        max_attempts = settings.pipeline.plan_approval_max_attempts
+        if attempts >= max_attempts:
+            reason = f"plan approval max attempts ({max_attempts}) reached"
+            await mark_run_failed(
+                settings,
+                run_id=run_id,
+                error=reason,
+                current_stage="plan",
+            )
+            raise RuntimeError(reason)
+        progress(f"[plan] rejected - replanning attempt {attempts + 1}/{max_attempts}")
 
 
 async def _run_stage[T](

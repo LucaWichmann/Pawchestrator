@@ -58,6 +58,18 @@ class FakeRunner(Runner):
                         "notes": "Print summary.",
                     },
                 ],
+                "file_operations": [
+                    {
+                        "path": "pawchestrator/plan.py",
+                        "type": "modify",
+                        "description": "Add plan orchestration.",
+                    },
+                    {
+                        "path": "pawchestrator/cli.py",
+                        "type": "modify",
+                        "description": "Wire CLI command.",
+                    },
+                ],
                 "files_to_modify": [
                     "pawchestrator/plan.py",
                     "pawchestrator/cli.py",
@@ -97,6 +109,9 @@ def test_build_plan_prompt_includes_issue_and_scout_report() -> None:
     assert '"author": "alice"' in prompt
     assert '"text": "Small change"' in prompt
     assert "pawchestrator.implementation_plan.v1" in prompt
+    assert "file_operations" in prompt
+    assert '"create" | "modify" | "delete"' in prompt
+    assert "<=100 chars" in prompt
     assert "No prose. No progress updates. Emit valid JSON artifact only." in prompt
 
 
@@ -127,6 +142,32 @@ def test_build_plan_prompt_truncates_scout_findings_and_risks_for_prompt_only() 
     assert len(scout_report["risks"]) == 6
 
 
+def test_build_plan_prompt_includes_rejections_when_present() -> None:
+    prompt = build_plan_prompt(
+        {"owner": "owner", "repo": "repo", "number": 42, "title": "Add plan"},
+        {"schema": "pawchestrator.scout_report.v1"},
+        rejections=[
+            {"attempt": 1, "feedback": "Use axios instead of fetch."},
+            {"attempt": 2, "feedback": "Move logic into a service class."},
+        ],
+    )
+
+    assert "## Previous plan rejections" in prompt
+    assert 'Attempt 1 feedback: "Use axios instead of fetch."' in prompt
+    assert 'Attempt 2 feedback: "Move logic into a service class."' in prompt
+    assert "Please address all of the above feedback in this revised plan." in prompt
+
+
+def test_build_plan_prompt_omits_rejections_section_when_empty() -> None:
+    prompt = build_plan_prompt(
+        {"owner": "owner", "repo": "repo", "number": 42, "title": "Add plan"},
+        {"schema": "pawchestrator.scout_report.v1"},
+        rejections=[],
+    )
+
+    assert "## Previous plan rejections" not in prompt
+
+
 def test_run_plan_writes_artifact_log_and_records_stage(tmp_path: Path) -> None:
     settings = Settings(app_dir=tmp_path)
     run_id = "run-123"
@@ -150,6 +191,18 @@ def test_run_plan_writes_artifact_log_and_records_stage(tmp_path: Path) -> None:
     plan = json.loads(result.artifact_path.read_text(encoding="utf-8"))
     log = result.log_path.read_text(encoding="utf-8")
     assert plan["steps"][0]["description"] == "Add plan orchestration."
+    assert plan["file_operations"] == [
+        {
+            "path": "pawchestrator/plan.py",
+            "type": "modify",
+            "description": "Add plan orchestration.",
+        },
+        {
+            "path": "pawchestrator/cli.py",
+            "type": "modify",
+            "description": "Wire CLI command.",
+        },
+    ]
     assert "[fake stdout]" in log
     assert '{"result": "ok"}' in log
 
@@ -523,7 +576,106 @@ def test_normalize_implementation_plan_dedupes_files_and_defaults() -> None:
     assert plan["approach_summary"] == "Edit plan."
     assert plan["steps"][0]["order"] == 1
     assert plan["files_to_modify"] == ["pawchestrator/plan.py"]
+    assert plan["file_operations"] == [
+        {
+            "path": "pawchestrator/plan.py",
+            "type": "modify",
+            "description": "",
+        }
+    ]
     assert plan["estimated_risk"] == "medium"
+
+
+def test_normalize_implementation_plan_derives_files_from_file_operations() -> None:
+    plan = normalize_implementation_plan(
+        {
+            "approach_summary": "Edit plan.",
+            "steps": [{"description": "Edit plan"}],
+            "file_operations": [
+                {
+                    "path": "pawchestrator/plan.py",
+                    "type": "modify",
+                    "description": "Add file operations.",
+                },
+                {
+                    "path": "tests/test_plan.py",
+                    "type": "modify",
+                    "description": "Cover file operations.",
+                },
+            ],
+            "files_to_modify": ["stale/path.py"],
+        }
+    )
+
+    assert plan["files_to_modify"] == [
+        "pawchestrator/plan.py",
+        "tests/test_plan.py",
+    ]
+    assert plan["file_operations"] == [
+        {
+            "path": "pawchestrator/plan.py",
+            "type": "modify",
+            "description": "Add file operations.",
+        },
+        {
+            "path": "tests/test_plan.py",
+            "type": "modify",
+            "description": "Cover file operations.",
+        },
+    ]
+
+
+def test_normalize_implementation_plan_strips_invalid_file_operations() -> None:
+    plan = normalize_implementation_plan(
+        {
+            "approach_summary": "Edit plan.",
+            "steps": [{"description": "Edit plan"}],
+            "file_operations": [
+                {
+                    "path": "",
+                    "type": "modify",
+                    "description": "Missing path.",
+                },
+                {
+                    "path": "pawchestrator/plan.py",
+                    "type": "rename",
+                    "description": "Invalid type.",
+                },
+                {
+                    "path": "tests/test_plan.py",
+                    "type": "modify",
+                    "description": "Valid operation.",
+                },
+            ],
+        }
+    )
+
+    assert plan["files_to_modify"] == ["tests/test_plan.py"]
+    assert plan["file_operations"] == [
+        {
+            "path": "tests/test_plan.py",
+            "type": "modify",
+            "description": "Valid operation.",
+        }
+    ]
+
+
+def test_normalize_implementation_plan_truncates_file_operation_description() -> None:
+    plan = normalize_implementation_plan(
+        {
+            "approach_summary": "Edit plan.",
+            "steps": [{"description": "Edit plan"}],
+            "file_operations": [
+                {
+                    "path": "pawchestrator/plan.py",
+                    "type": "modify",
+                    "description": "x" * 120,
+                }
+            ],
+        }
+    )
+
+    assert plan["file_operations"][0]["description"] == "x" * 100
 
 
 @pytest.mark.parametrize(
