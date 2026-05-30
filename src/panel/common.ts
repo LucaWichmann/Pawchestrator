@@ -86,3 +86,43 @@ export function findPrConversationContainer() {
   ];
   return selectors.map((selector) => document.querySelector(selector)).find(Boolean) || null;
 }
+
+export function setButtonText(button, text) {
+  const label = button.querySelector("[data-component='text'], .Button-label, span");
+  if (label) {
+    label.textContent = text;
+  } else {
+    button.textContent = text;
+  }
+}
+
+export function createButton(id, testid, labelText, onClick) {
+  const button = document.createElement("button");
+  if (id) {
+    button.id = id;
+  }
+  button.type = "button";
+  button.dataset.component = "Button";
+  button.dataset.testid = testid;
+  button.dataset.loading = "false";
+  button.dataset.noVisuals = "true";
+  button.dataset.size = "medium";
+  button.dataset.variant = "default";
+  button.dataset.idleLabel = labelText;
+  button.className = "prc-Button-ButtonBase-9n-Xk";
+  button.addEventListener("click", onClick);
+
+  const content = document.createElement("span");
+  content.dataset.component = "buttonContent";
+  content.dataset.align = "center";
+  content.className = "prc-Button-ButtonContent-Iohp5";
+
+  const label = document.createElement("span");
+  label.dataset.component = "text";
+  label.className = "prc-Button-Label-FWkx3";
+  label.textContent = labelText;
+
+  content.append(label);
+  button.append(content);
+  return button;
+}
