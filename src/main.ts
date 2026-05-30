@@ -1,19 +1,3 @@
-// ==UserScript==
-// @name         Pawchestrator
-// @namespace    https://github.com/LucaWichmann/Pawchestrator
-// @version      0.1.0
-// @description  Agent orchestration controls for GitHub issues
-// @match        https://github.com/*
-// @run-at       document-idle
-// @grant        GM_addStyle
-// @grant        GM_deleteValue
-// @grant        GM_getValue
-// @grant        GM_setValue
-// @grant        GM_xmlhttpRequest
-// @connect      127.0.0.1
-// @downloadURL  https://raw.githubusercontent.com/LucaWichmann/Pawchestrator/main/Pawchestrator.user.js
-// @updateURL    https://raw.githubusercontent.com/LucaWichmann/Pawchestrator/main/Pawchestrator.user.js
-// ==/UserScript==
 
 (function () {
   "use strict";
