@@ -24,7 +24,7 @@ The browser flow uses `dist/pawchestrator.user.js` to add controls to GitHub iss
 2. The userscript calls `POST /pair`.
 3. The backend prompts in the terminal — press Enter to approve or Ctrl+C to deny.
 4. Pawchestrator stores the token in Tampermonkey and sends it on later requests as `X-Pawchestrator-Token`.
-5. The userscript calls `POST /issue/start` and polls `GET /runs/{run_id}/status` for progress updates.
+5. The userscript calls `POST /issue/start` and polls `GET /issue/{owner}/{repo}/{number}/status` for progress updates.
 
 ## Development
 
@@ -52,6 +52,8 @@ Check and format the userscript source:
 npm run lint
 npm run format
 ```
+
+See [ADR 0020](adr/0020-userscript-modularization.md) for the full build rationale.
 
 ## Notes
 
