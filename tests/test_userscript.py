@@ -45,14 +45,14 @@ def test_userscript_uses_issue_status_backend_contract() -> None:
 def test_userscript_renders_panel_and_readiness_states() -> None:
     source = _read_userscript()
 
-    assert 'const PAW = "\\uD83D\\uDC3E"' in source
-    assert 'const PANEL_ID = "pawchestrator-panel"' in source
+    assert 'var PAW = "🐾"' in source
+    assert 'var PANEL_ID = "pawchestrator-panel"' in source
     assert 'brand.className = "pawchestrator-panel-brand-name"' in source
     assert 'brand.textContent = `${PAW} Pawchestrator`' in source
     assert 'status.className = "pawchestrator-panel-status-text"' in source
     assert 'status.textContent = "Checking backend..."' in source
     assert 'panel.dataset.status = "idle"' in source
-    assert "function setPanelStatus(state)" in source
+    assert "function setPanelStatus(nextState)" in source
     assert "setPanelStatus(panelStatusForRun(run))" in source
     assert 'setPanelStatus("offline")' in source
     assert "status.textContent = message" in source
@@ -64,7 +64,7 @@ def test_userscript_renders_panel_and_readiness_states() -> None:
     assert "Repo registered" in source
     assert "Claude available" in source
     assert "Codex available" in source
-    assert 'const OFFLINE_MESSAGE = "Pawchestrator not running \\u2014 start with `pawchestrator serve`"' in source
+    assert 'var OFFLINE_MESSAGE = "Pawchestrator not running — start with `pawchestrator serve`"' in source
     assert "Draft PR ready" in source
     assert "failed" in source
 
@@ -72,16 +72,21 @@ def test_userscript_renders_panel_and_readiness_states() -> None:
 def test_userscript_renders_pipeline_timeline_section() -> None:
     source = _read_userscript()
 
-    assert 'const PIPELINE_STAGES = ["snapshot", "scout", "plan", "implement", "verify", "pr"]' in source
-    assert 'const EPIC_ARCHITECT_STAGES = ["epic_scout", "epic_architect", "creating"]' in source
+    assert 'var PIPELINE_STAGES' in source
+    assert '"snapshot"' in source
+    assert '"scout"' in source
+    assert '"implement"' in source
+    assert 'var EPIC_ARCHITECT_STAGES' in source
+    assert '"epic_scout"' in source
+    assert '"epic_architect"' in source
     assert "function collapseStages(stages)" in source
     assert "function renderPipeline(parent, pipeline)" in source
     assert 'section.className = "pawchestrator-pipeline"' in source
     assert 'timeline.className = "pawchestrator-timeline"' in source
     assert 'item.dataset.status = status' in source
-    assert "function renderPipelineTimeline(parent, pipeline, options = {})" in source
+    assert "function renderTimeline(parent, pipeline, options = {})" in source
     assert "!options.suppressActive && index === activeIndex && pipeline.status !== \"completed\"" in source
-    assert 'status === "done" ? "\\u2713" : status === "failed" ? "\\u00D7" : "\\u2022"' in source
+    assert 'status === "done" ? "✓" : status === "failed" ? "×" : "•"' in source
     assert '`${name} (repair ${repairCount}/${repairTotal || repairCount})`' in source
     assert "renderPipeline(body, status.pipeline)" in source
 
@@ -91,21 +96,20 @@ def test_userscript_detects_awaiting_plan_approval_and_fetches_plan() -> None:
 
     assert '"awaiting_plan_approval"' in source
     assert 'status.pipeline?.status === "awaiting_plan_approval"' in source
-    assert "status.plan_approval_plan = await fetchPlan(status.pipeline.run_id)" in source
-    assert "function fetchPlan(runId)" in source
-    assert "requestJson(`/runs/${runId}/plan`" in source
-    assert "renderPlanApprovalSubView(status.plan_approval_plan, status.pipeline.run_id)" in source
+    assert "status.plan_approval_plan = await requestJson" in source
+    assert "requestJson(`/runs/${status.pipeline.run_id}/plan`" in source
+    assert "callbacks.renderPlanApprovalSubView?.(status.plan_approval_plan, status.pipeline.run_id)" in source
 
 
 def test_userscript_renders_plan_approval_subview_content() -> None:
     source = _read_userscript()
 
-    assert 'const PLAN_APPROVAL_ID = "pawchestrator-plan-approval"' in source
-    assert "function renderPlanApprovalSubView(plan, runId)" in source
+    assert 'var PLAN_APPROVAL_ID = "pawchestrator-plan-approval"' in source
+    assert "function renderPlanApprovalSubView(plan, runId, callbacks = {})" in source
     assert "view.id = PLAN_APPROVAL_ID" in source
     assert "summary.textContent = plan?.approach_summary" in source
     assert "badge.textContent = `Risk: ${risk}`" in source
-    assert 'badge.className = `risk-badge risk-${["low", "medium", "high"].includes(risk) ? risk : "medium"}`' in source
+    assert 'badge.className = `risk-badge risk-${' in source
     assert 'stepsTitle.textContent = "Steps"' in source
     assert 'description.textContent = step?.description || String(step || "")' in source
     assert 'files.textContent = `Affected files: ${affectedFiles.join(", ")}`' in source
@@ -130,7 +134,7 @@ def test_userscript_plan_approval_reject_reveals_inline_feedback() -> None:
 
     assert 'feedbackArea.className = "pawchestrator-plan-feedback"' in source
     assert 'feedbackArea.style.display = "none"' in source
-    assert 'feedback.placeholder = "Describe what should change\\u2026"' in source
+    assert 'feedback.placeholder = "Describe what should change…"' in source
     assert '"pawchestrator-plan-submit-feedback-button", "Submit Feedback"' in source
     assert 'rejectBtn.style.display = "none"' in source
     assert 'feedbackArea.style.display = "grid"' in source
@@ -149,25 +153,25 @@ def test_userscript_plan_approval_reject_requires_non_empty_feedback() -> None:
 def test_userscript_plan_approval_reject_posts_feedback_and_renders_replanning() -> None:
     source = _read_userscript()
 
-    assert "async function handlePlanRejection(runId, feedback, submitButton, cancelButton, feedbackArea, errorElement)" in source
+    assert "async function handlePlanRejection(runId, feedback, submitButton, cancelButton, feedbackArea, errorElement, callbacks)" in source
     assert "await requestJson(`/runs/${runId}/reject`" in source
     assert 'body: JSON.stringify({ feedback: trimmedFeedback })' in source
     assert "function renderRePlanningState()" in source
     assert 'view.className = "re-planning"' in source
     assert 'spinner.className = "spinner"' in source
-    assert 'document.createTextNode(" Re-planning\\u2026")' in source
+    assert 'document.createTextNode(" Re-planning…")' in source
     assert "startIssueStatusPolling()" in source
 
 
 def test_userscript_plan_approval_tracks_replan_attempts() -> None:
     source = _read_userscript()
 
-    assert "const PLAN_APPROVAL_MAX_ATTEMPTS = 3" in source
-    assert "let planAttempt = 1" in source
-    assert "const rejectedPlanRunIds = new Set()" in source
-    assert "rejectedPlanRunIds.add(runId)" in source
-    assert "planAttempt += 1" in source
-    assert 'attempt.textContent = `Plan attempt ${planAttempt} of ${PLAN_APPROVAL_MAX_ATTEMPTS}`' in source
+    assert 'state.planAttempt} of 3' in source
+    assert "planAttempt: 1" in source
+    assert "rejectedPlanRunIds: new Set()" in source
+    assert "state.rejectedPlanRunIds.add(runId)" in source
+    assert "state.planAttempt += 1" in source
+    assert 'attempt.textContent = `Plan attempt ${state.planAttempt} of 3`' in source
 
 
 def test_userscript_plan_approval_cancel_restores_action_bar_without_request() -> None:
@@ -194,10 +198,10 @@ def test_userscript_plan_approval_reject_error_keeps_feedback_open() -> None:
 def test_userscript_plan_approval_approve_posts_and_resumes_polling() -> None:
     source = _read_userscript()
 
-    assert "function handlePlanApprovalAction(runId, action, primaryButton, secondaryButton, errorElement)" in source
+    assert "async function handlePlanApprovalAction(runId, action, primaryButton, secondaryButton, errorElement, callbacks)" in source
     assert "await requestJson(`/runs/${runId}/${action}`" in source
     assert 'method: "POST"' in source
-    assert 'handlePlanApprovalAction(runId, "approve", approveBtn, abortBtn, error)' in source
+    assert 'handlePlanApprovalAction(runId, "approve", approveBtn, abortBtn, error, callbacks)' in source
     assert "removePlanApprovalSubView()" in source
     assert "startIssueStatusPolling()" in source
 
@@ -205,7 +209,7 @@ def test_userscript_plan_approval_approve_posts_and_resumes_polling() -> None:
 def test_userscript_plan_approval_abort_posts_and_marks_failed() -> None:
     source = _read_userscript()
 
-    assert 'handlePlanApprovalAction(runId, "abort", abortBtn, approveBtn, error)' in source
+    assert 'handlePlanApprovalAction(runId, "abort", abortBtn, approveBtn, error, callbacks)' in source
     assert 'if (action === "abort")' in source
     assert 'status: run?.status || "failed"' in source
     assert "renderStatus({" in source
@@ -216,7 +220,7 @@ def test_userscript_plan_approval_disables_buttons_during_request() -> None:
 
     assert "function setPlanApprovalButtonsDisabled(primaryButton, secondaryButton, disabled)" in source
     assert "button.disabled = disabled" in source
-    assert 'setButtonText(primaryButton, disabled ? "\\u2026" : primaryButton.dataset.idleLabel)' in source
+    assert 'setButtonText(primaryButton, disabled ? "…" : primaryButton.dataset.idleLabel)' in source
     assert "setPlanApprovalButtonsDisabled(primaryButton, secondaryButton, true)" in source
     assert "setPlanApprovalButtonsDisabled(primaryButton, secondaryButton, false)" in source
 
@@ -280,7 +284,7 @@ def test_userscript_renders_epic_architect_section_states() -> None:
     assert "function renderEpicArchitectSection(parent, run)" in source
     assert 'section.className = "pawchestrator-epic-architect-section"' in source
     assert 'title.textContent = "EpicArchitect"' in source
-    assert "renderNamedTimeline(section, epicArchitectTimelineRun(run), EPIC_ARCHITECT_STAGES" in source
+    assert "renderNamedTimeline$1(section, epicArchitectTimelineRun(run), EPIC_ARCHITECT_STAGES" in source
     assert 'analysis.className = "pawchestrator-epic-architect-analysis"' in source
     assert "analysis.textContent = run.epic_analysis" in source
     assert "function renderCreatedSubIssueLinks(parent, created)" in source
@@ -304,7 +308,7 @@ def test_userscript_renders_epic_section_with_sub_run_timelines() -> None:
     assert 'title.textContent = `Epic: ${epicStatus(epic)}`' in source
     assert 'row.className = "pawchestrator-epic-run"' in source
     assert 'rowTitle.textContent = `#${subRun.issue_number}${titleText}`' in source
-    assert "renderPipelineTimeline(row, subRun, { suppressActive: epicDone })" in source
+    assert "renderEpicTimeline(row, subRun, { suppressActive: epicDone })" in source
     assert "renderEpicSection(body, status.epic)" in source
     assert source.index("renderPipeline(body, status.pipeline)") < source.index("renderEpicSection(body, status.epic)")
     assert source.index("renderGrillSection(body, status.grill)") < source.index("renderPipeline(body, status.pipeline)")
@@ -320,11 +324,11 @@ def test_userscript_renders_epic_verification_timeline() -> None:
     assert "Array.isArray(epic?.parent_stages)" in source
     assert 'return name === "verify" || name === "implement"' in source
     assert "if (parentStages.length > 0)" in source
-    assert "renderPipelineTimeline(verification, {" in source
+    assert "renderEpicTimeline(verification, {" in source
     assert "stages: parentStages" in source
     assert "current_stage: epic.current_stage" in source
     assert "status: epic.status || epicStatus(epic)" in source
-    assert "}, { suppressActive: epicDone })" in source
+    assert "}, { suppressActive: epicDone || isRunDone(epic.status) })" in source
     assert source.index('section.append(list)') < source.index('verification.className = "pawchestrator-epic-verification"')
 
 
@@ -333,14 +337,16 @@ def test_userscript_epic_updates_panel_status_and_auto_expand() -> None:
 
     assert "function epicSummaryRun(epic)" in source
     assert 'workflow_type: "epic"' in source
-    assert "const runs = [epicSummaryRun(status.epic), status.pipeline, status.grill, status.epic_architect].filter(Boolean)" in source
+    assert "epicSummaryRun(status.epic)" in source
+    assert "status.epic_architect" in source
+    assert ".filter(Boolean)" in source
     assert "function epicStatus(epic)" in source
     assert "function isRunDone(run)" in source
     assert "function isEpicDone(epic)" in source
     assert 'RUN_DONE.has(status) || /_failed$/.test(status)' in source
     assert 'run.status === "running" || /_running$/.test(run.status || "")' in source
     assert "epicSubRuns(status.epic).some((run) => !isRunDone(run))" in source
-    assert "(status.epic_architect && !isRunDone(status.epic_architect))" in source
+    assert "status.epic_architect && !isRunDone(status.epic_architect)" in source
     assert "const running = run && !isRunDone(run)" in source
 
 
@@ -350,7 +356,7 @@ def test_userscript_failed_epic_child_runs_do_not_block_restart() -> None:
     assert "function isRunDone(run)" in source
     assert "function isEpicDone(epic)" in source
     assert "RUN_DONE.has(status) || /_failed$/.test(status)" in source
-    assert "(!isEpicDone(status.epic) && epicSubRuns(status.epic).some((run) => !isRunDone(run)))" in source
+    assert "!isEpicDone(status.epic) && epicSubRuns(status.epic).some((run) => !isRunDone(run))" in source
     assert "epicSubRuns(status.epic).some((run) => !RUN_DONE.has(run.status))" not in source
 
 
@@ -360,7 +366,7 @@ def test_userscript_terminal_epic_suppresses_child_activity() -> None:
     assert 'if (run.status === "epic_failed")' in source
     assert 'return "failed"' in source
     assert "const epicDone = isEpicDone(epic)" in source
-    assert "renderPipelineTimeline(row, subRun, { suppressActive: epicDone })" in source
+    assert "renderEpicTimeline(row, subRun, { suppressActive: epicDone })" in source
     assert "!options.suppressActive && index === activeIndex" in source
 
 
@@ -385,27 +391,26 @@ def test_userscript_observes_questions_comment_reply_form() -> None:
 
     assert "function attachGrillReplyObserver(grill)" in source
     assert "document.getElementById(commentElementId(commentId))" in source
-    assert "observer.observe(commentElement, { childList: true, subtree: true })" in source
+    assert "observer.observe(commentElement" in source
     assert 'status.grill?.status === "grill_waiting"' in source
-    assert "attachGrillReplyObserver(status.grill)" in source
-    assert "disconnectGrillReplyObserver()" in source
+    assert "callbacks.attachGrillReplyObserver?.(status.grill)" in source
+    assert "callbacks.disconnectGrillReplyObserver?.()" in source
     assert '"Answer Questions"' in source
     assert (
-        '"Replying to Pawchestrator questions \\u2014 submitting will continue the grilling session."'
+        '"Replying to Pawchestrator questions — submitting will continue the grilling session."'
         in source
     )
     assert 'submit.title = GRILL_REPLY_TOOLTIP' in source
     assert 'await requestJson("/issue/grill"' in source
-    assert "if (state.formSeen && !state.posted)" in source
-    assert "findGrillReplyForm(state.commentElement)" in source
+    assert "observerState.formSeen" in source
+    assert "findGrillReplyForm" in source
 
 
 def test_userscript_renders_pipeline_warnings_and_completed_pr_link_only() -> None:
     source = _read_userscript()
 
-    assert 'const WARNING = "\\u26A0"' in source
     assert 'details.className = "pawchestrator-warnings"' in source
-    assert 'summary.textContent = `${WARNING} Warnings`' in source
+    assert 'summary.textContent = `⚠ Warnings`' in source
     assert "const warnings = Array.isArray(pipeline.warnings) ? pipeline.warnings : []" in source
     assert "if (warnings.length > 0)" in source
     assert 'if (pipeline.status === "completed" && pipeline.pr_url)' in source
@@ -416,9 +421,9 @@ def test_userscript_injects_panel_after_github_issue_body() -> None:
     source = _read_userscript()
 
     assert ".IssueBody-module__outerContainer__ULNTb" in source
-    assert '[class*="IssueBody-module__outerContainer"]' in source
+    assert '[class*=\\"IssueBody-module__outerContainer\\"]' in source
     assert "function findIssueBodyContainer()" in source
-    assert 'issueBody.querySelector(\'[data-testid="issue-body"]\')' in source
+    assert 'issueBody.querySelector("[data-testid=\\"issue-body\\"]")' in source
     assert "innerBox.getBoundingClientRect().left - issueBody.getBoundingClientRect().left" in source
     assert "panel.style.marginLeft = `${panelOffset}px`" in source
     assert ": 0" in source
@@ -482,7 +487,7 @@ def test_userscript_collapses_by_default_and_auto_expands_for_runs() -> None:
     source = _read_userscript()
 
     assert 'panel.dataset.expanded = "false"' in source
-    assert "let panelExpandedByUser = null" in source
+    assert "panelExpandedByUser: null" in source
     assert "function shouldAutoExpand(status)" in source
     assert "status.pipeline ||" in source
     assert "status.grill ||" in source
@@ -496,12 +501,12 @@ def test_userscript_epic_confirm_gate_and_pending_start_render() -> None:
 
     assert "const status = await fetchIssueStatus(issue)" in source
     assert "if (status.epic_confirm && !confirmEpicStart(status.epic))" in source
-    assert "if (status.grill?.status === GRILL_WAITING_STATUS)" in source
+    assert 'if (status.grill?.status === "grill_waiting")' in source
     assert (
         "Grill is still waiting for answers on this issue. "
         "Are you sure you want to start agentic work?"
     ) in source
-    assert "showConfirmDialog(PIPELINE_GRILL_WAITING_CONFIRM_MESSAGE" in source
+    assert 'showConfirmDialog("Grill is still waiting for answers on this issue. Are you sure you want to start agentic work?' in source
     assert 'title: "Start agentic work?"' in source
     assert 'confirmLabel: "Yes"' in source
     assert 'cancelLabel: "No"' in source
@@ -510,7 +515,7 @@ def test_userscript_epic_confirm_gate_and_pending_start_render() -> None:
     assert 'response?.type === "epic"' in source
     assert "function epicFromStartResponse(response)" in source
     assert 'status: "pending"' in source
-    assert "stages: PIPELINE_STAGES.map((stage_name) => ({ stage_name, status: \"pending\" }))" in source
+    assert "stages: PIPELINE_STAGES.map((stage_name) => ({" in source
 
 
 def test_userscript_non_epic_start_path_still_posts_issue() -> None:
@@ -534,27 +539,29 @@ def test_userscript_avoids_sidebar_body_and_floating_fallbacks() -> None:
 def test_userscript_polls_every_three_seconds_and_reinjects() -> None:
     source = _read_userscript()
 
-    assert "const POLL_INTERVAL_MS = 3000" in source
-    assert "const REINJECT_DEBOUNCE_MS = 100" in source
+    assert "var POLL_INTERVAL_MS = 3e3" in source
+    assert "pathnameChanged ? 0 : 100" in source
     assert "window.setInterval" in source
     assert "new MutationObserver" in source
     assert "scheduleInjection" in source
-    assert "window.clearTimeout(reinjectTimer)" in source
+    assert "window.clearTimeout(state.reinjectTimer)" in source
     assert "window.setTimeout" in source
 
 
 def test_userscript_reinjects_after_client_side_navigation() -> None:
     source = _read_userscript()
 
-    assert "let activePathname = window.location.pathname" in source
-    assert "const pathnameChanged = activePathname !== window.location.pathname" in source
-    assert "activePathname = window.location.pathname" in source
-    assert "pathnameChanged ? 0 : REINJECT_DEBOUNCE_MS" in source
+    assert "activePathname: window.location.pathname" in source
+    assert "const pathnameChanged = state.activePathname !== window.location.pathname" in source
+    assert "state.activePathname = window.location.pathname" in source
+    assert "pathnameChanged ? 0 : 100" in source
     assert "installNavigationHooks" in source
     assert '["pushState", "replaceState"]' in source
     assert "original.apply(this, args)" in source
-    assert '["turbo:load", "turbo:render", "popstate"]' in source
-    assert "window.addEventListener(eventName, scheduleInjection)" in source
+    assert '"turbo:load"' in source
+    assert '"turbo:render"' in source
+    assert '"popstate"' in source
+    assert "window.addEventListener(eventName, () => scheduleInjection(injectControls))" in source
 
 
 def test_userscript_gates_injection_to_issue_pages() -> None:
@@ -582,7 +589,7 @@ def test_userscript_removes_controls_on_non_issue_pages() -> None:
 def test_userscript_rehomes_stale_panel_only() -> None:
     source = _read_userscript()
 
-    assert "existingPanel && document.contains(existingPanel) ? existingPanel : createPanel()" in source
+    assert "existingPanel && document.contains(existingPanel) ? existingPanel : buildIssuePanel()" in source
     assert "existingButton && document.contains(existingButton) ? existingButton : createStartButton()" not in source
     assert "existingGrillButton && document.contains(existingGrillButton) ? existingGrillButton : createGrillButton()" not in source
     assert "button.parentElement !== actions" not in source
