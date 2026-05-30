@@ -1,8 +1,10 @@
 .venv/
+node_modules/
 __pycache__/
 .pytest_cache/
 .pytest_tmp/
 *.py[cod]
+*.tsbuildinfo
 *.sqlite
 *.db
 
