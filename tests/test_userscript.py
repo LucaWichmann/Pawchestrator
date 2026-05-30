@@ -1,7 +1,7 @@
 from pathlib import Path
 
 
-USERSCRIPT = Path(__file__).resolve().parents[1] / "Pawchestrator.user.js"
+USERSCRIPT = Path(__file__).resolve().parents[1] / "dist" / "pawchestrator.user.js"
 
 
 def _read_userscript() -> str:
@@ -19,11 +19,11 @@ def test_userscript_header_is_tampermonkey_installable() -> None:
     assert "// @grant        GM_xmlhttpRequest" in source
     assert "// @connect      127.0.0.1" in source
     assert (
-        "// @downloadURL  https://raw.githubusercontent.com/LucaWichmann/Pawchestrator/main/Pawchestrator.user.js"
+        "// @downloadURL  https://raw.githubusercontent.com/LucaWichmann/Pawchestrator/main/dist/pawchestrator.user.js"
         in source
     )
     assert (
-        "// @updateURL    https://raw.githubusercontent.com/LucaWichmann/Pawchestrator/main/Pawchestrator.user.js"
+        "// @updateURL    https://raw.githubusercontent.com/LucaWichmann/Pawchestrator/main/dist/pawchestrator.user.js"
         in source
     )
 
@@ -31,7 +31,7 @@ def test_userscript_header_is_tampermonkey_installable() -> None:
 def test_userscript_uses_issue_status_backend_contract() -> None:
     source = _read_userscript()
 
-    assert 'const API_BASE = "http://127.0.0.1:38472"' in source
+    assert 'API_BASE = "http://127.0.0.1:38472"' in source
     assert "GM_xmlhttpRequest" in source
     assert 'requestJson(`/issue/${issue.owner}/${issue.repo}/${issue.number}/status`' in source
     assert 'requestJson("/issue/start"' in source
@@ -454,17 +454,17 @@ def test_userscript_renders_action_buttons_inside_panel_bar() -> None:
 def test_userscript_epic_architect_button_visibility_and_start_contract() -> None:
     source = _read_userscript()
 
-    assert 'const EPIC_ARCHITECT_ID = "pawchestrator-epic-architect"' in source
-    assert 'const CONSTRUCTION = "\\uD83C\\uDFD7\\uFE0F"' in source
+    assert 'EPIC_ARCHITECT_ID = "pawchestrator-epic-architect"' in source
+    assert 'CONSTRUCTION = "🏗️"' in source
     assert '`${CONSTRUCTION} Turn into Epic`' in source
     assert "function issueAlreadyHasSubIssues(status)" in source
     assert "epicArchitectCreatedIssues(status?.epic_architect).length > 0" in source
-    assert "status?.issue?.sub_issues_summary || status?.sub_issues_summary" in source
+    assert 'document.querySelector("[data-testid=\\"sub-issues-issue-container\\"]")' in source
     assert "button?.remove()" in source
     assert "function startEpicArchitect()" in source
     assert 'requestJson("/issue/epic-architect"' in source
     assert "await GM_setValue(epicArchitectRunKey(), response.run_id)" in source
-    assert "button.toggleAttribute(\"disabled\", Boolean(run && !isRunDone(run)) || !isIssueOpen())" in source
+    assert 'button.toggleAttribute("disabled", Boolean(run && !isRunDone(run)) || !issuePanelHandlers.isIssueOpen())' in source
 
 
 def test_userscript_panel_uses_github_css_variables_and_button_classes() -> None:

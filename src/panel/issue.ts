@@ -130,8 +130,7 @@ function issueAlreadyHasSubIssues(status) {
   if (epicArchitectCreatedIssues(status?.epic_architect).length > 0) {
     return true;
   }
-  const summary = status?.issue?.sub_issues_summary || status?.sub_issues_summary;
-  return Number(summary?.total || summary?.completed || summary?.percent_completed) > 0;
+  return Boolean(document.querySelector('[data-testid="sub-issues-issue-container"]'));
 }
 
 function epicArchitectTimelineRun(run) {
