@@ -3,34 +3,21 @@ import {
   EPIC_ARCHITECT_ID,
   EPIC_ARCHITECT_STAGES,
   GRILL_ID,
-  GRILL_LABEL,
-  GRILL_WAITING_STATUS,
   OFFLINE_MESSAGE,
   PANEL_ID,
   PAW,
-  PIPELINE_STAGES,
-  REGRILL_LABEL,
-  REPAIR_STAGES,
-  REVIEW_STAGES,
-  STAGE_DONE,
   START_ID,
   WARNING,
 } from "../constants";
 import { state } from "../state";
-import {
-  currentRun,
-  epicStatus,
-  epicSubRuns,
-  isEpicDone,
-  isRunDone,
-  summarizeError,
-  summarizeRun,
-} from "../summarize";
+import { currentRun, isRunDone, summarizeError, summarizeRun } from "../summarize";
+import { epicSubRuns, renderEpicSection } from "../render/epic";
+import { grillButtonLabel, renderGrillSection, updateGrillButton } from "../render/grill";
+import { renderNamedTimeline, renderTimeline } from "../render/timeline";
 import {
   createButton,
   findIssueBodyContainer,
   maybeAutoExpandForPipeline,
-  setButtonText,
   setPanelExpanded,
   setPanelStatus,
   setPanelSummary,
@@ -89,182 +76,6 @@ function renderReadinessItem(parent, label, ready) {
   parent.append(item);
 }
 
-function stageName(stage) {
-  return String(stage?.stage_name || stage?.name || "");
-}
-
-function stageStatus(stage) {
-  return String(stage?.status || "pending").replace(/^[^_]+_/, "");
-}
-
-function normalizeStepStatus(stage, isAfterActive) {
-  if (isAfterActive || !stage) {
-    return "pending";
-  }
-
-  const status = stageStatus(stage);
-  if (status === "running") {
-    return "running";
-  }
-  if (status === "failed") {
-    return "failed";
-  }
-  if (STAGE_DONE.has(status)) {
-    return "done";
-  }
-  return "pending";
-}
-
-function collapseStages(stages) {
-  const rows = Array.isArray(stages) ? stages : [];
-  const byName = new Map();
-  PIPELINE_STAGES.forEach((name) => byName.set(name, []));
-  rows.forEach((stage) => {
-    const name = stageName(stage);
-    if (byName.has(name)) {
-      byName.get(name).push(stage);
-    }
-  });
-
-  const repairCount = Math.max(0, (byName.get("implement") || []).length - 1);
-  const failedVerifyCount = (byName.get("verify") || []).filter(
-    (stage) => stageStatus(stage) === "failed",
-  ).length;
-  const repairTotal = Math.max(repairCount, failedVerifyCount);
-
-  return PIPELINE_STAGES.map((name) => {
-    const matching = byName.get(name) || [];
-    const stage = matching[matching.length - 1] || { stage_name: name, status: "pending" };
-    const label =
-      name === "implement" && repairCount > 0
-        ? `${name} (repair ${repairCount}/${repairTotal || repairCount})`
-        : name;
-    return { name, label, stage };
-  });
-}
-
-function collapseNamedStages(stages, names) {
-  const rows = Array.isArray(stages) ? stages : [];
-  return names.map((name) => ({
-    name,
-    label: name,
-    stage: rows.find((stage) => stageName(stage) === name) || {
-      stage_name: name,
-      status: "pending",
-    },
-  }));
-}
-
-function activeStageIndex(pipeline, steps) {
-  const failedIndex = steps.findIndex((step) => stageStatus(step.stage) === "failed");
-  if (failedIndex >= 0) {
-    return failedIndex;
-  }
-
-  const current = String(pipeline.current_stage || "");
-  const currentIndex = steps.findIndex((step) => step.name === current);
-  if (currentIndex >= 0) {
-    return currentIndex;
-  }
-
-  const runningIndex = steps.findIndex((step) => stageStatus(step.stage) === "running");
-  if (runningIndex >= 0) {
-    return runningIndex;
-  }
-
-  if (pipeline.status === "completed") {
-    return PIPELINE_STAGES.length - 1;
-  }
-
-  return -1;
-}
-
-function activeNamedStageIndex(run, steps) {
-  const failedIndex = steps.findIndex((step) => stageStatus(step.stage) === "failed");
-  if (failedIndex >= 0) {
-    return failedIndex;
-  }
-
-  const current = String(run.current_stage || "");
-  const currentIndex = steps.findIndex((step) => step.name === current);
-  if (currentIndex >= 0) {
-    return currentIndex;
-  }
-
-  const runningIndex = steps.findIndex((step) => stageStatus(step.stage) === "running");
-  if (runningIndex >= 0) {
-    return runningIndex;
-  }
-
-  return -1;
-}
-
-function renderNamedTimeline(parent, run, stageNames, options = {}) {
-  const steps = collapseNamedStages(run.stages, stageNames);
-  const activeIndex = activeNamedStageIndex(run, steps);
-  const timeline = document.createElement("div");
-  timeline.className = "pawchestrator-timeline";
-  timeline.style.gridTemplateColumns = `repeat(${stageNames.length}, minmax(72px, 1fr))`;
-  steps.forEach((step, index) => {
-    const doneByRun = options.markComplete && index <= activeIndex;
-    const status = doneByRun
-      ? "done"
-      : normalizeStepStatus(step.stage, activeIndex >= 0 && index > activeIndex);
-    const item = document.createElement("div");
-    item.className = "pawchestrator-step";
-    item.dataset.status = status;
-    item.dataset.active = String(
-      !options.suppressActive && index === activeIndex && !isRunDone(run),
-    );
-
-    const indicator = document.createElement("span");
-    indicator.className = "pawchestrator-step-indicator";
-    indicator.textContent =
-      status === "done" ? "\u2713" : status === "failed" ? "\u00D7" : "\u2022";
-
-    const label = document.createElement("span");
-    label.className = "pawchestrator-step-label";
-    label.textContent = step.label;
-
-    item.append(indicator, label);
-    timeline.append(item);
-  });
-  parent.append(timeline);
-}
-
-function renderPipelineTimeline(parent, pipeline, options = {}) {
-  const steps = collapseStages(pipeline.stages);
-  const activeIndex = activeStageIndex(pipeline, steps);
-  const timeline = document.createElement("div");
-  timeline.className = "pawchestrator-timeline";
-  steps.forEach((step, index) => {
-    const status = normalizeStepStatus(step.stage, activeIndex >= 0 && index > activeIndex);
-    const item = document.createElement("div");
-    item.className = "pawchestrator-step";
-    item.dataset.status = status;
-    item.dataset.active = String(
-      !options.suppressActive && index === activeIndex && pipeline.status !== "completed",
-    );
-
-    const indicator = document.createElement("span");
-    indicator.className = "pawchestrator-step-indicator";
-    indicator.textContent =
-      status === "done" ? "\u2713" : status === "failed" ? "\u00D7" : "\u2022";
-
-    const label = document.createElement("span");
-    label.className = "pawchestrator-step-label";
-    label.textContent = step.label;
-
-    item.append(indicator, label);
-    timeline.append(item);
-  });
-  parent.append(timeline);
-}
-
-function renderReviewTimeline(parent, run) {
-  renderNamedTimeline(parent, run, run.workflow_type === "repair" ? REPAIR_STAGES : REVIEW_STAGES);
-}
-
 function renderPipeline(parent, pipeline) {
   if (!pipeline) {
     return;
@@ -285,7 +96,7 @@ function renderPipeline(parent, pipeline) {
   }
   section.append(title);
 
-  renderPipelineTimeline(section, pipeline);
+  renderTimeline(section, pipeline);
 
   const warnings = Array.isArray(pipeline.warnings) ? pipeline.warnings : [];
   if (warnings.length > 0) {
@@ -306,78 +117,6 @@ function renderPipeline(parent, pipeline) {
     });
     details.append(list);
     section.append(details);
-  }
-
-  parent.append(section);
-}
-
-function epicParentStages(epic) {
-  return Array.isArray(epic?.parent_stages)
-    ? epic.parent_stages.filter((stage) => {
-        const name = stage.stage_name || stage.name;
-        return name === "verify" || name === "implement";
-      })
-    : [];
-}
-
-function renderEpicSection(parent, epic) {
-  if (!epic) {
-    return;
-  }
-
-  const section = document.createElement("section");
-  section.className = "pawchestrator-epic-section";
-
-  const title = document.createElement("div");
-  title.className = "pawchestrator-epic-title";
-  title.textContent = `Epic: ${epicStatus(epic)}`;
-  if (epic.pr_url) {
-    title.append(document.createTextNode(" \u00B7 "));
-    const link = document.createElement("a");
-    link.href = epic.pr_url;
-    link.textContent = "PR";
-    title.append(link);
-  }
-  section.append(title);
-
-  const list = document.createElement("div");
-  list.className = "pawchestrator-epic-runs";
-  const epicDone = isEpicDone(epic);
-  epicSubRuns(epic).forEach((subRun) => {
-    const row = document.createElement("div");
-    row.className = "pawchestrator-epic-run";
-
-    const rowTitle = document.createElement("div");
-    rowTitle.className = "pawchestrator-epic-run-title";
-    const titleText = subRun.title ? ` ${subRun.title}` : "";
-    rowTitle.textContent = `#${subRun.issue_number}${titleText}`;
-
-    row.append(rowTitle);
-    renderPipelineTimeline(row, subRun, { suppressActive: epicDone });
-    list.append(row);
-  });
-  section.append(list);
-
-  const parentStages = epicParentStages(epic);
-  if (parentStages.length > 0) {
-    const verification = document.createElement("div");
-    verification.className = "pawchestrator-epic-verification";
-
-    const verificationTitle = document.createElement("div");
-    verificationTitle.className = "pawchestrator-epic-verification-title";
-    verificationTitle.textContent = "Epic Verification";
-
-    verification.append(verificationTitle);
-    renderPipelineTimeline(
-      verification,
-      {
-        stages: parentStages,
-        current_stage: epic.current_stage,
-        status: epic.status || epicStatus(epic),
-      },
-      { suppressActive: epicDone },
-    );
-    section.append(verification);
   }
 
   parent.append(section);
@@ -474,115 +213,6 @@ function renderEpicArchitectSection(parent, run) {
   }
 
   parent.append(section);
-}
-
-function grillReport(grill) {
-  return grill.grill_report || grill.report || grill.artifact || {};
-}
-
-function countGrillValue(grill, report, countKey, listKey) {
-  if (Number.isFinite(grill[countKey])) {
-    return grill[countKey];
-  }
-  if (Number.isFinite(report[countKey])) {
-    return report[countKey];
-  }
-  return Array.isArray(report[listKey]) ? report[listKey].length : 0;
-}
-
-function grillBodyUpdated(grill, report) {
-  return grill.body_updated === true || report.body_updated === true;
-}
-
-function grillTimestamp(grill) {
-  return grill.updated_at || grill.completed_at || grill.started_at || "";
-}
-
-function formatGrillTimestamp(value) {
-  if (!value) {
-    return "unknown";
-  }
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return String(value);
-  }
-  return date.toLocaleString();
-}
-
-function isGrillActive(grill) {
-  return Boolean(grill && !isRunDone(grill));
-}
-
-function renderGrillDetail(parent, label, value) {
-  const item = document.createElement("div");
-  item.textContent = `${label}: ${value}`;
-  parent.append(item);
-}
-
-function renderGrillSection(parent, grill) {
-  if (!grill) {
-    return;
-  }
-
-  const section = document.createElement("section");
-  section.className = "pawchestrator-grill-section";
-
-  const title = document.createElement("div");
-  title.className = "pawchestrator-grill-title";
-  title.textContent = "Grill";
-  section.append(title);
-
-  const details = document.createElement("div");
-  details.className = "pawchestrator-grill-details";
-
-  const active = isGrillActive(grill);
-  const status = document.createElement("div");
-  status.className = "pawchestrator-grill-status";
-  status.dataset.active = String(active);
-  status.dataset.status = grill.status || "unknown";
-  if (grill.status === GRILL_WAITING_STATUS) {
-    status.dataset.active = "false";
-    status.textContent =
-      "Waiting for your reply. Reply to the questions comment on GitHub to continue.";
-  } else {
-    status.textContent = active ? "[grill] running..." : `Status: ${grill.status || "unknown"}`;
-  }
-  details.append(status);
-
-  const report = grillReport(grill);
-  renderGrillDetail(
-    details,
-    "Criteria suggested",
-    countGrillValue(grill, report, "criteria_count", "suggested_criteria"),
-  );
-  renderGrillDetail(
-    details,
-    "Questions posted",
-    countGrillValue(grill, report, "questions_posted_count", "unanswerable_questions"),
-  );
-  renderGrillDetail(details, "Issue body updated", grillBodyUpdated(grill, report) ? "yes" : "no");
-  renderGrillDetail(details, "Last grill run", formatGrillTimestamp(grillTimestamp(grill)));
-
-  if (grill.status === "grill_failed" || grill.status === "failed") {
-    const error = document.createElement("div");
-    error.className = "pawchestrator-grill-error";
-    error.textContent = summarizeError(grill);
-    details.append(error);
-  }
-
-  section.append(details);
-  parent.append(section);
-}
-
-function grillButtonLabel(grill) {
-  return grill?.status === GRILL_WAITING_STATUS ? REGRILL_LABEL : GRILL_LABEL;
-}
-
-export function updateGrillButton(grill) {
-  const button = document.getElementById(GRILL_ID);
-  if (button) {
-    setButtonText(button, grillButtonLabel(grill));
-  }
 }
 
 function createGrillButton(grill) {
