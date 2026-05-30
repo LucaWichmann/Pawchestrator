@@ -12,7 +12,6 @@ import {
   OFFLINE_MESSAGE,
   PANEL_ID,
   PAW,
-  PIPELINE_ACTIVE,
   PIPELINE_GRILL_WAITING_CONFIRM_MESSAGE,
   PIPELINE_STAGES,
   PLAN_APPROVAL_ID,
@@ -26,7 +25,6 @@ import {
   REINJECT_DEBOUNCE_MS,
   REPAIR_STAGES,
   REVIEW_STAGES,
-  RUN_DONE,
   STAGE_DONE,
   START_ID,
   WARNING,
@@ -40,7 +38,24 @@ import {
   getOrAcquireToken,
   requestJson,
 } from "./api";
+import {
+  findIssueBodyContainer,
+  findPrConversationContainer,
+  maybeAutoExpandForPipeline,
+  setPanelExpanded,
+  setPanelStatus,
+  setPanelSummary,
+  shouldAutoExpand,
+} from "./panel/common";
 import { isIssuePage, isPrPage, parseIssueReference, parsePrReference } from "./router";
+import {
+  currentRun,
+  epicStatus,
+  epicSubRuns,
+  isEpicDone,
+  isRunDone,
+  summarizeRun,
+} from "./summarize";
 import { state } from "./state";
 import { injectStyles } from "./styles";
 
@@ -58,202 +73,12 @@ import { injectStyles } from "./styles";
     return Boolean(document.querySelector('[data-status="pullMerged"]'));
   }
 
-  function activePanel() {
-    return document.getElementById(PANEL_ID) || document.getElementById(PR_PANEL_ID);
-  }
-
   function prRunKey() {
     return `pawchestrator_pr_run:${window.location.pathname}`;
   }
 
   function epicArchitectRunKey() {
     return `pawchestrator_epic_architect_run:${window.location.pathname}`;
-  }
-
-  function findPrConversationContainer() {
-    const selectors = [
-      "#discussion_bucket",
-      "#partial-discussion-header",
-      '[data-testid="issue-viewer-issue-container"]',
-      ".js-discussion",
-    ];
-    return selectors.map((selector) => document.querySelector(selector)).find(Boolean) || null;
-  }
-
-  function findIssueBodyContainer() {
-    const selectors = [
-      ".IssueBody-module__outerContainer__ULNTb",
-      '[class*="IssueBody-module__outerContainer"]',
-    ];
-    return selectors.map((selector) => document.querySelector(selector)).find(Boolean) || null;
-  }
-
-  function setPanelSummary(message) {
-    const panel = activePanel();
-    const status = panel && panel.querySelector(".pawchestrator-panel-status-text");
-    if (status) {
-      status.textContent = message;
-    }
-  }
-
-  function setPanelStatus(state) {
-    const panel = activePanel();
-    if (panel) {
-      panel.dataset.status = state;
-    }
-  }
-
-  function setPanelExpanded(expanded) {
-    const panel = activePanel();
-    if (!panel) {
-      return;
-    }
-    panel.dataset.expanded = String(expanded);
-    const toggle = panel.querySelector(".pawchestrator-panel-toggle");
-    if (toggle) {
-      toggle.textContent = expanded ? "\u25BE" : "\u25B8";
-      toggle.setAttribute("aria-expanded", String(expanded));
-    }
-  }
-
-  function shouldAutoExpand(status) {
-    return Boolean(
-      status &&
-      (status.pipeline ||
-        status.grill ||
-        status.epic_architect ||
-        epicSubRuns(status.epic).some(
-          (run) => run.status === "running" || /_running$/.test(run.status || ""),
-        )),
-    );
-  }
-
-  function isPipelineVisible(pipeline) {
-    return Boolean(
-      pipeline &&
-      (PIPELINE_ACTIVE.has(pipeline.status) ||
-        pipeline.status === "completed" ||
-        pipeline.status === "failed"),
-    );
-  }
-
-  function maybeAutoExpandForPipeline(status) {
-    const pipeline = status && status.pipeline;
-    if (!pipeline) {
-      state.lastPipelineExpansionKey = null;
-      return;
-    }
-
-    const key = `${pipeline.run_id || ""}:${pipeline.status || ""}:${pipeline.current_stage || ""}`;
-    const shouldExpand = isPipelineVisible(pipeline) && key !== state.lastPipelineExpansionKey;
-    state.lastPipelineExpansionKey = key;
-    if (shouldExpand) {
-      setPanelExpanded(true);
-    }
-  }
-
-  function currentRun(status) {
-    if (!status) {
-      return null;
-    }
-    const runs = [
-      epicSummaryRun(status.epic),
-      status.pipeline,
-      status.grill,
-      status.epic_architect,
-    ].filter(Boolean);
-    return runs.find((run) => !isRunDone(run)) || runs[0] || null;
-  }
-
-  function isRunDone(run) {
-    const status = typeof run === "string" ? run : run?.status;
-    return Boolean(status && (RUN_DONE.has(status) || /_failed$/.test(status)));
-  }
-
-  function isEpicDone(epic) {
-    return Boolean(epic && isRunDone(epic.status || epicStatus(epic)));
-  }
-
-  function summarizeError(run) {
-    const failedStage = (run.stages || []).find((stage) => stage.status === "failed");
-    if (!failedStage) {
-      return "Run failed";
-    }
-
-    const stageName = failedStage.stage_name || failedStage.name || run.current_stage || "unknown";
-    const error = failedStage.error ? `: ${failedStage.error}` : "";
-    return `[${stageName}] failed${error}`;
-  }
-
-  function summarizeGrillCompletion(run) {
-    const report = run.grill_report || run.report || run.artifact || {};
-    const criteria = Array.isArray(report.suggested_criteria)
-      ? report.suggested_criteria.length
-      : null;
-    const questions = Array.isArray(report.unanswerable_questions)
-      ? report.unanswerable_questions.length
-      : null;
-    const bodyUpdated = report.body_updated === true;
-
-    if (criteria !== null || questions !== null || bodyUpdated) {
-      const parts = [];
-      if (bodyUpdated) {
-        parts.push("Criteria appended");
-      } else if (criteria === 0) {
-        parts.push("No new criteria");
-      } else if (criteria !== null) {
-        parts.push(`${criteria} ${criteria === 1 ? "criterion" : "criteria"} suggested`);
-      }
-
-      if (questions !== null) {
-        parts.push(
-          questions === 0
-            ? "No questions - issue ready"
-            : `${questions} ${questions === 1 ? "question" : "questions"} posted`,
-        );
-      }
-
-      if (parts.length > 0) {
-        return parts.join(" \u00B7 ");
-      }
-    }
-
-    return "Grill completed";
-  }
-
-  function summarizeRun(run) {
-    if (!run) {
-      return "Ready";
-    }
-    if (run.status === "completed") {
-      return run.pr_url ? "Draft PR ready" : "Run completed";
-    }
-    if (run.status === "failed") {
-      return summarizeError(run);
-    }
-    if (run.status === "grill_complete") {
-      return summarizeGrillCompletion(run);
-    }
-    if (run.status === "grill_failed") {
-      return summarizeError(run);
-    }
-    if (run.workflow_type === "epic_architect") {
-      if (isRunDone(run)) {
-        return run.status === "completed" || run.status === "epic_architect_complete"
-          ? "Epic created"
-          : summarizeError(run);
-      }
-      const stage = run.current_stage || "epic_scout";
-      const stageStatus = (run.status || "pending").replace(/^(epic_scout|epic_architect)_/, "");
-      return `[${stage}] ${stageStatus}...`;
-    }
-    if (run.workflow_type === "epic") {
-      return `Epic ${run.status || "running"}`;
-    }
-
-    const stage = run.current_stage || (run.workflow_type === "grill" ? "grill" : "queued");
-    const stageStatus = (run.status || "pending").replace(/^grill_/, "");
-    return `[${stage}] ${stageStatus}...`;
   }
 
   function panelStatusForRun(run) {
@@ -844,10 +669,6 @@ import { injectStyles } from "./styles";
     }
   }
 
-  function epicSubRuns(epic) {
-    return Array.isArray(epic?.sub_runs) ? epic.sub_runs : [];
-  }
-
   function epicParentStages(epic) {
     return Array.isArray(epic?.parent_stages)
       ? epic.parent_stages.filter((stage) => {
@@ -855,35 +676,6 @@ import { injectStyles } from "./styles";
           return name === "verify" || name === "implement";
         })
       : [];
-  }
-
-  function epicStatus(epic) {
-    if (epic?.status === "epic_complete") {
-      return "completed";
-    }
-    if (epic?.status === "epic_failed") {
-      return "failed";
-    }
-    const runs = epicSubRuns(epic);
-    if (runs.some((run) => run.status === "failed" || /_failed$/.test(run.status || ""))) {
-      return "failed";
-    }
-    if (runs.length > 0 && runs.every((run) => run.status === "completed")) {
-      return "completed";
-    }
-    return "running";
-  }
-
-  function epicSummaryRun(epic) {
-    if (!epic) {
-      return null;
-    }
-    return {
-      workflow_type: "epic",
-      status: epic.status || epicStatus(epic),
-      current_stage: "epic",
-      pr_url: epic.pr_url,
-    };
   }
 
   function renderEpicSection(parent, epic) {
