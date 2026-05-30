@@ -79,7 +79,7 @@ uv run pawchestrator serve
 Install [Tampermonkey](https://www.tampermonkey.net/) ([Chrome](https://chrome.google.com/webstore/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo) · [Firefox](https://addons.mozilla.org/firefox/addon/tampermonkey/)), then install the userscript:
 
 <p>
-  <a href="https://raw.githubusercontent.com/LucaWichmann/Pawchestrator/main/Pawchestrator.user.js"><img alt="Install userscript" src="https://img.shields.io/badge/install-userscript-2ea44f?style=for-the-badge"></a>
+  <a href="https://raw.githubusercontent.com/LucaWichmann/Pawchestrator/main/dist/pawchestrator.user.js"><img alt="Install userscript" src="https://img.shields.io/badge/install-userscript-2ea44f?style=for-the-badge"></a>
 </p>
 
 **3. Register your repo**
