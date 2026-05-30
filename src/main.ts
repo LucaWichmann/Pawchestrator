@@ -1,21 +1,11 @@
 import {
-  CREATE_ISSUES_ID,
   EPIC_ARCHITECT_ID,
-  EPIC_ARCHITECT_STAGES,
   GRILL_ID,
   GRILL_REPLY_TOOLTIP,
-  GRILL_WAITING_STATUS,
   PANEL_ID,
-  PIPELINE_GRILL_WAITING_CONFIRM_MESSAGE,
-  PIPELINE_STAGES,
   POLL_INTERVAL_MS,
   PR_PANEL_ID,
-  PR_REPAIR_ID,
-  PR_REVIEW_ID,
-  REGRILL_CONFIRM_MESSAGE,
   REINJECT_DEBOUNCE_MS,
-  REPAIR_STAGES,
-  REVIEW_STAGES,
   START_ID,
 } from "./constants";
 import {
@@ -23,12 +13,10 @@ import {
   fetchPrReviewState,
   fetchPrRun,
   fetchPrStatus,
-  getOrAcquireToken,
   requestJson,
 } from "./api";
-import { setButtonText, setPanelExpanded, setPanelSummary } from "./panel/common";
+import { setButtonText, setPanelSummary } from "./panel/common";
 import { isIssuePage, isPrPage, parseIssueReference, parsePrReference } from "./router";
-import { showConfirmDialog } from "./panel/confirm";
 import {
   injectIssuePanel,
   renderOffline as renderIssueOffline,
@@ -47,6 +35,14 @@ import { renderPlanApprovalSubView, resetPlanAttemptForRun } from "./render/plan
 import { currentRun, isEpicDone, isRunDone } from "./summarize";
 import { state } from "./state";
 import { injectStyles } from "./styles";
+import { startEpicArchitect as startEpicArchitectAction } from "./actions/epic-architect";
+import { startGrill as startGrillAction } from "./actions/grill";
+import { startRun as startRunAction } from "./actions/run";
+import {
+  startCreateIssues as startCreateIssuesAction,
+  startRepair as startRepairAction,
+  startReview as startReviewAction,
+} from "./actions/review";
 
 (function () {
   "use strict";
@@ -64,10 +60,6 @@ import { injectStyles } from "./styles";
 
   function prRunKey() {
     return `pawchestrator_pr_run:${window.location.pathname}`;
-  }
-
-  function epicArchitectRunKey() {
-    return `pawchestrator_epic_architect_run:${window.location.pathname}`;
   }
 
   function commentElementId(commentId) {
@@ -333,278 +325,28 @@ import { injectStyles } from "./styles";
     }
   }
 
-  async function startRun() {
-    const button = document.getElementById(START_ID);
-    if (button) {
-      button.disabled = true;
-    }
-
-    try {
-      const issue = parseIssueReference();
-      await getOrAcquireToken(setPanelSummary);
-      const status = await fetchIssueStatus(issue);
-      if (status.epic_confirm && !confirmEpicStart(status.epic)) {
-        if (button) {
-          button.disabled = false;
-        }
-        return;
-      }
-      if (status.grill?.status === GRILL_WAITING_STATUS) {
-        const confirmed = await showConfirmDialog(PIPELINE_GRILL_WAITING_CONFIRM_MESSAGE, {
-          title: "Start agentic work?",
-          confirmLabel: "Yes",
-          cancelLabel: "No",
-        });
-        if (!confirmed) {
-          if (button) {
-            button.disabled = false;
-          }
-          return;
-        }
-      }
-      setPanelSummary("[snapshot] starting...");
-      state.panelExpandedByUser = true;
-      setPanelExpanded(true);
-      const response = await requestJson("/issue/start", {
-        method: "POST",
-        label: "Start request",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(issue),
-      });
-      if (response?.type === "epic") {
-        renderStatus({
-          ...status,
-          pipeline: null,
-          epic: epicFromStartResponse(response),
-        });
-      }
-      startIssueStatusPolling();
-    } catch (error) {
-      setPanelSummary(error.message);
-      if (button) {
-        button.disabled = false;
-      }
-    }
+  function startRun() {
+    return startRunAction({ renderStatus, startIssueStatusPolling });
   }
 
-  function confirmEpicStart(epic) {
-    const runs = epicSubRuns(epic);
-    const lines = runs.map((run) => {
-      const title = run.title ? ` ${run.title}` : "";
-      return `#${run.issue_number}${title}`;
-    });
-    const list = lines.length > 0 ? `\n\n${lines.join("\n")}` : "";
-    return window.confirm(`Work on this epic issue and its sub-issues?${list}`);
+  function startGrill() {
+    return startGrillAction({ startIssueStatusPolling, updateGrillButton });
   }
 
-  function epicFromStartResponse(response) {
-    return {
-      run_id: response.run_id,
-      group_id: response.group_id,
-      status: "epic_running",
-      mode: response.mode,
-      branch: response.branch,
-      pr_url: response.pr_url,
-      sub_runs: (response.sub_runs || []).map((run) => ({
-        issue_number: run.issue_number,
-        run_id: run.run_id,
-        title: run.title,
-        status: "pending",
-        current_stage: null,
-        workflow_type: "pipeline",
-        stages: PIPELINE_STAGES.map((stage_name) => ({ stage_name, status: "pending" })),
-        warnings: [],
-      })),
-    };
+  function startEpicArchitect() {
+    return startEpicArchitectAction({ renderStatus, startIssueStatusPolling });
   }
 
-  async function startGrill() {
-    const button = document.getElementById(GRILL_ID);
-    try {
-      const issue = parseIssueReference();
-      await getOrAcquireToken(setPanelSummary);
-      const status = state.latestIssueStatus || (await fetchIssueStatus(issue));
-      state.latestIssueStatus = status;
-      updateGrillButton(status.grill);
-      if (status.grill?.status === GRILL_WAITING_STATUS) {
-        const confirmed = await showConfirmDialog(REGRILL_CONFIRM_MESSAGE, {
-          title: "Re-grill issue?",
-          confirmLabel: "Yes",
-          cancelLabel: "No",
-        });
-        if (!confirmed) {
-          return;
-        }
-      }
-      if (button) {
-        button.disabled = true;
-      }
-      setPanelSummary("[grill] starting...");
-      state.panelExpandedByUser = true;
-      setPanelExpanded(true);
-      await requestJson("/issue/grill", {
-        method: "POST",
-        label: "Grill request",
-        statusSetter: setPanelSummary,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(issue),
-      });
-      startIssueStatusPolling();
-    } catch (error) {
-      setPanelSummary(error.message);
-      if (button) {
-        button.disabled = false;
-      }
-    }
+  function startReview() {
+    return startReviewAction({ renderPrStatus, startPrStatusPolling });
   }
 
-  async function startEpicArchitect() {
-    const button = document.getElementById(EPIC_ARCHITECT_ID);
-    if (button) {
-      button.disabled = true;
-    }
-
-    try {
-      const issue = parseIssueReference();
-      await getOrAcquireToken(setPanelSummary);
-      setPanelSummary("[epic_scout] starting...");
-      state.panelExpandedByUser = true;
-      setPanelExpanded(true);
-      const response = await requestJson("/issue/epic-architect", {
-        method: "POST",
-        label: "EpicArchitect request",
-        statusSetter: setPanelSummary,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(issue),
-      });
-      await GM_setValue(epicArchitectRunKey(), response.run_id);
-      renderStatus({
-        ...(state.latestIssueStatus || {}),
-        epic_architect: {
-          run_id: response.run_id,
-          workflow_type: "epic_architect",
-          status: "epic_scout_running",
-          current_stage: "epic_scout",
-          stages: EPIC_ARCHITECT_STAGES.map((stage_name) => ({
-            stage_name,
-            status: stage_name === "epic_scout" ? "running" : "pending",
-          })),
-          created_sub_issues: [],
-        },
-      });
-      startIssueStatusPolling();
-    } catch (error) {
-      setPanelSummary(error.message);
-      if (button) {
-        button.disabled = false;
-      }
-    }
+  function startRepair() {
+    return startRepairAction({ renderPrStatus, startPrStatusPolling });
   }
 
-  async function startReview() {
-    const button = document.getElementById(PR_REVIEW_ID);
-    if (button) {
-      button.disabled = true;
-    }
-
-    try {
-      const pr = parsePrReference();
-      await getOrAcquireToken(setPanelSummary);
-      setPanelSummary("[review] starting...");
-      state.panelExpandedByUser = true;
-      setPanelExpanded(true);
-      const response = await requestJson("/runs/review/start", {
-        method: "POST",
-        label: "Review start request",
-        statusSetter: setPanelSummary,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(pr),
-      });
-      await GM_setValue(prRunKey(), response.run_id);
-      renderPrStatus({
-        run_id: response.run_id,
-        workflow_type: "review",
-        status: "review_running",
-        current_stage: "review",
-        stages: REVIEW_STAGES.map((stage_name) => ({
-          stage_name,
-          status: stage_name === "review" ? "running" : "pending",
-        })),
-      });
-      startPrStatusPolling();
-    } catch (error) {
-      setPanelSummary(error.message);
-      if (button) {
-        button.disabled = false;
-      }
-    }
-  }
-
-  async function startRepair() {
-    const button = document.getElementById(PR_REPAIR_ID);
-    if (button) {
-      button.disabled = true;
-    }
-
-    try {
-      const pr = parsePrReference();
-      await getOrAcquireToken(setPanelSummary);
-      setPanelSummary("[repair] starting...");
-      state.panelExpandedByUser = true;
-      setPanelExpanded(true);
-      const response = await requestJson("/runs/repair/start", {
-        method: "POST",
-        label: "Repair start request",
-        statusSetter: setPanelSummary,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(pr),
-      });
-      await GM_setValue(prRunKey(), response.run_id);
-      renderPrStatus({
-        run_id: response.run_id,
-        workflow_type: "repair",
-        status: "repair_running",
-        current_stage: "repair",
-        stages: REPAIR_STAGES.map((stage_name) => ({
-          stage_name,
-          status: stage_name === "repair" ? "running" : "pending",
-        })),
-      });
-      startPrStatusPolling();
-    } catch (error) {
-      setPanelSummary(error.message);
-      if (button) {
-        button.disabled = false;
-      }
-    }
-  }
-
-  async function createIssues() {
-    const runId =
-      state.latestPrRun?.id || state.latestPrRun?.run_id || (await GM_getValue(prRunKey()));
-    const button = document.getElementById(CREATE_ISSUES_ID);
-    if (button) {
-      button.disabled = true;
-    }
-
-    try {
-      if (!runId) {
-        throw new Error("No review run found for this PR");
-      }
-      setPanelSummary("[issues] creating...");
-      const run = await requestJson(`/runs/${runId}/create-issues`, {
-        method: "POST",
-        label: "Create issues request",
-        statusSetter: setPanelSummary,
-      });
-      renderPrStatus(run);
-      startPrStatusPolling();
-    } catch (error) {
-      setPanelSummary(error.message);
-      if (button) {
-        button.disabled = false;
-      }
-    }
+  function createIssues() {
+    return startCreateIssuesAction({ renderPrStatus, startPrStatusPolling });
   }
 
   function removeInjectedControls() {
