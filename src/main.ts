@@ -1,680 +1,46 @@
+import {
+  API_BASE,
+  CONFIRM_OVERLAY_ID,
+  CONSTRUCTION,
+  CREATE_ISSUES_ID,
+  EPIC_ARCHITECT_ID,
+  EPIC_ARCHITECT_STAGES,
+  FIRE,
+  GRILL_ID,
+  GRILL_LABEL,
+  GRILL_REPLY_TOOLTIP,
+  GRILL_WAITING_STATUS,
+  OFFLINE_MESSAGE,
+  PANEL_ID,
+  PAW,
+  PIPELINE_ACTIVE,
+  PIPELINE_GRILL_WAITING_CONFIRM_MESSAGE,
+  PIPELINE_STAGES,
+  PLAN_APPROVAL_ID,
+  PLAN_APPROVAL_MAX_ATTEMPTS,
+  POLL_INTERVAL_MS,
+  PR_PANEL_ID,
+  PR_REPAIR_ID,
+  PR_REVIEW_ID,
+  REGRILL_CONFIRM_MESSAGE,
+  REGRILL_LABEL,
+  REINJECT_DEBOUNCE_MS,
+  REPAIR_STAGES,
+  REVIEW_STAGES,
+  RUN_DONE,
+  STAGE_DONE,
+  START_ID,
+  TOKEN_KEY,
+  WARNING,
+} from "./constants";
+import { isIssuePage, isPrPage, parseIssueReference, parsePrReference } from "./router";
+import { state } from "./state";
+import { injectStyles } from "./styles";
 
 (function () {
   "use strict";
 
-  const API_BASE = "http://127.0.0.1:38472";
-  const PANEL_ID = "pawchestrator-panel";
-  const PR_PANEL_ID = "pawchestrator-pr-panel";
-  const START_ID = "pawchestrator-start";
-  const GRILL_ID = "pawchestrator-grill";
-  const EPIC_ARCHITECT_ID = "pawchestrator-epic-architect";
-  const PR_REVIEW_ID = "pawchestrator-review";
-  const PR_REPAIR_ID = "pawchestrator-repair";
-  const CREATE_ISSUES_ID = "pawchestrator-create-issues";
-  const PLAN_APPROVAL_ID = "pawchestrator-plan-approval";
-  const CONFIRM_OVERLAY_ID = "pawchestrator-confirm-overlay";
-  const POLL_INTERVAL_MS = 3000;
-  const PLAN_APPROVAL_MAX_ATTEMPTS = 3;
-  const REINJECT_DEBOUNCE_MS = 100;
-  const TOKEN_KEY = "pawchestrator_token";
-  const PIPELINE_STAGES = ["snapshot", "scout", "plan", "implement", "verify", "pr"];
-  const REVIEW_STAGES = ["review", "post", "issues"];
-  const REPAIR_STAGES = ["repair", "push"];
-  const EPIC_ARCHITECT_STAGES = ["epic_scout", "epic_architect", "creating"];
-  const PAW = "\uD83D\uDC3E";
-  const FIRE = "\uD83D\uDD25";
-  const CONSTRUCTION = "\uD83C\uDFD7\uFE0F";
-  const WARNING = "\u26A0";
-  const OFFLINE_MESSAGE = "Pawchestrator not running \u2014 start with `pawchestrator serve`";
-  const GRILL_WAITING_STATUS = "grill_waiting";
-  const GRILL_LABEL = `${FIRE} Grill Issue`;
-  const REGRILL_LABEL = `${FIRE} Re-grill`;
-  const REGRILL_CONFIRM_MESSAGE =
-    "Grill is still waiting for answers on this issue. Are you sure you want to re-grill?";
-  const PIPELINE_GRILL_WAITING_CONFIRM_MESSAGE =
-    "Grill is still waiting for answers on this issue. Are you sure you want to start agentic work?";
-  const RUN_DONE = new Set([
-    "completed",
-    "failed",
-    "grill_complete",
-    "grill_failed",
-    "epic_complete",
-    "epic_failed",
-    "post_complete",
-    "post_failed",
-    "issues_complete",
-    "issues_failed",
-    "issues_skipped",
-    "review_failed",
-    "repair_complete",
-    "repair_failed",
-    "push_complete",
-    "push_failed",
-    "epic_architect_complete",
-    "epic_architect_failed",
-  ]);
-  const PIPELINE_ACTIVE = new Set([
-    "snapshot_running",
-    "snapshot_complete",
-    "scout_running",
-    "scout_complete",
-    "plan_running",
-    "plan_complete",
-    "awaiting_plan_approval",
-    "implement_running",
-    "implement_complete",
-    "verify_running",
-    "verify_complete",
-    "verify_skipped",
-    "pr_running",
-    "pr_complete",
-    "completed",
-  ]);
-  const STAGE_DONE = new Set(["complete", "completed", "skipped"]);
-  const GRILL_REPLY_TOOLTIP =
-    "Replying to Pawchestrator questions \u2014 submitting will continue the grilling session.";
-
-  let activePoll = null;
-  let activePrPoll = null;
-  let activePathname = window.location.pathname;
-  let panelExpandedByUser = null;
-  let lastPipelineExpansionKey = null;
-  let reinjectTimer = null;
-  let grillReplyObserverState = null;
-  let latestIssueStatus = null;
-  let latestPrRun = null;
-  let latestPrReviewState = null;
-  let planAttempt = 1;
-  let planAttemptRunId = null;
-  const rejectedPlanRunIds = new Set();
-
-  GM_addStyle(`
-    #${START_ID},
-    #${GRILL_ID},
-    #${EPIC_ARCHITECT_ID},
-    #${PR_REVIEW_ID},
-    #${PR_REPAIR_ID},
-    #${CREATE_ISSUES_ID} {
-      white-space: nowrap;
-    }
-
-    #${START_ID}:disabled,
-    #${GRILL_ID}:disabled,
-    #${EPIC_ARCHITECT_ID}:disabled,
-    #${PR_REVIEW_ID}:disabled,
-    #${PR_REPAIR_ID}:disabled,
-    #${CREATE_ISSUES_ID}:disabled {
-      cursor: not-allowed;
-      opacity: 0.65;
-    }
-
-    #${PANEL_ID},
-    #${PR_PANEL_ID} {
-      background: var(--bgColor-default, #ffffff);
-      border: 1px solid var(--borderColor-default, #d0d7de);
-      border-left: 4px solid var(--borderColor-default, #d0d7de);
-      border-radius: 6px;
-      color: var(--fgColor-default, #24292f);
-      font-size: 13px;
-      line-height: 20px;
-      margin: 8px 0 16px;
-    }
-
-    #${PANEL_ID}[data-status="idle"],
-    #${PANEL_ID}[data-status="offline"],
-    #${PR_PANEL_ID}[data-status="idle"],
-    #${PR_PANEL_ID}[data-status="offline"] {
-      border-left-color: var(--borderColor-default, #d0d7de);
-    }
-
-    #${PANEL_ID}[data-status="running"],
-    #${PR_PANEL_ID}[data-status="running"] {
-      border-left-color: var(--fgColor-accent, #0969da);
-    }
-
-    #${PANEL_ID}[data-status="done"],
-    #${PR_PANEL_ID}[data-status="done"] {
-      border-left-color: var(--fgColor-success, #1a7f37);
-    }
-
-    #${PANEL_ID}[data-status="failed"],
-    #${PR_PANEL_ID}[data-status="failed"] {
-      border-left-color: var(--fgColor-danger, #cf222e);
-    }
-
-    #${PANEL_ID} .pawchestrator-panel-bar,
-    #${PR_PANEL_ID} .pawchestrator-panel-bar {
-      align-items: center;
-      display: flex;
-      gap: 8px;
-      min-height: 38px;
-      padding: 8px 12px;
-    }
-
-    #${PANEL_ID} .pawchestrator-panel-toggle,
-    #${PR_PANEL_ID} .pawchestrator-panel-toggle {
-      align-items: center;
-      background: transparent;
-      border: 0;
-      color: var(--fgColor-muted, #59636e);
-      cursor: pointer;
-      display: inline-flex;
-      font: inherit;
-      height: 24px;
-      justify-content: center;
-      padding: 0;
-      width: 24px;
-    }
-
-    #${PANEL_ID} .pawchestrator-panel-summary,
-    #${PR_PANEL_ID} .pawchestrator-panel-summary {
-      align-items: center;
-      display: flex;
-      flex: 1;
-      gap: 6px;
-      min-width: 0;
-      overflow-wrap: anywhere;
-    }
-
-    #${PANEL_ID} .pawchestrator-panel-brand-name,
-    #${PR_PANEL_ID} .pawchestrator-panel-brand-name {
-      flex: 0 0 auto;
-      font-weight: 600;
-    }
-
-    #${PANEL_ID} .pawchestrator-panel-status-text,
-    #${PR_PANEL_ID} .pawchestrator-panel-status-text {
-      min-width: 0;
-    }
-
-    #${PANEL_ID} .pawchestrator-panel-body,
-    #${PR_PANEL_ID} .pawchestrator-panel-body {
-      border-top: 1px solid var(--borderColor-default, #d0d7de);
-      display: none;
-      padding: 10px 12px 12px;
-    }
-
-    #${PANEL_ID}[data-expanded="true"] .pawchestrator-panel-body,
-    #${PR_PANEL_ID}[data-expanded="true"] .pawchestrator-panel-body {
-      display: block;
-    }
-
-    #${PANEL_ID} .pawchestrator-readiness-row,
-    #${PR_PANEL_ID} .pawchestrator-readiness-row {
-      align-items: center;
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px 16px;
-    }
-
-    #${PANEL_ID} .pawchestrator-readiness-item,
-    #${PR_PANEL_ID} .pawchestrator-readiness-item {
-      color: var(--fgColor-muted, #59636e);
-      white-space: nowrap;
-    }
-
-    #${PANEL_ID} .pawchestrator-readiness-item[data-ready="true"],
-    #${PR_PANEL_ID} .pawchestrator-readiness-item[data-ready="true"] {
-      color: var(--fgColor-success, #1a7f37);
-    }
-
-    #${PANEL_ID} .pawchestrator-readiness-item[data-ready="false"],
-    #${PR_PANEL_ID} .pawchestrator-readiness-item[data-ready="false"] {
-      color: var(--fgColor-danger, #cf222e);
-    }
-
-    #${PANEL_ID} .pawchestrator-run-line,
-    #${PR_PANEL_ID} .pawchestrator-run-line {
-      color: var(--fgColor-muted, #59636e);
-      margin-top: 8px;
-    }
-
-    #${PANEL_ID} .pawchestrator-pipeline,
-    #${PR_PANEL_ID} .pawchestrator-pipeline {
-      border-top: 1px solid var(--borderColor-muted, #d8dee4);
-      margin-top: 10px;
-      padding-top: 10px;
-    }
-
-    #${PANEL_ID} .pawchestrator-grill-section {
-      border-top: 1px solid var(--borderColor-muted, #d8dee4);
-      margin-top: 10px;
-      padding-top: 10px;
-    }
-
-    #${PANEL_ID} .pawchestrator-epic-architect-section {
-      border-top: 1px solid var(--borderColor-muted, #d8dee4);
-      margin-top: 10px;
-      padding-top: 10px;
-    }
-
-    #${PANEL_ID} .pawchestrator-epic-section {
-      border-top: 1px solid var(--borderColor-muted, #d8dee4);
-      margin-top: 10px;
-      padding-top: 10px;
-    }
-
-    #${PANEL_ID} .pawchestrator-pipeline-title,
-    #${PR_PANEL_ID} .pawchestrator-pipeline-title {
-      color: var(--fgColor-muted, #59636e);
-      font-weight: 600;
-      margin-bottom: 8px;
-    }
-
-    #${PANEL_ID} #${PLAN_APPROVAL_ID} {
-      border-top: 1px solid var(--borderColor-muted, #d8dee4);
-      display: grid;
-      gap: 10px;
-      margin-top: 10px;
-      padding-top: 10px;
-    }
-
-    #${PANEL_ID} #${PLAN_APPROVAL_ID}.re-planning {
-      align-items: center;
-      color: var(--fgColor-muted, #59636e);
-      display: flex;
-      gap: 8px;
-    }
-
-    #${PANEL_ID} #${PLAN_APPROVAL_ID} .spinner {
-      animation: pawchestrator-spin 0.8s linear infinite;
-      border: 2px solid var(--borderColor-muted, #d8dee4);
-      border-top-color: var(--fgColor-accent, #0969da);
-      border-radius: 50%;
-      display: inline-block;
-      height: 14px;
-      width: 14px;
-    }
-
-    @keyframes pawchestrator-spin {
-      to {
-        transform: rotate(360deg);
-      }
-    }
-
-    #${PANEL_ID} .pawchestrator-plan-approval-header {
-      align-items: center;
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      justify-content: space-between;
-    }
-
-    #${PANEL_ID} .pawchestrator-plan-approval-title,
-    #${PANEL_ID} .pawchestrator-plan-approval-section-title {
-      color: var(--fgColor-muted, #59636e);
-      font-weight: 600;
-      margin: 0;
-    }
-
-    #${PANEL_ID} .pawchestrator-plan-approval-summary {
-      color: var(--fgColor-default, #24292f);
-      white-space: pre-wrap;
-    }
-
-    #${PANEL_ID} .pawchestrator-plan-approval-attempt {
-      color: var(--fgColor-muted, #59636e);
-      font-size: 12px;
-      font-weight: 600;
-    }
-
-    #${PANEL_ID} .risk-badge {
-      border: 1px solid transparent;
-      border-radius: 999px;
-      display: inline-flex;
-      font-size: 12px;
-      font-weight: 600;
-      line-height: 18px;
-      padding: 0 8px;
-      white-space: nowrap;
-    }
-
-    #${PANEL_ID} .risk-low {
-      background: var(--bgColor-success-muted, #dafbe1);
-      border-color: var(--borderColor-success-muted, #4ac26b);
-      color: var(--fgColor-success, #1a7f37);
-    }
-
-    #${PANEL_ID} .risk-medium {
-      background: var(--bgColor-attention-muted, #fff8c5);
-      border-color: var(--borderColor-attention-muted, #d4a72c);
-      color: var(--fgColor-attention, #9a6700);
-    }
-
-    #${PANEL_ID} .risk-high {
-      background: var(--bgColor-danger-muted, #ffebe9);
-      border-color: var(--borderColor-danger-muted, #ff8182);
-      color: var(--fgColor-danger, #cf222e);
-    }
-
-    #${PANEL_ID} .pawchestrator-plan-approval-list {
-      margin: 4px 0 0;
-      padding-left: 18px;
-    }
-
-    #${PANEL_ID} .pawchestrator-plan-step-files,
-    #${PANEL_ID} .pawchestrator-plan-step-notes {
-      color: var(--fgColor-muted, #59636e);
-      margin-top: 2px;
-    }
-
-    #${PANEL_ID} .pawchestrator-plan-approval-actions {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      justify-content: flex-end;
-    }
-
-    #${PANEL_ID} .pawchestrator-plan-feedback {
-      display: grid;
-      gap: 8px;
-    }
-
-    #${PANEL_ID} .pawchestrator-plan-feedback textarea {
-      background: var(--bgColor-default, #ffffff);
-      border: 1px solid var(--borderColor-default, #d0d7de);
-      border-radius: 6px;
-      color: var(--fgColor-default, #24292f);
-      font: inherit;
-      min-height: 84px;
-      padding: 8px;
-      resize: vertical;
-      width: 100%;
-    }
-
-    #${PANEL_ID} .pawchestrator-plan-approval-error {
-      color: var(--fgColor-danger, #cf222e);
-      font-weight: 600;
-    }
-
-    #${PANEL_ID} .pawchestrator-grill-title {
-      color: var(--fgColor-muted, #59636e);
-      font-weight: 600;
-      margin-bottom: 6px;
-    }
-
-    #${PANEL_ID} .pawchestrator-epic-architect-title {
-      color: var(--fgColor-muted, #59636e);
-      font-weight: 600;
-      margin-bottom: 8px;
-    }
-
-    #${PANEL_ID} .pawchestrator-epic-architect-analysis {
-      margin-top: 8px;
-    }
-
-    #${PANEL_ID} .pawchestrator-epic-architect-created {
-      margin: 6px 0 0;
-      padding-left: 18px;
-    }
-
-    #${PANEL_ID} .pawchestrator-epic-architect-error {
-      color: var(--fgColor-danger, #cf222e);
-      margin-top: 8px;
-    }
-
-    #${PANEL_ID} .pawchestrator-epic-architect-partial {
-      color: var(--fgColor-muted, #59636e);
-      margin-top: 4px;
-    }
-
-    #${PANEL_ID} .pawchestrator-epic-title {
-      color: var(--fgColor-muted, #59636e);
-      font-weight: 600;
-      margin-bottom: 8px;
-    }
-
-    #${PANEL_ID} .pawchestrator-epic-runs {
-      display: grid;
-      gap: 10px;
-    }
-
-    #${PANEL_ID} .pawchestrator-epic-run {
-      display: grid;
-      gap: 6px;
-    }
-
-    #${PANEL_ID} .pawchestrator-epic-verification {
-      display: grid;
-      gap: 6px;
-    }
-
-    #${PANEL_ID} .pawchestrator-epic-run-title {
-      color: var(--fgColor-default, #24292f);
-      font-weight: 600;
-      overflow-wrap: anywhere;
-    }
-
-    #${PANEL_ID} .pawchestrator-epic-verification-title {
-      color: var(--fgColor-default, #24292f);
-      font-weight: 600;
-      overflow-wrap: anywhere;
-    }
-
-    #${PANEL_ID} .pawchestrator-grill-details {
-      color: var(--fgColor-muted, #59636e);
-      display: grid;
-      gap: 4px;
-      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-    }
-
-    #${PANEL_ID} .pawchestrator-grill-status[data-active="true"]::before {
-      animation: pawchestrator-spin 0.8s linear infinite;
-      border: 1px solid var(--fgColor-accent, #0969da);
-      border-radius: 50%;
-      border-right-color: transparent;
-      content: "";
-      display: inline-block;
-      height: 10px;
-      margin-right: 6px;
-      vertical-align: -1px;
-      width: 10px;
-    }
-
-    #${PANEL_ID} .pawchestrator-grill-status[data-status="grill_waiting"] {
-      background: var(--bgColor-attention-muted, #fff8c5);
-      border: 1px solid var(--borderColor-attention-muted, #d4a72c);
-      border-radius: 6px;
-      color: var(--fgColor-default, #24292f);
-      font-weight: 600;
-      grid-column: 1 / -1;
-      padding: 8px 10px;
-    }
-
-    #${PANEL_ID} .pawchestrator-grill-status[data-status="grill_waiting"]::before {
-      content: "\\26A0";
-      display: inline-block;
-      margin-right: 6px;
-    }
-
-    #${PANEL_ID} .pawchestrator-grill-error {
-      color: var(--fgColor-danger, #cf222e);
-      grid-column: 1 / -1;
-    }
-
-    #${PANEL_ID} .pawchestrator-timeline,
-    #${PR_PANEL_ID} .pawchestrator-timeline {
-      align-items: flex-start;
-      display: grid;
-      gap: 8px;
-      grid-template-columns: repeat(6, minmax(72px, 1fr));
-      overflow-x: auto;
-      padding-bottom: 2px;
-    }
-
-    #${PANEL_ID} .pawchestrator-step,
-    #${PR_PANEL_ID} .pawchestrator-step {
-      color: var(--fgColor-muted, #59636e);
-      min-width: 72px;
-      position: relative;
-    }
-
-    #${PANEL_ID} .pawchestrator-step:not(:last-child)::after,
-    #${PR_PANEL_ID} .pawchestrator-step:not(:last-child)::after {
-      background: var(--borderColor-muted, #d8dee4);
-      content: "";
-      height: 1px;
-      left: 23px;
-      position: absolute;
-      right: -9px;
-      top: 8px;
-    }
-
-    #${PANEL_ID} .pawchestrator-step[data-active="true"],
-    #${PR_PANEL_ID} .pawchestrator-step[data-active="true"] {
-      color: var(--fgColor-default, #24292f);
-      font-weight: 600;
-    }
-
-    #${PANEL_ID} .pawchestrator-step-label,
-    #${PR_PANEL_ID} .pawchestrator-step-label {
-      display: block;
-      font-size: 12px;
-      line-height: 16px;
-      margin-top: 4px;
-      overflow-wrap: anywhere;
-    }
-
-    #${PANEL_ID} .pawchestrator-step-indicator,
-    #${PR_PANEL_ID} .pawchestrator-step-indicator {
-      align-items: center;
-      background: var(--bgColor-default, #ffffff);
-      border: 1px solid var(--borderColor-muted, #d8dee4);
-      border-radius: 50%;
-      display: inline-flex;
-      font-size: 11px;
-      height: 18px;
-      justify-content: center;
-      position: relative;
-      width: 18px;
-      z-index: 1;
-    }
-
-    #${PANEL_ID} .pawchestrator-step[data-status="pending"] .pawchestrator-step-indicator,
-    #${PR_PANEL_ID} .pawchestrator-step[data-status="pending"] .pawchestrator-step-indicator {
-      color: var(--fgColor-muted, #59636e);
-    }
-
-    #${PANEL_ID} .pawchestrator-step[data-status="running"] .pawchestrator-step-indicator,
-    #${PR_PANEL_ID} .pawchestrator-step[data-status="running"] .pawchestrator-step-indicator {
-      animation: pawchestrator-spin 0.8s linear infinite;
-      border-color: var(--fgColor-accent, #0969da);
-      border-right-color: transparent;
-      color: transparent;
-    }
-
-    #${PANEL_ID} .pawchestrator-step[data-status="done"] .pawchestrator-step-indicator,
-    #${PR_PANEL_ID} .pawchestrator-step[data-status="done"] .pawchestrator-step-indicator {
-      background: var(--bgColor-success-emphasis, #1a7f37);
-      border-color: var(--bgColor-success-emphasis, #1a7f37);
-      color: var(--fgColor-onEmphasis, #ffffff);
-    }
-
-    #${PANEL_ID} .pawchestrator-step[data-status="failed"] .pawchestrator-step-indicator,
-    #${PR_PANEL_ID} .pawchestrator-step[data-status="failed"] .pawchestrator-step-indicator {
-      background: var(--bgColor-danger-emphasis, #cf222e);
-      border-color: var(--bgColor-danger-emphasis, #cf222e);
-      color: var(--fgColor-onEmphasis, #ffffff);
-    }
-
-    #${PANEL_ID} .pawchestrator-warnings,
-    #${PR_PANEL_ID} .pawchestrator-warnings {
-      margin-top: 10px;
-    }
-
-    #${PANEL_ID} .pawchestrator-warnings summary,
-    #${PR_PANEL_ID} .pawchestrator-warnings summary {
-      color: var(--fgColor-attention, #9a6700);
-      cursor: pointer;
-      font-weight: 600;
-    }
-
-    #${PANEL_ID} .pawchestrator-warnings-list,
-    #${PR_PANEL_ID} .pawchestrator-warnings-list {
-      color: var(--fgColor-muted, #59636e);
-      margin: 6px 0 0;
-      padding-left: 18px;
-    }
-
-    @keyframes pawchestrator-spin {
-      to {
-        transform: rotate(360deg);
-      }
-    }
-
-    #${PANEL_ID} a,
-    #${PR_PANEL_ID} a {
-      color: var(--fgColor-accent, #0969da);
-    }
-
-    #${CONFIRM_OVERLAY_ID} {
-      align-items: flex-start;
-      background: rgba(31, 35, 40, 0.45);
-      bottom: 0;
-      display: flex;
-      justify-content: center;
-      left: 0;
-      padding: 12vh 16px 16px;
-      position: fixed;
-      right: 0;
-      top: 0;
-      z-index: 99999;
-    }
-
-    .pawchestrator-confirm-dialog {
-      background: var(--bgColor-default, #ffffff);
-      border: 1px solid var(--borderColor-default, #d0d7de);
-      border-radius: 6px;
-      box-shadow: var(--shadow-floating-large, 0 8px 24px rgba(140, 149, 159, 0.2));
-      color: var(--fgColor-default, #24292f);
-      font-size: 14px;
-      line-height: 20px;
-      max-width: 440px;
-      overflow: hidden;
-      width: min(440px, 100%);
-    }
-
-    .pawchestrator-confirm-header {
-      align-items: center;
-      background: var(--bgColor-muted, #f6f8fa);
-      border-bottom: 1px solid var(--borderColor-default, #d0d7de);
-      display: flex;
-      font-weight: 600;
-      min-height: 40px;
-      padding: 8px 16px;
-    }
-
-    .pawchestrator-confirm-body {
-      padding: 16px;
-    }
-
-    .pawchestrator-confirm-actions {
-      display: flex;
-      gap: 8px;
-      justify-content: flex-end;
-      padding: 0 16px 16px;
-    }
-
-    .pawchestrator-confirm-actions .pawchestrator-confirm-danger {
-      background: var(--button-danger-bgColor-rest, #cf222e);
-      border-color: var(--button-danger-borderColor-rest, rgba(31, 35, 40, 0.15));
-      color: var(--button-danger-fgColor-rest, #ffffff);
-    }
-  `);
-
-  function parseIssueReference() {
-    const [, owner, repo, type, number] = window.location.pathname.split("/");
-    if (!owner || !repo || type !== "issues" || !number) {
-      throw new Error("Not a GitHub issue page");
-    }
-
-    const issueNumber = Number.parseInt(number, 10);
-    if (!Number.isInteger(issueNumber) || issueNumber <= 0) {
-      throw new Error("Invalid GitHub issue number");
-    }
-
-    return { owner, repo, number: issueNumber };
-  }
+  injectStyles();
 
   function isIssueOpen() {
     const el = document.querySelector('[data-testid="header-state"]');
@@ -683,40 +49,6 @@
 
   function isPrMerged() {
     return Boolean(document.querySelector('[data-status="pullMerged"]'));
-  }
-
-  function isIssuePage() {
-    const [, owner, repo, type, number, extra] = window.location.pathname.split("/");
-    const issueNumber = Number.parseInt(number, 10);
-    return Boolean(owner)
-      && Boolean(repo)
-      && type === "issues"
-      && String(issueNumber) === number
-      && issueNumber > 0
-      && !extra;
-  }
-
-  function parsePrReference() {
-    const [, owner, repo, type, number, extra] = window.location.pathname.split("/");
-    if (!owner || !repo || type !== "pull" || extra) {
-      throw new Error("Not a GitHub pull request page");
-    }
-
-    const prNumber = Number.parseInt(number, 10);
-    if (!Number.isInteger(prNumber) || String(prNumber) !== number || prNumber <= 0) {
-      throw new Error("Invalid GitHub pull request number");
-    }
-
-    return { owner, repo, pr_number: prNumber };
-  }
-
-  function isPrPage() {
-    try {
-      parsePrReference();
-      return true;
-    } catch {
-      return false;
-    }
   }
 
   function activePanel() {
@@ -738,9 +70,7 @@
       '[data-testid="issue-viewer-issue-container"]',
       ".js-discussion",
     ];
-    return selectors
-      .map((selector) => document.querySelector(selector))
-      .find(Boolean) || null;
+    return selectors.map((selector) => document.querySelector(selector)).find(Boolean) || null;
   }
 
   function findIssueBodyContainer() {
@@ -748,9 +78,7 @@
       ".IssueBody-module__outerContainer__ULNTb",
       '[class*="IssueBody-module__outerContainer"]',
     ];
-    return selectors
-      .map((selector) => document.querySelector(selector))
-      .find(Boolean) || null;
+    return selectors.map((selector) => document.querySelector(selector)).find(Boolean) || null;
   }
 
   function setPanelSummary(message) {
@@ -783,29 +111,35 @@
 
   function shouldAutoExpand(status) {
     return Boolean(
-      status && (
-        status.pipeline ||
+      status &&
+      (status.pipeline ||
         status.grill ||
         status.epic_architect ||
-        epicSubRuns(status.epic).some((run) => run.status === "running" || /_running$/.test(run.status || ""))
-      )
+        epicSubRuns(status.epic).some(
+          (run) => run.status === "running" || /_running$/.test(run.status || ""),
+        )),
     );
   }
 
   function isPipelineVisible(pipeline) {
-    return Boolean(pipeline && (PIPELINE_ACTIVE.has(pipeline.status) || pipeline.status === "completed" || pipeline.status === "failed"));
+    return Boolean(
+      pipeline &&
+      (PIPELINE_ACTIVE.has(pipeline.status) ||
+        pipeline.status === "completed" ||
+        pipeline.status === "failed"),
+    );
   }
 
   function maybeAutoExpandForPipeline(status) {
     const pipeline = status && status.pipeline;
     if (!pipeline) {
-      lastPipelineExpansionKey = null;
+      state.lastPipelineExpansionKey = null;
       return;
     }
 
     const key = `${pipeline.run_id || ""}:${pipeline.status || ""}:${pipeline.current_stage || ""}`;
-    const shouldExpand = isPipelineVisible(pipeline) && key !== lastPipelineExpansionKey;
-    lastPipelineExpansionKey = key;
+    const shouldExpand = isPipelineVisible(pipeline) && key !== state.lastPipelineExpansionKey;
+    state.lastPipelineExpansionKey = key;
     if (shouldExpand) {
       setPanelExpanded(true);
     }
@@ -815,7 +149,12 @@
     if (!status) {
       return null;
     }
-    const runs = [epicSummaryRun(status.epic), status.pipeline, status.grill, status.epic_architect].filter(Boolean);
+    const runs = [
+      epicSummaryRun(status.epic),
+      status.pipeline,
+      status.grill,
+      status.epic_architect,
+    ].filter(Boolean);
     return runs.find((run) => !isRunDone(run)) || runs[0] || null;
   }
 
@@ -860,9 +199,11 @@
       }
 
       if (questions !== null) {
-        parts.push(questions === 0
-          ? "No questions - issue ready"
-          : `${questions} ${questions === 1 ? "question" : "questions"} posted`);
+        parts.push(
+          questions === 0
+            ? "No questions - issue ready"
+            : `${questions} ${questions === 1 ? "question" : "questions"} posted`,
+        );
       }
 
       if (parts.length > 0) {
@@ -991,17 +332,18 @@
     });
 
     const repairCount = Math.max(0, (byName.get("implement") || []).length - 1);
-    const failedVerifyCount = (byName.get("verify") || [])
-      .filter((stage) => stageStatus(stage) === "failed")
-      .length;
+    const failedVerifyCount = (byName.get("verify") || []).filter(
+      (stage) => stageStatus(stage) === "failed",
+    ).length;
     const repairTotal = Math.max(repairCount, failedVerifyCount);
 
     return PIPELINE_STAGES.map((name) => {
       const matching = byName.get(name) || [];
       const stage = matching[matching.length - 1] || { stage_name: name, status: "pending" };
-      const label = name === "implement" && repairCount > 0
-        ? `${name} (repair ${repairCount}/${repairTotal || repairCount})`
-        : name;
+      const label =
+        name === "implement" && repairCount > 0
+          ? `${name} (repair ${repairCount}/${repairTotal || repairCount})`
+          : name;
       return { name, label, stage };
     });
   }
@@ -1011,7 +353,10 @@
     return names.map((name) => ({
       name,
       label: name,
-      stage: rows.find((stage) => stageName(stage) === name) || { stage_name: name, status: "pending" },
+      stage: rows.find((stage) => stageName(stage) === name) || {
+        stage_name: name,
+        status: "pending",
+      },
     }));
   }
 
@@ -1067,15 +412,20 @@
     timeline.style.gridTemplateColumns = `repeat(${stageNames.length}, minmax(72px, 1fr))`;
     steps.forEach((step, index) => {
       const doneByRun = options.markComplete && index <= activeIndex;
-      const status = doneByRun ? "done" : normalizeStepStatus(step.stage, activeIndex >= 0 && index > activeIndex);
+      const status = doneByRun
+        ? "done"
+        : normalizeStepStatus(step.stage, activeIndex >= 0 && index > activeIndex);
       const item = document.createElement("div");
       item.className = "pawchestrator-step";
       item.dataset.status = status;
-      item.dataset.active = String(!options.suppressActive && index === activeIndex && !isRunDone(run));
+      item.dataset.active = String(
+        !options.suppressActive && index === activeIndex && !isRunDone(run),
+      );
 
       const indicator = document.createElement("span");
       indicator.className = "pawchestrator-step-indicator";
-      indicator.textContent = status === "done" ? "\u2713" : status === "failed" ? "\u00D7" : "\u2022";
+      indicator.textContent =
+        status === "done" ? "\u2713" : status === "failed" ? "\u00D7" : "\u2022";
 
       const label = document.createElement("span");
       label.className = "pawchestrator-step-label";
@@ -1098,12 +448,13 @@
       item.className = "pawchestrator-step";
       item.dataset.status = status;
       item.dataset.active = String(
-        !options.suppressActive && index === activeIndex && pipeline.status !== "completed"
+        !options.suppressActive && index === activeIndex && pipeline.status !== "completed",
       );
 
       const indicator = document.createElement("span");
       indicator.className = "pawchestrator-step-indicator";
-      indicator.textContent = status === "done" ? "\u2713" : status === "failed" ? "\u00D7" : "\u2022";
+      indicator.textContent =
+        status === "done" ? "\u2713" : status === "failed" ? "\u00D7" : "\u2022";
 
       const label = document.createElement("span");
       label.className = "pawchestrator-step-label";
@@ -1116,7 +467,11 @@
   }
 
   function renderReviewTimeline(parent, run) {
-    renderNamedTimeline(parent, run, run.workflow_type === "repair" ? REPAIR_STAGES : REVIEW_STAGES);
+    renderNamedTimeline(
+      parent,
+      run,
+      run.workflow_type === "repair" ? REPAIR_STAGES : REVIEW_STAGES,
+    );
   }
 
   function renderPipeline(parent, pipeline) {
@@ -1216,10 +571,10 @@
   }
 
   function resetPlanAttemptForRun(runId) {
-    if (runId && planAttemptRunId !== runId) {
-      planAttemptRunId = runId;
-      planAttempt = 1;
-      rejectedPlanRunIds.clear();
+    if (runId && state.planAttemptRunId !== runId) {
+      state.planAttemptRunId = runId;
+      state.planAttempt = 1;
+      state.rejectedPlanRunIds.clear();
     }
   }
 
@@ -1260,7 +615,7 @@
     title.textContent = "Plan Approval";
     const attempt = document.createElement("span");
     attempt.className = "pawchestrator-plan-approval-attempt";
-    attempt.textContent = `Plan attempt ${planAttempt} of ${PLAN_APPROVAL_MAX_ATTEMPTS}`;
+    attempt.textContent = `Plan attempt ${state.planAttempt} of ${PLAN_APPROVAL_MAX_ATTEMPTS}`;
     const risk = String(plan?.estimated_risk || "medium").toLowerCase();
     const badge = document.createElement("span");
     badge.className = `risk-badge risk-${["low", "medium", "high"].includes(risk) ? risk : "medium"}`;
@@ -1301,7 +656,9 @@
       description.textContent = step?.description || String(step || "");
       item.append(description);
 
-      const affectedFiles = normalizePlanItems(step?.affected_files || step?.files_to_modify || step?.files);
+      const affectedFiles = normalizePlanItems(
+        step?.affected_files || step?.files_to_modify || step?.files,
+      );
       if (affectedFiles.length > 0) {
         const files = document.createElement("div");
         files.className = "pawchestrator-plan-step-files";
@@ -1338,9 +695,21 @@
       feedbackArea.style.display = "none";
       rejectBtn.style.display = "";
     });
-    const submitFeedbackBtn = createButton("", "pawchestrator-plan-submit-feedback-button", "Submit Feedback", () => {
-      handlePlanRejection(runId, feedback.value, submitFeedbackBtn, cancelBtn, feedbackArea, error);
-    });
+    const submitFeedbackBtn = createButton(
+      "",
+      "pawchestrator-plan-submit-feedback-button",
+      "Submit Feedback",
+      () => {
+        handlePlanRejection(
+          runId,
+          feedback.value,
+          submitFeedbackBtn,
+          cancelBtn,
+          feedbackArea,
+          error,
+        );
+      },
+    );
     submitFeedbackBtn.disabled = true;
     feedback.addEventListener("input", () => {
       submitFeedbackBtn.disabled = feedback.value.trim().length === 0;
@@ -1385,7 +754,14 @@
     setButtonText(submitButton, disabled ? "\u2026" : submitButton.dataset.idleLabel);
   }
 
-  async function handlePlanRejection(runId, feedback, submitButton, cancelButton, feedbackArea, errorElement) {
+  async function handlePlanRejection(
+    runId,
+    feedback,
+    submitButton,
+    cancelButton,
+    feedbackArea,
+    errorElement,
+  ) {
     const trimmedFeedback = feedback.trim();
     if (!runId) {
       errorElement.textContent = "No run id found for this plan approval.";
@@ -1406,7 +782,7 @@
         body: JSON.stringify({ feedback: trimmedFeedback }),
         label: "Plan rejection request",
       });
-      rejectedPlanRunIds.add(runId);
+      state.rejectedPlanRunIds.add(runId);
       feedbackArea.style.display = "none";
       renderRePlanningState();
       startIssueStatusPolling();
@@ -1419,7 +795,13 @@
     }
   }
 
-  async function handlePlanApprovalAction(runId, action, primaryButton, secondaryButton, errorElement) {
+  async function handlePlanApprovalAction(
+    runId,
+    action,
+    primaryButton,
+    secondaryButton,
+    errorElement,
+  ) {
     if (!runId) {
       errorElement.textContent = "No run id found for this plan approval.";
       errorElement.hidden = false;
@@ -1437,9 +819,9 @@
       removePlanApprovalSubView();
       if (action === "abort") {
         renderStatus({
-          ...(latestIssueStatus || {}),
+          ...(state.latestIssueStatus || {}),
           pipeline: {
-            ...((latestIssueStatus || {}).pipeline || {}),
+            ...((state.latestIssueStatus || {}).pipeline || {}),
             ...(run || {}),
             run_id: run?.run_id || run?.id || runId,
             status: run?.status || "failed",
@@ -1462,9 +844,9 @@
   function epicParentStages(epic) {
     return Array.isArray(epic?.parent_stages)
       ? epic.parent_stages.filter((stage) => {
-        const name = stage.stage_name || stage.name;
-        return name === "verify" || name === "implement";
-      })
+          const name = stage.stage_name || stage.name;
+          return name === "verify" || name === "implement";
+        })
       : [];
   }
 
@@ -1545,11 +927,15 @@
       verificationTitle.textContent = "Epic Verification";
 
       verification.append(verificationTitle);
-      renderPipelineTimeline(verification, {
-        stages: parentStages,
-        current_stage: epic.current_stage,
-        status: epic.status || epicStatus(epic),
-      }, { suppressActive: epicDone });
+      renderPipelineTimeline(
+        verification,
+        {
+          stages: parentStages,
+          current_stage: epic.current_stage,
+          status: epic.status || epicStatus(epic),
+        },
+        { suppressActive: epicDone },
+      );
       section.append(verification);
     }
 
@@ -1571,12 +957,17 @@
   function epicArchitectTimelineRun(run) {
     const stages = Array.isArray(run?.stages) ? [...run.stages] : [];
     const created = epicArchitectCreatedIssues(run);
-    if (created.length > 0 || run?.status === "completed" || run?.status === "epic_architect_complete") {
+    if (
+      created.length > 0 ||
+      run?.status === "completed" ||
+      run?.status === "epic_architect_complete"
+    ) {
       stages.push({ stage_name: "creating", status: "complete" });
     }
     return {
       ...run,
-      current_stage: created.length > 0 || run?.status === "completed" ? "creating" : run?.current_stage,
+      current_stage:
+        created.length > 0 || run?.status === "completed" ? "creating" : run?.current_stage,
       stages,
     };
   }
@@ -1613,16 +1004,25 @@
     });
 
     const created = epicArchitectCreatedIssues(run);
-    if (run.epic_analysis && (run.status === "completed" || run.status === "epic_architect_complete")) {
+    if (
+      run.epic_analysis &&
+      (run.status === "completed" || run.status === "epic_architect_complete")
+    ) {
       const analysis = document.createElement("div");
       analysis.className = "pawchestrator-epic-architect-analysis";
       analysis.textContent = run.epic_analysis;
       section.append(analysis);
     }
-    if (created.length > 0 && (run.status === "completed" || run.status === "epic_architect_complete")) {
+    if (
+      created.length > 0 &&
+      (run.status === "completed" || run.status === "epic_architect_complete")
+    ) {
       renderCreatedSubIssueLinks(section, created);
     }
-    if (isRunDone(run) && !(run.status === "completed" || run.status === "epic_architect_complete")) {
+    if (
+      isRunDone(run) &&
+      !(run.status === "completed" || run.status === "epic_architect_complete")
+    ) {
       const error = document.createElement("div");
       error.className = "pawchestrator-epic-architect-error";
       error.textContent = summarizeError(run);
@@ -1683,9 +1083,12 @@
     if (!commentElement) {
       return null;
     }
-    return Array.from(commentElement.querySelectorAll("form")).find((form) =>
-      form.querySelector("textarea, [contenteditable='true']") && findGrillReplySubmit(form)
-    ) || null;
+    return (
+      Array.from(commentElement.querySelectorAll("form")).find(
+        (form) =>
+          form.querySelector("textarea, [contenteditable='true']") && findGrillReplySubmit(form),
+      ) || null
+    );
   }
 
   function buttonText(button) {
@@ -1755,8 +1158,12 @@
         }
       };
 
-      const noButton = createDialogButton(options.cancelLabel || "No", "default", () => close(false));
-      const yesButton = createDialogButton(options.confirmLabel || "Yes", "danger", () => close(true));
+      const noButton = createDialogButton(options.cancelLabel || "No", "default", () =>
+        close(false),
+      );
+      const yesButton = createDialogButton(options.confirmLabel || "Yes", "danger", () =>
+        close(true),
+      );
       actions.append(noButton, yesButton);
 
       dialog.append(header, body, actions);
@@ -1773,21 +1180,23 @@
   }
 
   function findGrillReplySubmit(form) {
-    return Array.from(form.querySelectorAll("button, input[type='submit']")).find((button) => {
-      if (button.disabled) {
-        return false;
-      }
-      const type = (button.getAttribute("type") || "submit").toLowerCase();
-      if (type !== "submit") {
-        return false;
-      }
-      return (
-        buttonText(button) === "Comment" ||
-        buttonText(button) === "Answer Questions" ||
-        button.value === "Comment" ||
-        button.value === "Answer Questions"
-      );
-    }) || null;
+    return (
+      Array.from(form.querySelectorAll("button, input[type='submit']")).find((button) => {
+        if (button.disabled) {
+          return false;
+        }
+        const type = (button.getAttribute("type") || "submit").toLowerCase();
+        if (type !== "submit") {
+          return false;
+        }
+        return (
+          buttonText(button) === "Comment" ||
+          buttonText(button) === "Answer Questions" ||
+          button.value === "Comment" ||
+          button.value === "Answer Questions"
+        );
+      }) || null
+    );
   }
 
   function decorateGrillReplyForm(form) {
@@ -1817,27 +1226,27 @@
   }
 
   function disconnectGrillReplyObserver() {
-    if (grillReplyObserverState?.observer) {
-      grillReplyObserverState.observer.disconnect();
+    if (state.grillReplyObserverState?.observer) {
+      state.grillReplyObserverState.observer.disconnect();
     }
-    grillReplyObserverState = null;
+    state.grillReplyObserverState = null;
   }
 
   function evaluateGrillReplyForm() {
-    const state = grillReplyObserverState;
-    if (!state || !document.contains(state.commentElement)) {
+    const observerState = state.grillReplyObserverState;
+    if (!observerState || !document.contains(observerState.commentElement)) {
       return;
     }
 
-    const form = findGrillReplyForm(state.commentElement);
+    const form = findGrillReplyForm(observerState.commentElement);
     if (form) {
-      state.formSeen = true;
+      observerState.formSeen = true;
       decorateGrillReplyForm(form);
       return;
     }
 
-    if (state.formSeen && !state.posted) {
-      state.posted = true;
+    if (observerState.formSeen && !observerState.posted) {
+      observerState.posted = true;
       continueGrillFromReply().catch((error) => setPanelSummary(error.message));
     }
   }
@@ -1856,8 +1265,8 @@
     }
 
     if (
-      grillReplyObserverState?.commentId === String(commentId) &&
-      grillReplyObserverState.commentElement === commentElement
+      state.grillReplyObserverState?.commentId === String(commentId) &&
+      state.grillReplyObserverState.commentElement === commentElement
     ) {
       evaluateGrillReplyForm();
       return;
@@ -1865,7 +1274,7 @@
 
     disconnectGrillReplyObserver();
     const observer = new MutationObserver(evaluateGrillReplyForm);
-    grillReplyObserverState = {
+    state.grillReplyObserverState = {
       commentId: String(commentId),
       commentElement,
       observer,
@@ -1905,16 +1314,29 @@
     status.dataset.status = grill.status || "unknown";
     if (grill.status === GRILL_WAITING_STATUS) {
       status.dataset.active = "false";
-      status.textContent = "Waiting for your reply. Reply to the questions comment on GitHub to continue.";
+      status.textContent =
+        "Waiting for your reply. Reply to the questions comment on GitHub to continue.";
     } else {
       status.textContent = active ? "[grill] running..." : `Status: ${grill.status || "unknown"}`;
     }
     details.append(status);
 
     const report = grillReport(grill);
-    renderGrillDetail(details, "Criteria suggested", countGrillValue(grill, report, "criteria_count", "suggested_criteria"));
-    renderGrillDetail(details, "Questions posted", countGrillValue(grill, report, "questions_posted_count", "unanswerable_questions"));
-    renderGrillDetail(details, "Issue body updated", grillBodyUpdated(grill, report) ? "yes" : "no");
+    renderGrillDetail(
+      details,
+      "Criteria suggested",
+      countGrillValue(grill, report, "criteria_count", "suggested_criteria"),
+    );
+    renderGrillDetail(
+      details,
+      "Questions posted",
+      countGrillValue(grill, report, "questions_posted_count", "unanswerable_questions"),
+    );
+    renderGrillDetail(
+      details,
+      "Issue body updated",
+      grillBodyUpdated(grill, report) ? "yes" : "no",
+    );
     renderGrillDetail(details, "Last grill run", formatGrillTimestamp(grillTimestamp(grill)));
 
     if (grill.status === "grill_failed" || grill.status === "failed") {
@@ -1929,7 +1351,7 @@
   }
 
   function renderStatus(status) {
-    latestIssueStatus = status;
+    state.latestIssueStatus = status;
     const panel = document.getElementById(PANEL_ID);
     if (!panel) {
       return;
@@ -1941,7 +1363,7 @@
     setPanelSummary(summarizeRun(run));
     setPanelStatus(panelStatusForRun(run));
 
-    if (panelExpandedByUser === null) {
+    if (state.panelExpandedByUser === null) {
       setPanelExpanded(shouldAutoExpand(status));
     }
     maybeAutoExpandForPipeline(status);
@@ -1989,7 +1411,7 @@
   }
 
   function renderOffline() {
-    latestIssueStatus = null;
+    state.latestIssueStatus = null;
     disconnectGrillReplyObserver();
     updateGrillButton(null);
     setPanelSummary(OFFLINE_MESSAGE);
@@ -2033,7 +1455,9 @@
           try {
             resolve(JSON.parse(response.responseText));
           } catch (error) {
-            reject(new Error(`${options.label || "Request"} returned invalid JSON: ${error.message}`));
+            reject(
+              new Error(`${options.label || "Request"} returned invalid JSON: ${error.message}`),
+            );
           }
         },
         onerror: () => reject(new Error(OFFLINE_MESSAGE)),
@@ -2120,9 +1544,11 @@
 
   function reviewHasSuggestedIssues(run) {
     const suggestedIssues = run?.review_report?.suggested_issues;
-    return Array.isArray(suggestedIssues)
-      && suggestedIssues.length > 0
-      && _stageStatusFromRun(run, "issues") === "pending";
+    return (
+      Array.isArray(suggestedIssues) &&
+      suggestedIssues.length > 0 &&
+      _stageStatusFromRun(run, "issues") === "pending"
+    );
   }
 
   function _stageStatusFromRun(run, stageName) {
@@ -2137,7 +1563,7 @@
 
   function summarizePrRun(run) {
     if (!run) {
-      if (latestPrReviewState === "changes_requested") {
+      if (state.latestPrReviewState === "changes_requested") {
         return "Changes requested";
       }
       return "Ready for review";
@@ -2148,10 +1574,18 @@
     if (run.status === "post_complete" && reviewHasSuggestedIssues(run)) {
       return "Review complete - suggested issues ready";
     }
-    if (run.status === "post_complete" || run.status === "issues_complete" || run.status === "issues_skipped") {
+    if (
+      run.status === "post_complete" ||
+      run.status === "issues_complete" ||
+      run.status === "issues_skipped"
+    ) {
       return "Review complete";
     }
-    if (run.status === "review_failed" || run.status === "post_failed" || run.status === "issues_failed") {
+    if (
+      run.status === "review_failed" ||
+      run.status === "post_failed" ||
+      run.status === "issues_failed"
+    ) {
       return summarizeError(run);
     }
     const stage = run.current_stage || "review";
@@ -2160,7 +1594,7 @@
   }
 
   function renderPrStatus(run) {
-    latestPrRun = run;
+    state.latestPrRun = run;
     setPanelSummary(summarizePrRun(run));
     setPanelStatus(panelStatusForRun(run));
     setPanelExpanded(Boolean(run));
@@ -2198,7 +1632,14 @@
       issuesLine.className = "pawchestrator-run-line";
       issuesLine.textContent = "issues: pending";
       issuesLine.append(document.createTextNode(" "));
-      issuesLine.append(createButton(CREATE_ISSUES_ID, "pawchestrator-create-issues-button", "Create Issues", createIssues));
+      issuesLine.append(
+        createButton(
+          CREATE_ISSUES_ID,
+          "pawchestrator-create-issues-button",
+          "Create Issues",
+          createIssues,
+        ),
+      );
       section.append(issuesLine);
     }
 
@@ -2206,8 +1647,8 @@
   }
 
   function renderPrOffline() {
-    latestPrRun = null;
-    latestPrReviewState = null;
+    state.latestPrRun = null;
+    state.latestPrReviewState = null;
     setPanelSummary(OFFLINE_MESSAGE);
     setPanelStatus("offline");
     const body = document.getElementById(PR_PANEL_ID)?.querySelector(".pawchestrator-panel-body");
@@ -2219,9 +1660,9 @@
   }
 
   function renderPrReviewState(reviewState) {
-    latestPrReviewState = reviewState;
-    updatePrActionButtons(latestPrRun);
-    if (!latestPrRun && reviewState === "changes_requested") {
+    state.latestPrReviewState = reviewState;
+    updatePrActionButtons(state.latestPrRun);
+    if (!state.latestPrRun && reviewState === "changes_requested") {
       setPanelSummary("Changes requested");
     }
   }
@@ -2250,10 +1691,11 @@
 
     const [status, reviewState] = await Promise.all([fetchPrStatus(), reviewStatePromise]);
     renderPrReviewState(reviewState.state);
-    const run = [status.repair, status.review].filter(Boolean).find(isPrRunActive)
-      || status.review
-      || status.repair
-      || null;
+    const run =
+      [status.repair, status.review].filter(Boolean).find(isPrRunActive) ||
+      status.review ||
+      status.repair ||
+      null;
     if (run?.id) {
       await GM_setValue(prRunKey(), run.id);
     }
@@ -2268,32 +1710,34 @@
   function startPrStatusPolling() {
     stopPrStatusPolling();
     pollPrStatusOnce().catch(() => renderPrOffline());
-    activePrPoll = window.setInterval(() => {
-      pollPrStatusOnce().then((running) => {
-        if (!running && activePrPoll) {
-          stopPrStatusPolling();
-        }
-      }).catch(() => renderPrOffline());
+    state.activePrPoll = window.setInterval(() => {
+      pollPrStatusOnce()
+        .then((running) => {
+          if (!running && state.activePrPoll) {
+            stopPrStatusPolling();
+          }
+        })
+        .catch(() => renderPrOffline());
     }, POLL_INTERVAL_MS);
   }
 
   function stopPrStatusPolling() {
-    if (activePrPoll) {
-      window.clearInterval(activePrPoll);
-      activePrPoll = null;
+    if (state.activePrPoll) {
+      window.clearInterval(state.activePrPoll);
+      state.activePrPoll = null;
     }
   }
 
   async function pollIssueStatusOnce() {
     const issue = parseIssueReference();
     const status = await fetchIssueStatus(issue);
-    if (status.pipeline?.run_id && status.pipeline.run_id !== planAttemptRunId) {
+    if (status.pipeline?.run_id && status.pipeline.run_id !== state.planAttemptRunId) {
       resetPlanAttemptForRun(status.pipeline.run_id);
     }
     if (status.pipeline?.status === "awaiting_plan_approval" && status.pipeline.run_id) {
-      if (rejectedPlanRunIds.has(status.pipeline.run_id)) {
-        planAttempt += 1;
-        rejectedPlanRunIds.delete(status.pipeline.run_id);
+      if (state.rejectedPlanRunIds.has(status.pipeline.run_id)) {
+        state.planAttempt += 1;
+        state.rejectedPlanRunIds.delete(status.pipeline.run_id);
       }
       status.plan_approval_plan = await fetchPlan(status.pipeline.run_id);
     }
@@ -2306,7 +1750,7 @@
       (status.grill && !isRunDone(status.grill)) ||
       (status.epic_architect && !isRunDone(status.epic_architect)) ||
       (status.epic && !isEpicDone(status.epic)) ||
-      (!isEpicDone(status.epic) && epicSubRuns(status.epic).some((run) => !isRunDone(run)))
+      (!isEpicDone(status.epic) && epicSubRuns(status.epic).some((run) => !isRunDone(run))),
     );
     const shouldDisable = !issueOpen || anyActive;
     const closedTitle = !issueOpen ? "Issue is closed" : "";
@@ -2322,7 +1766,7 @@
   function startIssueStatusPolling() {
     stopIssueStatusPolling();
     pollIssueStatusOnce().catch(() => renderOffline());
-    activePoll = window.setInterval(() => {
+    state.activePoll = window.setInterval(() => {
       pollIssueStatusOnce().catch(() => {
         renderOffline();
         if (isIssueOpen()) {
@@ -2335,9 +1779,9 @@
   }
 
   function stopIssueStatusPolling() {
-    if (activePoll) {
-      window.clearInterval(activePoll);
-      activePoll = null;
+    if (state.activePoll) {
+      window.clearInterval(state.activePoll);
+      state.activePoll = null;
     }
   }
 
@@ -2371,7 +1815,7 @@
         }
       }
       setPanelSummary("[snapshot] starting...");
-      panelExpandedByUser = true;
+      state.panelExpandedByUser = true;
       setPanelExpanded(true);
       const response = await requestJson("/issue/start", {
         method: "POST",
@@ -2431,8 +1875,8 @@
     try {
       const issue = parseIssueReference();
       await getOrAcquireToken(setPanelSummary);
-      const status = latestIssueStatus || await fetchIssueStatus(issue);
-      latestIssueStatus = status;
+      const status = state.latestIssueStatus || (await fetchIssueStatus(issue));
+      state.latestIssueStatus = status;
       updateGrillButton(status.grill);
       if (status.grill?.status === GRILL_WAITING_STATUS) {
         const confirmed = await showConfirmDialog(REGRILL_CONFIRM_MESSAGE, {
@@ -2448,7 +1892,7 @@
         button.disabled = true;
       }
       setPanelSummary("[grill] starting...");
-      panelExpandedByUser = true;
+      state.panelExpandedByUser = true;
       setPanelExpanded(true);
       await requestJson("/issue/grill", {
         method: "POST",
@@ -2476,7 +1920,7 @@
       const issue = parseIssueReference();
       await getOrAcquireToken(setPanelSummary);
       setPanelSummary("[epic_scout] starting...");
-      panelExpandedByUser = true;
+      state.panelExpandedByUser = true;
       setPanelExpanded(true);
       const response = await requestJson("/issue/epic-architect", {
         method: "POST",
@@ -2487,7 +1931,7 @@
       });
       await GM_setValue(epicArchitectRunKey(), response.run_id);
       renderStatus({
-        ...(latestIssueStatus || {}),
+        ...(state.latestIssueStatus || {}),
         epic_architect: {
           run_id: response.run_id,
           workflow_type: "epic_architect",
@@ -2519,7 +1963,7 @@
       const pr = parsePrReference();
       await getOrAcquireToken(setPanelSummary);
       setPanelSummary("[review] starting...");
-      panelExpandedByUser = true;
+      state.panelExpandedByUser = true;
       setPanelExpanded(true);
       const response = await requestJson("/runs/review/start", {
         method: "POST",
@@ -2558,7 +2002,7 @@
       const pr = parsePrReference();
       await getOrAcquireToken(setPanelSummary);
       setPanelSummary("[repair] starting...");
-      panelExpandedByUser = true;
+      state.panelExpandedByUser = true;
       setPanelExpanded(true);
       const response = await requestJson("/runs/repair/start", {
         method: "POST",
@@ -2588,7 +2032,8 @@
   }
 
   async function createIssues() {
-    const runId = latestPrRun?.id || latestPrRun?.run_id || await GM_getValue(prRunKey());
+    const runId =
+      state.latestPrRun?.id || state.latestPrRun?.run_id || (await GM_getValue(prRunKey()));
     const button = document.getElementById(CREATE_ISSUES_ID);
     if (button) {
       button.disabled = true;
@@ -2646,18 +2091,33 @@
   }
 
   function createStartButton() {
-    return createButton(START_ID, "pawchestrator-work-button", `${PAW} Work on this issue`, startRun);
+    return createButton(
+      START_ID,
+      "pawchestrator-work-button",
+      `${PAW} Work on this issue`,
+      startRun,
+    );
   }
 
   function createReviewButton() {
-    return createButton(PR_REVIEW_ID, "pawchestrator-review-button", `${PAW} Review with Pawchestrator`, startReview);
+    return createButton(
+      PR_REVIEW_ID,
+      "pawchestrator-review-button",
+      `${PAW} Review with Pawchestrator`,
+      startReview,
+    );
   }
 
   function createRepairButton() {
-    return createButton(PR_REPAIR_ID, "pawchestrator-repair-button", `${PAW} Work on Request Changes`, startRepair);
+    return createButton(
+      PR_REPAIR_ID,
+      "pawchestrator-repair-button",
+      `${PAW} Work on Request Changes`,
+      startRepair,
+    );
   }
 
-  function updatePrActionButtons(run = latestPrRun) {
+  function updatePrActionButtons(run = state.latestPrRun) {
     const active = isPrRunActive(run);
     const merged = isPrMerged();
     const disableMessage = "Pull request is merged";
@@ -2672,7 +2132,7 @@
     }
 
     let repairButton = document.getElementById(PR_REPAIR_ID);
-    if (latestPrReviewState !== "changes_requested") {
+    if (state.latestPrReviewState !== "changes_requested") {
       repairButton?.remove();
       return;
     }
@@ -2709,7 +2169,12 @@
   }
 
   function createGrillButton(grill) {
-    return createButton(GRILL_ID, "pawchestrator-grill-button", grillButtonLabel(grill), startGrill);
+    return createButton(
+      GRILL_ID,
+      "pawchestrator-grill-button",
+      grillButtonLabel(grill),
+      startGrill,
+    );
   }
 
   function createEpicArchitectButton() {
@@ -2721,7 +2186,7 @@
     );
   }
 
-  function updateEpicArchitectButton(status = latestIssueStatus) {
+  function updateEpicArchitectButton(status = state.latestIssueStatus) {
     const bar = document.getElementById(PANEL_ID)?.querySelector(".pawchestrator-panel-bar");
     let button = document.getElementById(EPIC_ARCHITECT_ID);
     if (!bar) {
@@ -2762,7 +2227,7 @@
     toggle.textContent = "\u25B8";
     toggle.addEventListener("click", () => {
       const expanded = panel.dataset.expanded !== "true";
-      panelExpandedByUser = expanded;
+      state.panelExpandedByUser = expanded;
       setPanelExpanded(expanded);
     });
 
@@ -2786,7 +2251,13 @@
     const body = document.createElement("div");
     body.className = "pawchestrator-panel-body";
 
-    bar.append(toggle, summary, createStartButton(), createGrillButton(), createEpicArchitectButton());
+    bar.append(
+      toggle,
+      summary,
+      createStartButton(),
+      createGrillButton(),
+      createEpicArchitectButton(),
+    );
     panel.append(bar, body);
     return panel;
   }
@@ -2808,7 +2279,7 @@
     toggle.textContent = "\u25B8";
     toggle.addEventListener("click", () => {
       const expanded = panel.dataset.expanded !== "true";
-      panelExpandedByUser = expanded;
+      state.panelExpandedByUser = expanded;
       setPanelExpanded(expanded);
     });
 
@@ -2840,7 +2311,7 @@
   function removeInjectedControls() {
     document.getElementById(PANEL_ID)?.remove();
     document.getElementById(PR_PANEL_ID)?.remove();
-    lastPipelineExpansionKey = null;
+    state.lastPipelineExpansionKey = null;
     disconnectGrillReplyObserver();
     stopIssueStatusPolling();
     stopPrStatusPolling();
@@ -2872,7 +2343,7 @@
     }
 
     const panelReady = injectIssuePanel();
-    if (panelReady && !activePoll) {
+    if (panelReady && !state.activePoll) {
       startIssueStatusPolling();
     }
   }
@@ -2884,7 +2355,8 @@
     }
 
     const existingPanel = document.getElementById(PR_PANEL_ID);
-    const panel = existingPanel && document.contains(existingPanel) ? existingPanel : createPrPanel();
+    const panel =
+      existingPanel && document.contains(existingPanel) ? existingPanel : createPrPanel();
     panel.style.marginLeft = "";
     if (panel.nextElementSibling !== container) {
       container.before(panel);
@@ -2900,7 +2372,7 @@
     document.getElementById(PANEL_ID)?.remove();
     stopIssueStatusPolling();
     const panelReady = injectPrPanel();
-    if (panelReady && !activePrPoll) {
+    if (panelReady && !state.activePrPoll) {
       startPrStatusPolling();
     }
     return panelReady;
@@ -2918,23 +2390,26 @@
   }
 
   function scheduleInjection() {
-    const pathnameChanged = activePathname !== window.location.pathname;
+    const pathnameChanged = state.activePathname !== window.location.pathname;
     if (pathnameChanged) {
-      activePathname = window.location.pathname;
-      panelExpandedByUser = null;
-      lastPipelineExpansionKey = null;
+      state.activePathname = window.location.pathname;
+      state.panelExpandedByUser = null;
+      state.lastPipelineExpansionKey = null;
       stopIssueStatusPolling();
       stopPrStatusPolling();
     }
 
-    if (reinjectTimer) {
-      window.clearTimeout(reinjectTimer);
+    if (state.reinjectTimer) {
+      window.clearTimeout(state.reinjectTimer);
     }
 
-    reinjectTimer = window.setTimeout(() => {
-      reinjectTimer = null;
-      injectControls();
-    }, pathnameChanged ? 0 : REINJECT_DEBOUNCE_MS);
+    state.reinjectTimer = window.setTimeout(
+      () => {
+        state.reinjectTimer = null;
+        injectControls();
+      },
+      pathnameChanged ? 0 : REINJECT_DEBOUNCE_MS,
+    );
   }
 
   function installNavigationHooks() {

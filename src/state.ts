@@ -1,0 +1,15 @@
+export const state = {
+  activePoll: null,
+  activePrPoll: null,
+  activePathname: window.location.pathname,
+  panelExpandedByUser: null,
+  lastPipelineExpansionKey: null,
+  reinjectTimer: null,
+  grillReplyObserverState: null,
+  latestIssueStatus: null,
+  latestPrRun: null,
+  latestPrReviewState: null,
+  planAttempt: 1,
+  planAttemptRunId: null,
+  rejectedPlanRunIds: new Set(),
+};
