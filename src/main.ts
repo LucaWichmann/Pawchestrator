@@ -1,5 +1,4 @@
 import {
-  API_BASE,
   CONFIRM_OVERLAY_ID,
   CONSTRUCTION,
   CREATE_ISSUES_ID,
@@ -30,9 +29,17 @@ import {
   RUN_DONE,
   STAGE_DONE,
   START_ID,
-  TOKEN_KEY,
   WARNING,
 } from "./constants";
+import {
+  fetchIssueStatus,
+  fetchPlan,
+  fetchPrReviewState,
+  fetchPrRun,
+  fetchPrStatus,
+  getOrAcquireToken,
+  requestJson,
+} from "./api";
 import { isIssuePage, isPrPage, parseIssueReference, parsePrReference } from "./router";
 import { state } from "./state";
 import { injectStyles } from "./styles";
@@ -1431,117 +1438,6 @@ import { injectStyles } from "./styles";
     body.append(readiness);
   }
 
-  function rawRequestJson(path, options = {}) {
-    return new Promise((resolve, reject) => {
-      GM_xmlhttpRequest({
-        method: options.method || "GET",
-        url: `${API_BASE}${path}`,
-        headers: options.headers || {},
-        data: options.body,
-        timeout: 5000,
-        onload: (response) => {
-          if (response.status < 200 || response.status >= 300) {
-            const error = new Error(`${options.label || "Request"} failed (${response.status})`);
-            error.status = response.status;
-            reject(error);
-            return;
-          }
-
-          if (!response.responseText) {
-            resolve(null);
-            return;
-          }
-
-          try {
-            resolve(JSON.parse(response.responseText));
-          } catch (error) {
-            reject(
-              new Error(`${options.label || "Request"} returned invalid JSON: ${error.message}`),
-            );
-          }
-        },
-        onerror: () => reject(new Error(OFFLINE_MESSAGE)),
-        ontimeout: () => reject(new Error(OFFLINE_MESSAGE)),
-      });
-    });
-  }
-
-  async function getOrAcquireToken(statusSetter = setPanelSummary) {
-    const storedToken = await GM_getValue(TOKEN_KEY);
-    if (storedToken) {
-      return storedToken;
-    }
-
-    statusSetter("Pairing - approve in terminal...");
-    const response = await rawRequestJson("/pair", {
-      method: "POST",
-      label: "Pairing request",
-    });
-    await GM_setValue(TOKEN_KEY, response.token);
-    return response.token;
-  }
-
-  async function requestJson(path, options = {}) {
-    if (path === "/health" || path === "/pair") {
-      return rawRequestJson(path, options);
-    }
-
-    const statusSetter = options.statusSetter || setPanelSummary;
-    const token = await getOrAcquireToken(statusSetter);
-    const headers = {
-      ...(options.headers || {}),
-      "X-Pawchestrator-Token": token,
-    };
-
-    try {
-      return await rawRequestJson(path, { ...options, headers });
-    } catch (error) {
-      if (error.status !== 403) {
-        throw error;
-      }
-
-      await GM_deleteValue(TOKEN_KEY);
-      const freshToken = await getOrAcquireToken(statusSetter);
-      return rawRequestJson(path, {
-        ...options,
-        headers: {
-          ...(options.headers || {}),
-          "X-Pawchestrator-Token": freshToken,
-        },
-      });
-    }
-  }
-
-  async function fetchIssueStatus(issue = parseIssueReference()) {
-    return requestJson(`/issue/${issue.owner}/${issue.repo}/${issue.number}/status`, {
-      label: "Issue status request",
-    });
-  }
-
-  async function fetchPlan(runId) {
-    return requestJson(`/runs/${runId}/plan`, {
-      label: "Plan request",
-    });
-  }
-
-  async function fetchPrRun(runId) {
-    return requestJson(`/runs/${runId}/status`, {
-      label: "PR review status request",
-    });
-  }
-
-  async function fetchPrStatus(pr = parsePrReference()) {
-    return requestJson(`/pr/${pr.owner}/${pr.repo}/${pr.pr_number}/status`, {
-      label: "PR status request",
-    });
-  }
-
-  async function fetchPrReviewState(pr = parsePrReference()) {
-    return requestJson(`/prs/${pr.owner}/${pr.repo}/${pr.pr_number}/review-state`, {
-      label: "PR review state request",
-    });
-  }
-
   function reviewHasSuggestedIssues(run) {
     const suggestedIssues = run?.review_report?.suggested_issues;
     return (
@@ -1668,7 +1564,8 @@ import { injectStyles } from "./styles";
   }
 
   async function pollPrStatusOnce() {
-    const reviewStatePromise = fetchPrReviewState();
+    const pr = parsePrReference();
+    const reviewStatePromise = fetchPrReviewState(pr);
     const storedRunId = await GM_getValue(prRunKey());
     if (storedRunId) {
       const storedRun = await fetchPrRun(storedRunId);
@@ -1678,7 +1575,7 @@ import { injectStyles } from "./styles";
         return true;
       }
 
-      const [status, reviewState] = await Promise.all([fetchPrStatus(), reviewStatePromise]);
+      const [status, reviewState] = await Promise.all([fetchPrStatus(pr), reviewStatePromise]);
       renderPrReviewState(reviewState.state);
       const activeRun = [status.repair, status.review].filter(Boolean).find(isPrRunActive);
       const run = activeRun || storedRun;
@@ -1689,7 +1586,7 @@ import { injectStyles } from "./styles";
       return isPrRunActive(run);
     }
 
-    const [status, reviewState] = await Promise.all([fetchPrStatus(), reviewStatePromise]);
+    const [status, reviewState] = await Promise.all([fetchPrStatus(pr), reviewStatePromise]);
     renderPrReviewState(reviewState.state);
     const run =
       [status.repair, status.review].filter(Boolean).find(isPrRunActive) ||
@@ -1793,7 +1690,7 @@ import { injectStyles } from "./styles";
 
     try {
       const issue = parseIssueReference();
-      await getOrAcquireToken();
+      await getOrAcquireToken(setPanelSummary);
       const status = await fetchIssueStatus(issue);
       if (status.epic_confirm && !confirmEpicStart(status.epic)) {
         if (button) {
