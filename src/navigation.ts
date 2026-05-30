@@ -2,7 +2,9 @@ import { REINJECT_DEBOUNCE_MS } from "./constants";
 import { stopIssueStatusPolling, stopPrStatusPolling } from "./poll";
 import { state } from "./state";
 
-export function scheduleInjection(injectControls) {
+type InjectControls = () => void;
+
+export function scheduleInjection(injectControls: InjectControls) {
   const pathnameChanged = state.activePathname !== window.location.pathname;
   if (pathnameChanged) {
     state.activePathname = window.location.pathname;
@@ -25,7 +27,7 @@ export function scheduleInjection(injectControls) {
   );
 }
 
-export function installNavigationHooks(injectControls) {
+export function installNavigationHooks(injectControls: InjectControls) {
   (["pushState", "replaceState"] as const).forEach((method) => {
     const original = history[method];
     history[method] = function (...args) {
