@@ -28,6 +28,22 @@ wsl --exec sh -lc "npm install -g @openai/codex@latest && codex --version"
 
 Use `bypass_sandbox = true` only as an intentional last resort for trusted repos.
 
+## Userscript build
+
+**`npm install` fails**
+
+Check that Node 20 LTS is installed — the version is pinned in `.nvmrc`. Run `node --version` and compare. If you use nvm, run `nvm use` from the repo root.
+
+**Vite build errors**
+
+TypeScript compile errors surface during `npm run build`. Run `npm run lint` first for structured output. All source files are under `src/`.
+
+**Tampermonkey not picking up changes**
+
+`npm run dev` rebuilds `dist/pawchestrator.user.js` on save, but Tampermonkey does not hot-reload. Reload the GitHub page after each rebuild. If you reinstalled the script and it shows stale code, open the Tampermonkey dashboard, disable and re-enable the script, then reload.
+
+---
+
 ## Codex `previous_response_not_found`
 
 Usually transient. Rerunning the same prompt or resuming the latest Codex exec session often succeeds.

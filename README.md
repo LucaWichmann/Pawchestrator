@@ -53,7 +53,9 @@ irm https://raw.githubusercontent.com/LucaWichmann/Pawchestrator/main/install.ps
 
 Both scripts install the CLI with `uv tool install git+https://github.com/LucaWichmann/Pawchestrator.git` and run `pawchestrator doctor` to show what's ready.
 
-> **Prerequisites:** [`uv`](https://docs.astral.sh/uv/getting-started/installation/), [`git`](https://git-scm.com/), [`gh`](https://cli.github.com/), [`claude`](https://github.com/anthropics/claude-code), [`codex`](https://github.com/openai/codex)
+> **Prerequisites (backend):** [`uv`](https://docs.astral.sh/uv/getting-started/installation/), [`git`](https://git-scm.com/), [`gh`](https://cli.github.com/), [`claude`](https://github.com/anthropics/claude-code), [`codex`](https://github.com/openai/codex)
+>
+> **Prerequisites (userscript dev):** [Node 20 LTS](https://nodejs.org/) (`node`, `npm`) — only needed when modifying userscript source
 
 ### Manual (dev / contributor)
 
@@ -63,6 +65,15 @@ cd Pawchestrator
 uv tool install --editable .
 pawchestrator doctor
 ```
+
+To also build the userscript from source (Node 20 LTS required):
+
+```powershell
+npm install       # install Vite + TypeScript toolchain
+npm run build     # produce dist/pawchestrator.user.js
+```
+
+End-users installing from the badge above use the committed `dist/` artifact and do not need Node.
 
 ---
 
