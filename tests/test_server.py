@@ -7,7 +7,7 @@ import httpx
 from fastapi.testclient import TestClient
 
 from pawchestrator.approval_gate import register_approval_event
-from pawchestrator.config import LOCAL_HOST, Settings
+from pawchestrator.config import LOCAL_HOST, PipelineSettings, Settings
 from pawchestrator.db import init_db
 from pawchestrator.github import GitHubIssueClient
 from pawchestrator.server import create_app
@@ -58,6 +58,53 @@ def test_health_returns_version_and_local_bind(tmp_path: Path) -> None:
     assert payload["database"]["status"] == "ok"
     assert payload["bind"] == {"host": LOCAL_HOST, "localhost_only": True}
     assert (tmp_path / "database.sqlite").exists()
+
+
+def test_config_returns_pipeline_settings(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _seed_token(settings)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.get("/config", headers=_token_headers())
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "pipeline": {
+            "verify_repair_attempts": 3,
+            "plan_approval_max_attempts": 3,
+        },
+    }
+
+
+def test_config_returns_custom_pipeline_settings(tmp_path: Path) -> None:
+    settings = Settings(
+        app_dir=tmp_path,
+        pipeline=PipelineSettings(
+            verify_repair_attempts=1,
+            plan_approval_max_attempts=5,
+        ),
+    )
+    _seed_token(settings)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.get("/config", headers=_token_headers())
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "pipeline": {
+            "verify_repair_attempts": 1,
+            "plan_approval_max_attempts": 5,
+        },
+    }
+
+
+def test_config_requires_auth(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.get("/config")
+
+    assert response.status_code == 403
 
 
 def test_run_state_returns_run_stages_and_artifacts(tmp_path: Path) -> None:
