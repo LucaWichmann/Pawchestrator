@@ -1,4 +1,5 @@
 import { API_BASE, OFFLINE_MESSAGE, TOKEN_KEY } from "./constants";
+import { state } from "./state";
 
 type RequestOptions = {
   method?: string;
@@ -11,6 +12,16 @@ type RequestOptions = {
 type RequestError = Error & { status?: number };
 
 const noopStatusSetter = () => {};
+const CONFIG_RETRY_ATTEMPTS = 3;
+const CONFIG_RETRY_DELAY_MS = 500;
+
+let configLoadPromise: Promise<typeof state.config> | null = null;
+
+function delay(ms: number) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
 
 export function rawRequestJson(path: string, options: RequestOptions = {}) {
   return new Promise<any>((resolve, reject) => {
@@ -54,7 +65,15 @@ export function rawRequestJson(path: string, options: RequestOptions = {}) {
 export async function getOrAcquireToken(statusSetter = noopStatusSetter) {
   const storedToken = await GM_getValue(TOKEN_KEY);
   if (storedToken) {
-    return storedToken;
+    try {
+      await ensureConfigLoaded(storedToken);
+      return storedToken;
+    } catch (error) {
+      if ((error as RequestError).status !== 403) {
+        throw error;
+      }
+      await GM_deleteValue(TOKEN_KEY);
+    }
   }
 
   statusSetter("Pairing - approve in terminal...");
@@ -63,7 +82,67 @@ export async function getOrAcquireToken(statusSetter = noopStatusSetter) {
     label: "Pairing request",
   });
   await GM_setValue(TOKEN_KEY, response.token);
+  await ensureConfigLoaded(response.token);
   return response.token;
+}
+
+export async function fetchConfig(token?: string) {
+  const activeToken = token || (await GM_getValue(TOKEN_KEY));
+  if (!activeToken) {
+    throw new Error("Config request requires a paired token");
+  }
+
+  return retryRequestJson(
+    "/config",
+    {
+      label: "Config request",
+      headers: {
+        "X-Pawchestrator-Token": activeToken,
+      },
+    },
+    CONFIG_RETRY_ATTEMPTS,
+  );
+}
+
+async function ensureConfigLoaded(token: string) {
+  if (state.config) {
+    return state.config;
+  }
+
+  if (!configLoadPromise) {
+    configLoadPromise = fetchConfig(token)
+      .then((config) => {
+        state.config = config;
+        return state.config;
+      })
+      .finally(() => {
+        configLoadPromise = null;
+      });
+  }
+
+  return configLoadPromise;
+}
+
+async function retryRequestJson(
+  path: string,
+  options: RequestOptions,
+  attempts: number,
+) {
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await rawRequestJson(path, options);
+    } catch (error) {
+      lastError = error;
+      if (attempt === attempts) {
+        throw error;
+      }
+      await delay(CONFIG_RETRY_DELAY_MS * attempt);
+    }
+  }
+
+  throw lastError;
 }
 
 export async function requestJson(path: string, options: RequestOptions = {}) {

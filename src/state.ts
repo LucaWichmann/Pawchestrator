@@ -2,6 +2,12 @@ export const state = {
   activePoll: null,
   activePrPoll: null,
   activePathname: window.location.pathname,
+  config: null as {
+    pipeline: {
+      verify_repair_attempts: number;
+      plan_approval_max_attempts: number;
+    };
+  } | null,
   panelExpandedByUser: null,
   lastPipelineExpansionKey: null,
   reinjectTimer: null,
