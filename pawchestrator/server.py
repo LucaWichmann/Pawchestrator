@@ -182,6 +182,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             },
         }
 
+    @app.get("/config")
+    async def config() -> dict[str, object]:
+        return {
+            "pipeline": {
+                "verify_repair_attempts": (
+                    runtime_settings.pipeline.verify_repair_attempts
+                ),
+                "plan_approval_max_attempts": (
+                    runtime_settings.pipeline.plan_approval_max_attempts
+                ),
+            },
+        }
+
     @app.post("/pair")
     async def pair(request: Request) -> PairResponse:
         if not _is_pair_origin_allowed(request.headers.get("origin")):

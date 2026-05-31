@@ -1462,8 +1462,7 @@
 			if (byName.has(name)) byName.get(name).push(stage);
 		});
 		const repairCount = Math.max(0, (byName.get("implement") || []).length - 1);
-		const failedVerifyCount = (byName.get("verify") || []).filter((stage) => stageStatus$1(stage) === "failed").length;
-		const repairTotal = Math.max(repairCount, failedVerifyCount);
+		const repairTotal = state.config.pipeline.verify_repair_attempts;
 		return PIPELINE_STAGES.map((name) => {
 			const matching = byName.get(name) || [];
 			const stage = matching[matching.length - 1] || {
@@ -1472,7 +1471,7 @@
 			};
 			return {
 				name,
-				label: name === "implement" && repairCount > 0 ? `${name} (repair ${repairCount}/${repairTotal || repairCount})` : name,
+				label: name === "implement" && repairCount > 0 ? `${name} (repair ${repairCount}/${repairTotal})` : name,
 				stage
 			};
 		});
@@ -2112,7 +2111,8 @@
 		title.textContent = "Plan Approval";
 		const attempt = document.createElement("span");
 		attempt.className = "pawchestrator-plan-approval-attempt";
-		attempt.textContent = `Plan attempt ${state.planAttempt} of 3`;
+		const maxPlanAttempts = state.config.pipeline.plan_approval_max_attempts;
+		attempt.textContent = `Plan attempt ${state.planAttempt} of ${maxPlanAttempts}`;
 		const risk = String(plan?.estimated_risk || "medium").toLowerCase();
 		const badge = document.createElement("span");
 		badge.className = `risk-badge risk-${[

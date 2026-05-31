@@ -1,4 +1,4 @@
-import { PANEL_ID, PLAN_APPROVAL_ID, PLAN_APPROVAL_MAX_ATTEMPTS } from "../constants";
+import { PANEL_ID, PLAN_APPROVAL_ID } from "../constants";
 import { requestJson } from "../api";
 import { state } from "../state";
 import { createButton, setButtonText, setPanelExpanded } from "../panel/common";
@@ -105,7 +105,8 @@ export function renderPlanApprovalSubView(plan, runId, callbacks = {}) {
   title.textContent = "Plan Approval";
   const attempt = document.createElement("span");
   attempt.className = "pawchestrator-plan-approval-attempt";
-  attempt.textContent = `Plan attempt ${state.planAttempt} of ${PLAN_APPROVAL_MAX_ATTEMPTS}`;
+  const maxPlanAttempts = state.config!.pipeline.plan_approval_max_attempts;
+  attempt.textContent = `Plan attempt ${state.planAttempt} of ${maxPlanAttempts}`;
   const risk = String(plan?.estimated_risk || "medium").toLowerCase();
   const badge = document.createElement("span");
   badge.className = `risk-badge risk-${["low", "medium", "high"].includes(risk) ? risk : "medium"}`;
