@@ -87,7 +87,8 @@ def test_userscript_renders_pipeline_timeline_section() -> None:
     assert "function renderTimeline(parent, pipeline, options = {})" in source
     assert "!options.suppressActive && index === activeIndex && pipeline.status !== \"completed\"" in source
     assert 'status === "done" ? "✓" : status === "failed" ? "×" : "•"' in source
-    assert '`${name} (repair ${repairCount}/${repairTotal || repairCount})`' in source
+    assert "const repairTotal = state.config.pipeline.verify_repair_attempts" in source
+    assert '`${name} (repair ${repairCount}/${repairTotal})`' in source
     assert "renderPipeline(body, status.pipeline)" in source
 
 
@@ -166,12 +167,12 @@ def test_userscript_plan_approval_reject_posts_feedback_and_renders_replanning()
 def test_userscript_plan_approval_tracks_replan_attempts() -> None:
     source = _read_userscript()
 
-    assert 'state.planAttempt} of 3' in source
+    assert "const maxPlanAttempts = state.config.pipeline.plan_approval_max_attempts" in source
     assert "planAttempt: 1" in source
     assert "rejectedPlanRunIds: new Set()" in source
     assert "state.rejectedPlanRunIds.add(runId)" in source
     assert "state.planAttempt += 1" in source
-    assert 'attempt.textContent = `Plan attempt ${state.planAttempt} of 3`' in source
+    assert 'attempt.textContent = `Plan attempt ${state.planAttempt} of ${maxPlanAttempts}`' in source
 
 
 def test_userscript_plan_approval_cancel_restores_action_bar_without_request() -> None:
