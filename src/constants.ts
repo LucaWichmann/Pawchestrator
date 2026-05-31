@@ -10,7 +10,6 @@ export const CREATE_ISSUES_ID = "pawchestrator-create-issues";
 export const PLAN_APPROVAL_ID = "pawchestrator-plan-approval";
 export const CONFIRM_OVERLAY_ID = "pawchestrator-confirm-overlay";
 export const POLL_INTERVAL_MS = 3000;
-export const PLAN_APPROVAL_MAX_ATTEMPTS = 3;
 export const REINJECT_DEBOUNCE_MS = 100;
 export const TOKEN_KEY = "pawchestrator_token";
 export const PIPELINE_STAGES = ["snapshot", "scout", "plan", "implement", "verify", "pr"];

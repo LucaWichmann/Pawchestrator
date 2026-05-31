@@ -1,4 +1,5 @@
 import { PIPELINE_STAGES, REPAIR_STAGES, REVIEW_STAGES, STAGE_DONE } from "../constants";
+import { state } from "../state";
 import { isRunDone } from "../summarize";
 
 function stageName(stage) {
@@ -42,17 +43,14 @@ function collapseStages(stages) {
   });
 
   const repairCount = Math.max(0, (byName.get("implement") || []).length - 1);
-  const failedVerifyCount = (byName.get("verify") || []).filter(
-    (stage) => stageStatus(stage) === "failed",
-  ).length;
-  const repairTotal = Math.max(repairCount, failedVerifyCount);
+  const repairTotal = state.config!.pipeline.verify_repair_attempts;
 
   return PIPELINE_STAGES.map((name) => {
     const matching = byName.get(name) || [];
     const stage = matching[matching.length - 1] || { stage_name: name, status: "pending" };
     const label =
       name === "implement" && repairCount > 0
-        ? `${name} (repair ${repairCount}/${repairTotal || repairCount})`
+        ? `${name} (repair ${repairCount}/${repairTotal})`
         : name;
     return { name, label, stage };
   });
