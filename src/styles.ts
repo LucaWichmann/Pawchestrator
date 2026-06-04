@@ -236,6 +236,15 @@ export function injectStyles() {
       white-space: pre-wrap;
     }
 
+    #${PANEL_ID} .pawchestrator-plan-approval-context {
+      background: var(--bgColor-accent-muted, #ddf4ff);
+      border: 1px solid var(--borderColor-accent-muted, #54aeff);
+      border-radius: 6px;
+      color: var(--fgColor-default, #24292f);
+      font-weight: 600;
+      padding: 8px 10px;
+    }
+
     #${PANEL_ID} .pawchestrator-plan-approval-attempt {
       color: var(--fgColor-muted, #59636e);
       font-size: 12px;
