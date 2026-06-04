@@ -19,6 +19,7 @@ from pawchestrator.codegraph import sync_back_if_merged
 from pawchestrator.config import DEFAULT_PORT, LOCAL_HOST, load_settings
 from pawchestrator.db import (
     create_epic_run,
+    get_run_detail,
     get_run_state,
     get_worktree_record,
     insert_repo_registration,
@@ -452,6 +453,19 @@ def run_pr_command(run_id: str) -> None:
     typer.echo(result.report["pr_url"])
 
 
+@run_app.command("show")
+def run_show_command(run_id: str) -> None:
+    """Show full detail for a workflow run."""
+
+    settings = load_settings()
+    run_detail = asyncio.run(get_run_detail(settings, run_id))
+    if run_detail is None:
+        typer.secho(f"Run not found: {run_id}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    _print_run_detail(run_detail, settings.app_dir / "runs" / run_id)
+
+
 async def _sync_codegraph_run(run_id: str, settings, *, repo_path: Path | None = None):
     run_state = await get_run_state(settings, run_id)
     if run_state is None:
@@ -478,6 +492,91 @@ async def _sync_codegraph_run(run_id: str, settings, *, repo_path: Path | None =
         worktree_path=Path(str(worktree["path"])),
         branch=str(worktree["branch"]),
     )
+
+
+def _print_run_detail(run_detail: dict[str, object], run_dir: Path) -> None:
+    issue_number = run_detail.get("issue_number")
+    pr_number = run_detail.get("pr_number")
+    issue_or_pr = f"#{issue_number}" if issue_number is not None else "-"
+    if pr_number is not None:
+        issue_or_pr = f"PR #{pr_number}"
+
+    typer.echo("Metadata")
+    typer.echo(f"ID: {run_detail['id']}")
+    typer.echo(f"Type: {run_detail['workflow_type']}")
+    typer.echo(f"Repository: {run_detail['owner']}/{run_detail['repo']}")
+    typer.echo(f"Issue/PR: {issue_or_pr}")
+    typer.echo(f"Status: {run_detail['status']}")
+    typer.echo(f"Created: {run_detail['created_at']}")
+    typer.echo(f"Updated: {run_detail['updated_at']}")
+    typer.echo("")
+
+    typer.echo("Stages")
+    _print_table(
+        ["Stage", "Status", "Started", "Completed", "Error"],
+        [
+            [
+                str(stage.get("stage_name") or "-"),
+                str(stage.get("status") or "-"),
+                str(stage.get("started_at") or "-"),
+                str(stage.get("completed_at") or "-"),
+                str(stage.get("error") or "-"),
+            ]
+            for stage in _as_dict_list(run_detail.get("stages"))
+        ],
+    )
+    typer.echo("")
+
+    typer.echo("Warnings")
+    _print_table(
+        ["Stage", "Code", "Message", "Timestamp"],
+        [
+            [
+                str(warning.get("stage_name") or "-"),
+                str(warning.get("code") or "-"),
+                str(warning.get("message") or "-"),
+                str(warning.get("created_at") or "-"),
+            ]
+            for warning in _as_dict_list(run_detail.get("warnings"))
+        ],
+    )
+    typer.echo("")
+
+    typer.echo("Artifacts")
+    artifact_paths = _scan_artifact_paths(run_dir)
+    if artifact_paths:
+        for artifact_path in artifact_paths:
+            typer.echo(str(artifact_path))
+    else:
+        typer.echo("-")
+
+
+def _as_dict_list(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
+def _print_table(headers: list[str], rows: list[list[str]]) -> None:
+    table_rows = rows or [["-" for _ in headers]]
+    widths = [
+        max(len(headers[index]), *(len(row[index]) for row in table_rows))
+        for index in range(len(headers))
+    ]
+    typer.echo(
+        "  ".join(header.ljust(widths[index]) for index, header in enumerate(headers))
+    )
+    typer.echo("  ".join("-" * width for width in widths))
+    for row in table_rows:
+        typer.echo(
+            "  ".join(value.ljust(widths[index]) for index, value in enumerate(row))
+        )
+
+
+def _scan_artifact_paths(run_dir: Path) -> list[Path]:
+    if not run_dir.exists():
+        return []
+    return sorted(path for path in run_dir.rglob("*") if path.is_file())
 
 
 def _print_result(label: str, status: str, message: str) -> None:
