@@ -701,10 +701,11 @@ def _prompt_implementation_plan(implementation_plan: dict[str, Any]) -> dict[str
 
 def _prompt_implementation_step(step: object) -> dict[str, object]:
     if not isinstance(step, dict):
-        return {"description": str(step), "files_to_modify": []}
+        return {"description": str(step), "files_to_modify": [], "notes": ""}
     return {
         "description": str(step.get("description") or ""),
         "files_to_modify": _list_value(step.get("files_to_modify")),
+        "notes": str(step.get("notes") or ""),
     }
 
 
