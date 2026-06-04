@@ -51,6 +51,7 @@ from pawchestrator.review import run_review
 from pawchestrator.review import review_report_path
 from pawchestrator.review_issues import format_and_create_issues
 from pawchestrator.review_post import run_review_post
+from pawchestrator.run_clean import auto_clean_runs
 from pawchestrator.runners import get_runner_health
 from pawchestrator.sessions import (
     _pair_lock,
@@ -143,6 +144,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         database_path = await init_db(runtime_settings)
         await fail_stale_runs_on_startup(runtime_settings)
+        await auto_clean_runs(runtime_settings)
         app.state.settings = runtime_settings
         app.state.database_path = database_path
         yield
@@ -192,6 +194,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "plan_approval_max_attempts": (
                     runtime_settings.pipeline.plan_approval_max_attempts
                 ),
+                "auto_clean": runtime_settings.pipeline.auto_clean,
                 "smart_routing": runtime_settings.pipeline.smart_routing.model_dump(
                     mode="json"
                 ),

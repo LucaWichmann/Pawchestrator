@@ -47,6 +47,7 @@ from pawchestrator.issues import snapshot_issue
 from pawchestrator.pipeline import run_pipeline
 from pawchestrator.plan import run_plan
 from pawchestrator.pr import run_pr
+from pawchestrator.run_clean import clean_runs
 from pawchestrator.scout import run_scout
 from pawchestrator.verify import run_verify
 
@@ -517,6 +518,51 @@ def run_list_command(
             for run in runs
         ],
     )
+
+
+@run_app.command("clean")
+def run_clean_command(
+    older_than: Annotated[
+        str,
+        typer.Option("--older-than", help="Delete run files older than this duration."),
+    ] = "30d",
+    status: Annotated[
+        list[str] | None,
+        typer.Option("--status", help="Filter by failed, complete, or exact status."),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Print paths without deleting files."),
+    ] = False,
+) -> None:
+    """Delete old run artifacts and worktrees while preserving run history."""
+
+    settings = load_settings()
+    try:
+        results = asyncio.run(
+            clean_runs(
+                settings,
+                older_than=older_than,
+                statuses=status or ["failed", "complete"],
+                dry_run=dry_run,
+            )
+        )
+    except Exception as error:
+        typer.secho(f"Run clean failed: {error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from error
+
+    action = "Would clean" if dry_run else "Cleaned"
+    if not results:
+        typer.echo("No matching runs to clean.")
+        return
+
+    for result in results:
+        typer.echo(
+            f"{action} {result.target.run_id} "
+            f"status={result.target.status} artifacts={result.target.artifacts_path}"
+        )
+        if result.target.worktree_path is not None:
+            typer.echo(f"Worktree: {result.target.worktree_path}")
 
 
 async def _sync_codegraph_run(run_id: str, settings, *, repo_path: Path | None = None):
