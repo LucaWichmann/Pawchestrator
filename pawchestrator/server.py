@@ -591,14 +591,16 @@ def _prompt_pairing() -> bool:
 
 
 def _spawn_run_task(
-    run_id: str,
+    task_run_id: str,
     func,
     *args,
     **kwargs,
 ) -> asyncio.Task[None]:
     task = asyncio.create_task(func(*args, **kwargs))
-    _active_run_tasks[run_id] = task
-    task.add_done_callback(lambda completed: _unregister_run_task(run_id, completed))
+    _active_run_tasks[task_run_id] = task
+    task.add_done_callback(
+        lambda completed: _unregister_run_task(task_run_id, completed)
+    )
     return task
 
 
