@@ -634,9 +634,6 @@ Working directory: {worktree_path}
 Issue body:
 {snapshot.get("body", "")}
 
-IssueSnapshot JSON:
-{_prompt_json(snapshot)}
-
 Implementation plan:
 {_prompt_json(prompt_plan)}
 {checkbox_section}"""

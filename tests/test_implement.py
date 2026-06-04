@@ -227,7 +227,7 @@ def test_build_implement_prompt_keeps_non_repair_shape(tmp_path: Path) -> None:
     prompt = build_implement_prompt(_snapshot(), {"steps": []}, tmp_path)
 
     assert prompt.startswith("Issue: #42 - Add implement")
-    assert "IssueSnapshot JSON:" in prompt
+    assert "IssueSnapshot JSON:" not in prompt
     assert "Issue body:\nIssue body" in prompt
     assert "Background (what was implemented):" not in prompt
     assert "Verification failure:" not in prompt
@@ -626,7 +626,7 @@ def test_run_implement_writes_report_log_and_records_stage(
     assert events == ["sync-back", "seed", "runner"]
     assert runner.task.cwd == worktree_path
     assert runner.task.stage_name == "implement"
-    assert "IssueSnapshot JSON" in runner.task.prompt
+    assert "IssueSnapshot JSON" not in runner.task.prompt
     assert result.artifact_path == tmp_path / "runs" / run_id / "implementation_report.json"
     assert result.log_path == tmp_path / "runs" / run_id / "stdout" / "implement.log"
 
