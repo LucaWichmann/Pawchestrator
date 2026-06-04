@@ -193,6 +193,78 @@ def test_github_remote_parser_rejects_non_github_remote(tmp_path, monkeypatch) -
         raise AssertionError("expected non-GitHub remote to fail")
 
 
+def test_repo_remove_accepts_owner_repo(tmp_path, monkeypatch) -> None:
+    settings = Settings(app_dir=tmp_path)
+    calls = {}
+
+    async def fake_delete_repo_registration(settings_arg, *, owner, repo):
+        calls["settings"] = settings_arg
+        calls["owner"] = owner
+        calls["repo"] = repo
+        return True
+
+    monkeypatch.setattr(cli, "load_settings", lambda: settings)
+    monkeypatch.setattr(
+        cli,
+        "delete_repo_registration",
+        fake_delete_repo_registration,
+    )
+
+    result = CliRunner().invoke(cli.app, ["repo", "remove", "owner/repo"])
+
+    assert result.exit_code == 0
+    assert calls == {"settings": settings, "owner": "owner", "repo": "repo"}
+    assert "Removed owner/repo" in result.output
+
+
+def test_repo_remove_reports_unregistered_repo(tmp_path, monkeypatch) -> None:
+    settings = Settings(app_dir=tmp_path)
+
+    async def fake_delete_repo_registration(settings_arg, *, owner, repo):
+        return False
+
+    monkeypatch.setattr(cli, "load_settings", lambda: settings)
+    monkeypatch.setattr(
+        cli,
+        "delete_repo_registration",
+        fake_delete_repo_registration,
+    )
+
+    result = CliRunner().invoke(cli.app, ["repo", "remove", "owner/repo"])
+
+    assert result.exit_code == 1
+    assert "Repository not registered: owner/repo" in result.output
+
+
+def test_repo_remove_accepts_path_input(tmp_path, monkeypatch) -> None:
+    settings = Settings(app_dir=tmp_path)
+    calls = {}
+
+    async def fake_delete_repo_registration(settings_arg, *, owner, repo):
+        calls["settings"] = settings_arg
+        calls["owner"] = owner
+        calls["repo"] = repo
+        return True
+
+    monkeypatch.setattr(cli, "load_settings", lambda: settings)
+    monkeypatch.setattr(
+        cli,
+        "delete_repo_registration",
+        fake_delete_repo_registration,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_github_remote_owner_repo",
+        lambda path: ("owner", "repo"),
+    )
+
+    result = CliRunner().invoke(cli.app, ["repo", "remove", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert calls == {"settings": settings, "owner": "owner", "repo": "repo"}
+    assert "Removed owner/repo" in result.output
+
+
 def test_sessions_clear_deletes_sessions_file(tmp_path, monkeypatch) -> None:
     settings = Settings(app_dir=tmp_path)
     save_sessions(settings, {"tokens": ["known-token"]})

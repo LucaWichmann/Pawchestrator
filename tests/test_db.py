@@ -11,6 +11,7 @@ from pawchestrator.db import (
     create_grill_run,
     create_repair_run,
     create_review_run,
+    delete_repo_registration,
     get_github_comment_id,
     get_latest_epic_architect_run_by_issue,
     get_latest_grill_run_by_issue,
@@ -18,7 +19,9 @@ from pawchestrator.db import (
     get_run_state,
     get_run_warnings,
     init_db,
+    insert_repo_registration,
     insert_run_warning,
+    list_repo_registrations,
     list_runs,
     list_tables,
     set_grill_waiting,
@@ -159,6 +162,37 @@ def test_upsert_worktree_record_inserts_and_updates(tmp_path: Path) -> None:
         ).fetchall()
 
     assert rows == [("paw/issue-42-new", str(tmp_path / "new"))]
+
+
+def test_delete_repo_registration_removes_matching_repo_only(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+
+    asyncio.run(
+        insert_repo_registration(
+            settings,
+            owner="owner",
+            repo="repo",
+            local_path=tmp_path / "repo",
+        )
+    )
+    asyncio.run(
+        insert_repo_registration(
+            settings,
+            owner="other",
+            repo="repo",
+            local_path=tmp_path / "other",
+        )
+    )
+
+    assert asyncio.run(
+        delete_repo_registration(settings, owner="owner", repo="repo")
+    ) is True
+    assert asyncio.run(
+        delete_repo_registration(settings, owner="owner", repo="repo")
+    ) is False
+
+    registrations = asyncio.run(list_repo_registrations(settings))
+    assert [(row["owner"], row["repo"]) for row in registrations] == [("other", "repo")]
 
 
 def test_create_pipeline_run_inserts_all_pending_stages(tmp_path: Path) -> None:
