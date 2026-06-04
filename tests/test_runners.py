@@ -406,7 +406,7 @@ def test_claude_runner_invokes_expected_command_and_parses_result(
         "claude-beta",
         "-p",
         "--model",
-        "sonnet",
+        "haiku",
         "--effort",
         "medium",
         "--output-format",
@@ -752,7 +752,7 @@ def test_claude_runner_wsl_mode_invokes_wsl_and_preserves_tools(
         "claude-linux",
         "-p",
         "--model",
-        "sonnet",
+        "haiku",
         "--effort",
         "low",
         "--output-format",
@@ -795,7 +795,7 @@ def test_claude_runner_debug_prints_command_and_output(
     assert "[pawchestrator:debug] run=run-debug stage=scout runner=claude" in output
     assert "stdin=<prompt chars=12>" in output
     assert "debug prompt" not in output
-    assert "--model sonnet --effort low" in output
+    assert "--model haiku --effort low" in output
     assert '{"result": {"status": "success"}}' in output
     assert "claude warning" in output
 
