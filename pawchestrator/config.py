@@ -167,6 +167,7 @@ class PipelineSettings(BaseSettings):
     plan_approval_timeout_hours: int | None = Field(default=None)
     epic_fail_fast: bool = True
     epic_confirm: bool = False
+    auto_clean: str | Literal[False] = "14d"
     verify_non_code_changes: StrictBool = False
     non_code_patterns: list[str] = Field(
         default_factory=lambda: ["*.md", "*.txt", "docs/**", "adr/**"]
