@@ -72,6 +72,13 @@ def test_config_returns_pipeline_settings(tmp_path: Path) -> None:
         "pipeline": {
             "verify_repair_attempts": 3,
             "plan_approval_max_attempts": 3,
+            "smart_routing": {
+                "enabled": False,
+                "skip_plan_when": ["implement"],
+                "require_readiness": ["ready"],
+                "require_max_risk": "low",
+                "confirm_skip": False,
+            },
         },
     }
 
@@ -82,6 +89,13 @@ def test_config_returns_custom_pipeline_settings(tmp_path: Path) -> None:
         pipeline=PipelineSettings(
             verify_repair_attempts=1,
             plan_approval_max_attempts=5,
+            smart_routing={
+                "enabled": True,
+                "skip_plan_when": ["implement", "verify"],
+                "require_readiness": ["ready", "accepted"],
+                "require_max_risk": "medium",
+                "confirm_skip": True,
+            },
         ),
     )
     _seed_token(settings)
@@ -94,6 +108,13 @@ def test_config_returns_custom_pipeline_settings(tmp_path: Path) -> None:
         "pipeline": {
             "verify_repair_attempts": 1,
             "plan_approval_max_attempts": 5,
+            "smart_routing": {
+                "enabled": True,
+                "skip_plan_when": ["implement", "verify"],
+                "require_readiness": ["ready", "accepted"],
+                "require_max_risk": "medium",
+                "confirm_skip": True,
+            },
         },
     }
 
