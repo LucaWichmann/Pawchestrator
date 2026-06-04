@@ -13,8 +13,11 @@ from pawchestrator.config import Settings, StageSettings
 from pawchestrator.db import get_run_warnings, init_db
 from pawchestrator.plan import (
     _prompt_plan_snapshot,
+    build_micro_plan_prompt,
     build_plan_prompt,
     normalize_implementation_plan,
+    normalize_micro_plan,
+    run_micro_plan,
     run_plan,
 )
 from pawchestrator.runners import (
@@ -115,6 +118,30 @@ def test_build_plan_prompt_includes_issue_and_scout_report() -> None:
     assert '"create" | "modify" | "delete"' in prompt
     assert "<=100 chars" in prompt
     assert "No prose. No progress updates. Emit valid JSON artifact only." in prompt
+
+
+def test_build_micro_plan_prompt_includes_issue_and_strips_comments() -> None:
+    snapshot = {
+        "owner": "owner",
+        "repo": "repo",
+        "number": 42,
+        "title": "Add plan",
+        "body": "Issue body",
+        "comments": [{"author": "alice", "body": "Needs tests"}],
+    }
+    scout_report = {
+        "schema": "pawchestrator.scout_report.v1",
+        "findings": [{"kind": "scope", "text": "Small change"}],
+    }
+
+    prompt = build_micro_plan_prompt(snapshot, scout_report)
+
+    assert "Issue: #42 - Add plan" in prompt
+    assert "Repository: owner/repo" in prompt
+    assert "pawchestrator.micro_plan.v1" in prompt
+    assert "Max 3 steps" in prompt
+    assert '"comments"' not in prompt
+    assert "Needs tests" not in prompt
 
 
 def test_prompt_plan_snapshot_strips_comments() -> None:
@@ -278,6 +305,73 @@ def test_run_plan_writes_artifact_log_and_records_stage(tmp_path: Path) -> None:
     assert run == ("plan_complete", "plan")
     assert stage == ("complete", None)
     assert artifact == ("implementation_plan", str(result.artifact_path))
+
+
+def test_run_micro_plan_uses_haiku_stage_and_writes_compatible_artifact(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    run_id = "run-123"
+    asyncio.run(_insert_scout_run(settings, run_id))
+    _write_snapshot(settings, run_id)
+    _write_scout_report(settings, run_id)
+    runner = FakeRunner(
+        result=RunnerResult(
+            exit_code=0,
+            stdout='{"result": "ok"}',
+            stderr="",
+            artifact={
+                "schema": "pawchestrator.micro_plan.v1",
+                "approach_summary": "Make the smallest plan.",
+                "steps": [
+                    "Add micro plan skill.",
+                    "Run Haiku for micro plan.",
+                    "Normalize compatible output.",
+                    "Ignore this extra step.",
+                ],
+                "files_to_modify": ["pawchestrator/plan.py"],
+            },
+        )
+    )
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+
+    result = asyncio.run(
+        run_micro_plan(run_id, settings, repo_path=repo_path, runner=runner)
+    )
+
+    assert runner.task is not None
+    assert runner.task.stage_name == "micro_plan"
+    assert "pawchestrator.micro_plan.v1" in runner.task.prompt
+    assert result.artifact_path == tmp_path / "runs" / run_id / "implementation_plan.json"
+    plan = json.loads(result.artifact_path.read_text(encoding="utf-8"))
+    assert plan["schema"] == "pawchestrator.implementation_plan.v1"
+    assert plan["source_schema"] == "pawchestrator.micro_plan.v1"
+    assert [step["description"] for step in plan["steps"]] == [
+        "Add micro plan skill.",
+        "Run Haiku for micro plan.",
+        "Normalize compatible output.",
+    ]
+    assert plan["file_operations"] == [
+        {"path": "pawchestrator/plan.py", "type": "modify", "description": ""}
+    ]
+    assert plan["estimated_risk"] == "low"
+
+
+def test_normalize_micro_plan_caps_steps_and_defaults_to_implementation_shape() -> None:
+    plan = normalize_micro_plan(
+        {
+            "schema": "pawchestrator.micro_plan.v1",
+            "approach_summary": "x" * 120,
+            "steps": ["One", "Two", "Three", "Four"],
+            "files_to_modify": ["a.py", "a.py", "b.py"],
+        }
+    )
+
+    assert plan["schema"] == "pawchestrator.implementation_plan.v1"
+    assert plan["approach_summary"] == "x" * 100
+    assert [step["order"] for step in plan["steps"]] == [1, 2, 3]
+    assert plan["files_to_modify"] == ["a.py", "b.py"]
 
 
 def test_run_plan_uses_codex_runner_when_stage_overrides_runner(
