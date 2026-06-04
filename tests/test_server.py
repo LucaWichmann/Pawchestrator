@@ -1,3 +1,4 @@
+import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ from pawchestrator.approval_gate import register_approval_event
 from pawchestrator.config import LOCAL_HOST, PipelineSettings, Settings
 from pawchestrator.db import init_db
 from pawchestrator.github import GitHubIssueClient
+from pawchestrator import server
 from pawchestrator.server import create_app
 from pawchestrator.sessions import save_sessions
 
@@ -296,7 +298,7 @@ def test_approve_non_awaiting_run_returns_409(tmp_path: Path) -> None:
     assert response.status_code == 409
 
 
-def test_abort_non_awaiting_run_returns_409(tmp_path: Path) -> None:
+def test_abort_non_active_run_returns_404(tmp_path: Path) -> None:
     settings = Settings(app_dir=tmp_path)
     _insert_run_state(settings)
     _seed_token(settings)
@@ -304,7 +306,7 @@ def test_abort_non_awaiting_run_returns_409(tmp_path: Path) -> None:
     with TestClient(create_app(settings)) as client:
         response = client.post("/runs/run-123/abort", headers=_token_headers())
 
-    assert response.status_code == 409
+    assert response.status_code == 404
 
 
 def test_approve_signals_plan_approval_event(tmp_path: Path) -> None:
@@ -326,13 +328,62 @@ def test_abort_signals_plan_approval_event(tmp_path: Path) -> None:
     _insert_run_state(settings, status="awaiting_plan_approval", current_stage="plan")
     _seed_token(settings)
     event = register_approval_event("run-123")
+    task = _FakeTask()
+    server._active_run_tasks["run-123"] = task
 
-    with TestClient(create_app(settings)) as client:
-        response = client.post("/runs/run-123/abort", headers=_token_headers())
+    try:
+        with TestClient(create_app(settings)) as client:
+            response = client.post("/runs/run-123/abort", headers=_token_headers())
+    finally:
+        server._active_run_tasks.pop("run-123", None)
 
     assert response.status_code == 200
-    assert response.json() == {"run_id": "run-123", "decision": "abort"}
+    assert response.json() == {
+        "run_id": "run-123",
+        "status": "failed",
+        "error": "aborted by user",
+    }
     assert event.is_set() is True
+    assert task.cancelled is True
+
+
+def test_abort_active_run_cancels_task_marks_failed_and_closes_stream(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _insert_run_state(settings, status="plan_running", current_stage="plan")
+    _seed_token(settings)
+    task = _FakeTask()
+    queue = server._run_stream_queues["run-123"] = asyncio.Queue()
+    server._active_run_tasks["run-123"] = task
+
+    try:
+        with TestClient(create_app(settings)) as client:
+            response = client.post("/runs/run-123/abort", headers=_token_headers())
+            state_response = client.get("/runs/run-123", headers=_token_headers())
+    finally:
+        server._active_run_tasks.pop("run-123", None)
+        server._run_stream_queues.pop("run-123", None)
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "run_id": "run-123",
+        "status": "failed",
+        "error": "aborted by user",
+    }
+    assert task.cancelled is True
+    assert state_response.json()["status"] == "failed"
+    assert queue.get_nowait() is server._STREAM_SENTINEL
+
+
+def test_abort_missing_run_returns_404(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _seed_token(settings)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.post("/runs/missing/abort", headers=_token_headers())
+
+    assert response.status_code == 404
 
 
 def test_reject_non_awaiting_run_returns_409(tmp_path: Path) -> None:
@@ -1164,6 +1215,17 @@ class _FakeSubIssueClient:
                 row = await cursor.fetchone()
             self.run_count_at_fetch = int(row[0])
         return self.sub_issues
+
+
+class _FakeTask:
+    def __init__(self) -> None:
+        self.cancelled = False
+
+    def done(self) -> bool:
+        return False
+
+    def cancel(self) -> None:
+        self.cancelled = True
 
 
 def _patch_sub_issue_client(monkeypatch, client: _FakeSubIssueClient) -> None:
