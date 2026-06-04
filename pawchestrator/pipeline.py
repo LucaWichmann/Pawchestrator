@@ -41,8 +41,8 @@ from pawchestrator.github import (
 )
 from pawchestrator.implement import run_implement
 from pawchestrator.issues import snapshot_issue
-from pawchestrator.plan import run_plan
 from pawchestrator.plan import load_plan_rejections
+from pawchestrator.plan import run_micro_plan, run_plan
 from pawchestrator.pr import run_pr
 from pawchestrator.scout import run_scout
 from pawchestrator.stage_lifecycle import StageResult, StageSkipped, run_stage_lifecycle
@@ -63,6 +63,20 @@ class PipelineResult:
 
 class VerificationFailedError(RuntimeError):
     """Raised when verification fails after all repair attempts."""
+
+
+def _should_skip_plan(settings: Settings, scout_report: dict) -> bool:
+    sr = settings.pipeline.smart_routing
+    if not sr.enabled:
+        return False
+    if scout_report.get("next_recommended_stage") not in sr.skip_plan_when:
+        return False
+    if scout_report.get("readiness") not in sr.require_readiness:
+        return False
+    risk_order = {"low": 0, "medium": 1, "high": 2}
+    actual = risk_order.get(scout_report.get("risk", "high"), 2)
+    ceiling = risk_order.get(sr.require_max_risk, 0)
+    return actual <= ceiling
 
 
 async def run_pipeline(
@@ -123,6 +137,17 @@ async def run_pipeline(
             settings,
             repo_path=resolved_repo_path,
             rejections=rejections,
+        )
+
+    async def micro_plan_stage(
+        rejections: list[dict[str, Any]] | None = None,
+    ) -> StageResult:
+        if rejections:
+            return await plan_stage(rejections)
+        return await run_micro_plan(
+            active_run_id,
+            settings,
+            repo_path=resolved_repo_path,
         )
 
     async def implement_stage(
@@ -220,13 +245,30 @@ async def run_pipeline(
         _print_done(progress, "scout", f"readiness: {scout.report.get('readiness', 'unknown')}")
         await _edit_run_comment(settings, active_run_id, comment_client)
         await _swap_stage_label(settings, active_run_id, comment_client, "planning")
-        await _run_plan_until_approved(
-            settings,
-            active_run_id,
-            plan_stage,
-            comment_client,
-            progress,
-        )
+        if _should_skip_plan(settings, scout.report):
+            await insert_run_warning(
+                settings,
+                run_id=active_run_id,
+                stage_name="plan",
+                code="smart_routing_plan_skipped",
+                message="Smart routing skipped full plan and generated a micro-plan.",
+            )
+            await _run_plan_until_approved(
+                settings,
+                active_run_id,
+                micro_plan_stage,
+                comment_client,
+                progress,
+                require_approval=settings.pipeline.smart_routing.confirm_skip,
+            )
+        else:
+            await _run_plan_until_approved(
+                settings,
+                active_run_id,
+                plan_stage,
+                comment_client,
+                progress,
+            )
         await _edit_run_comment(settings, active_run_id, comment_client)
         await _swap_stage_label(settings, active_run_id, comment_client, "implementing")
         await _run_stage("implement", implement_stage, progress)
@@ -319,8 +361,12 @@ async def _await_plan_approval(
     settings: Settings,
     run_id: str,
     progress: ProgressFn,
+    *,
+    require_approval: bool | None = None,
 ) -> str:
-    if not settings.pipeline.plan_approval:
+    if require_approval is None:
+        require_approval = settings.pipeline.plan_approval
+    if not require_approval:
         return "approve"
 
     event = register_approval_event(run_id)
@@ -362,12 +408,19 @@ async def _run_plan_until_approved(
     plan_stage: Callable[[list[dict[str, Any]] | None], Awaitable[StageResult]],
     comment_client: GitHubIssueClient | None,
     progress: ProgressFn,
+    *,
+    require_approval: bool | None = None,
 ) -> None:
     rejections: list[dict[str, Any]] | None = None
     while True:
         await _run_stage("plan", lambda: plan_stage(rejections), progress)
         await _edit_run_comment(settings, run_id, comment_client)
-        decision = await _await_plan_approval(settings, run_id, progress)
+        decision = await _await_plan_approval(
+            settings,
+            run_id,
+            progress,
+            require_approval=require_approval,
+        )
         if decision == "approve":
             return
         if decision != "reject":
