@@ -19,6 +19,7 @@ from pawchestrator.codegraph import sync_back_if_merged
 from pawchestrator.config import DEFAULT_PORT, LOCAL_HOST, load_settings
 from pawchestrator.db import (
     create_epic_run,
+    list_runs,
     get_run_detail,
     get_run_state,
     get_worktree_record,
@@ -466,6 +467,58 @@ def run_show_command(run_id: str) -> None:
     _print_run_detail(run_detail, settings.app_dir / "runs" / run_id)
 
 
+@run_app.command("list")
+def run_list_command(
+    owner_repo: Annotated[
+        str | None,
+        typer.Option("--repo", help="Filter runs by owner/repo."),
+    ] = None,
+    status: Annotated[
+        str | None,
+        typer.Option(
+            "--status",
+            help="Filter by failed, complete, running, or an exact run status.",
+        ),
+    ] = None,
+    limit: Annotated[
+        int,
+        typer.Option("--limit", min=1, help="Maximum number of runs to show."),
+    ] = 20,
+) -> None:
+    """List workflow runs."""
+
+    settings = load_settings()
+    try:
+        runs = asyncio.run(list_runs(settings, owner_repo, status, limit))
+    except ValueError as error:
+        typer.secho(f"Run list failed: {error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from error
+
+    _print_table(
+        [
+            "run_id",
+            "workflow_type",
+            "issue/pr",
+            "status",
+            "current_stage",
+            "created_at",
+            "pr_url",
+        ],
+        [
+            [
+                str(run["id"]),
+                str(run["workflow_type"]),
+                _issue_or_pr(run),
+                str(run["status"]),
+                str(run.get("current_stage") or "-"),
+                str(run["created_at"]),
+                str(run.get("pr_url") or "-"),
+            ]
+            for run in runs
+        ],
+    )
+
+
 async def _sync_codegraph_run(run_id: str, settings, *, repo_path: Path | None = None):
     run_state = await get_run_state(settings, run_id)
     if run_state is None:
@@ -555,6 +608,14 @@ def _as_dict_list(value: object) -> list[dict[str, object]]:
     if not isinstance(value, list):
         return []
     return [item for item in value if isinstance(item, dict)]
+
+
+def _issue_or_pr(run: dict[str, object]) -> str:
+    if run.get("pr_number") is not None:
+        return f"PR #{run['pr_number']}"
+    if run.get("issue_number") is not None:
+        return f"#{run['issue_number']}"
+    return "-"
 
 
 def _print_table(headers: list[str], rows: list[list[str]]) -> None:
