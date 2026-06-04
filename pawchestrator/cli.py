@@ -13,6 +13,7 @@ from uuid import uuid4
 
 import typer
 import uvicorn
+import httpx
 
 from pawchestrator.checkbox import check_checkbox
 from pawchestrator.codegraph import sync_back_if_merged
@@ -49,6 +50,7 @@ from pawchestrator.plan import run_plan
 from pawchestrator.pr import run_pr
 from pawchestrator.run_clean import clean_runs
 from pawchestrator.scout import run_scout
+from pawchestrator.sessions import load_sessions
 from pawchestrator.verify import run_verify
 
 app = typer.Typer(add_completion=False, help="Local Pawchestrator backend tools.")
@@ -455,6 +457,26 @@ def run_pr_command(run_id: str) -> None:
     typer.echo(result.report["pr_url"])
 
 
+@run_app.command("abort")
+def run_abort_command(
+    run_id: str,
+    port: Annotated[
+        int,
+        typer.Option("--port", min=1, max=65535, help="Local backend port."),
+    ] = DEFAULT_PORT,
+) -> None:
+    """Abort an active workflow run in the local backend."""
+
+    settings = load_settings()
+    try:
+        payload = _abort_run_in_daemon(settings, run_id, port=port)
+    except Exception as error:
+        typer.secho(f"Run abort failed: {error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from error
+
+    typer.echo(f"Aborted run {payload['run_id']}: {payload['error']}")
+
+
 @run_app.command("show")
 def run_show_command(run_id: str) -> None:
     """Show full detail for a workflow run."""
@@ -591,6 +613,34 @@ async def _sync_codegraph_run(run_id: str, settings, *, repo_path: Path | None =
         worktree_path=Path(str(worktree["path"])),
         branch=str(worktree["branch"]),
     )
+
+
+def _abort_run_in_daemon(settings, run_id: str, *, port: int) -> dict[str, str]:
+    sessions = load_sessions(settings)
+    tokens = sessions.get("tokens") or []
+    if not tokens:
+        raise RuntimeError("no pairing token found - pair with the daemon first")
+
+    url = f"http://{LOCAL_HOST}:{port}/runs/{run_id}/abort"
+    response = httpx.post(
+        url,
+        headers={"X-Pawchestrator-Token": str(tokens[-1])},
+        timeout=10,
+    )
+    if response.status_code == 404:
+        raise RuntimeError(f"run not found or not active: {run_id}")
+    if response.status_code >= 400:
+        try:
+            detail = response.json().get("detail")
+        except ValueError:
+            detail = response.text
+        raise RuntimeError(str(detail or f"HTTP {response.status_code}"))
+
+    payload = response.json()
+    return {
+        "run_id": str(payload["run_id"]),
+        "error": str(payload.get("error") or "aborted by user"),
+    }
 
 
 def _print_run_detail(run_detail: dict[str, object], run_dir: Path) -> None:

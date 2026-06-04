@@ -205,6 +205,39 @@ def test_sessions_clear_deletes_sessions_file(tmp_path, monkeypatch) -> None:
     assert "Cleared pairing sessions" in result.output
 
 
+def test_run_abort_command_posts_to_daemon(tmp_path, monkeypatch) -> None:
+    settings = Settings(app_dir=tmp_path)
+    save_sessions(settings, {"tokens": ["old-token", "known-token"]})
+    monkeypatch.setattr(cli, "load_settings", lambda: settings)
+    calls = {}
+
+    def fake_post(url, *, headers, timeout):
+        calls["url"] = url
+        calls["headers"] = headers
+        calls["timeout"] = timeout
+        return cli.httpx.Response(
+            200,
+            json={
+                "run_id": "run-123",
+                "status": "failed",
+                "error": "aborted by user",
+            },
+        )
+
+    monkeypatch.setattr(cli.httpx, "post", fake_post)
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["run", "abort", "run-123", "--port", "12345"],
+    )
+
+    assert result.exit_code == 0
+    assert calls["url"] == "http://127.0.0.1:12345/runs/run-123/abort"
+    assert calls["headers"] == {"X-Pawchestrator-Token": "known-token"}
+    assert calls["timeout"] == 10
+    assert "Aborted run run-123: aborted by user" in result.output
+
+
 def test_codegraph_sync_command_prints_result(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cli, "load_settings", lambda: Settings(app_dir=tmp_path))
     calls = {}
