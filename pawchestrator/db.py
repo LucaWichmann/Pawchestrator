@@ -827,6 +827,12 @@ async def get_run_state(settings: Settings, run_id: str) -> dict[str, object] | 
     return payload
 
 
+async def get_run_detail(settings: Settings, run_id: str) -> dict[str, object] | None:
+    """Return full run detail for CLI inspection."""
+
+    return await get_run_state(settings, run_id)
+
+
 async def get_latest_run_by_issue(
     settings: Settings,
     owner: str,
