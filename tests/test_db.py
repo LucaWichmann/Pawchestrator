@@ -19,6 +19,7 @@ from pawchestrator.db import (
     get_run_warnings,
     init_db,
     insert_run_warning,
+    list_runs,
     list_tables,
     set_grill_waiting,
     store_github_comment_id,
@@ -921,6 +922,88 @@ def test_get_runs_by_group_id_returns_matching_runs_ordered_by_created_at(
         "created_at": "2026-05-24T10:00:01Z",
         "updated_at": "2026-05-24T10:00:03Z",
     }
+
+
+def test_list_runs_filters_by_repo_status_and_limit(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    asyncio.run(init_db(settings))
+
+    with sqlite3.connect(tmp_path / "database.sqlite") as db:
+        db.executemany(
+            """
+            INSERT INTO workflow_runs (
+              id, owner, repo, issue_number, pr_number, workflow_type, status,
+              current_stage, pr_url, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "run-old-failed",
+                    "owner",
+                    "repo",
+                    40,
+                    None,
+                    "pipeline",
+                    "failed",
+                    "plan",
+                    None,
+                    "2026-05-24T10:00:00Z",
+                    "2026-05-24T10:00:00Z",
+                ),
+                (
+                    "run-running",
+                    "owner",
+                    "repo",
+                    41,
+                    None,
+                    "pipeline",
+                    "plan_running",
+                    "plan",
+                    None,
+                    "2026-05-24T10:00:01Z",
+                    "2026-05-24T10:00:01Z",
+                ),
+                (
+                    "run-complete",
+                    "owner",
+                    "repo",
+                    42,
+                    None,
+                    "pipeline",
+                    "completed",
+                    "pr",
+                    "https://github.com/owner/repo/pull/1",
+                    "2026-05-24T10:00:02Z",
+                    "2026-05-24T10:00:02Z",
+                ),
+                (
+                    "other-running",
+                    "other",
+                    "repo",
+                    None,
+                    9,
+                    "review",
+                    "review_running",
+                    "review",
+                    None,
+                    "2026-05-24T10:00:03Z",
+                    "2026-05-24T10:00:03Z",
+                ),
+            ],
+        )
+        db.commit()
+
+    all_runs = asyncio.run(list_runs(settings, limit=2))
+    repo_running = asyncio.run(
+        list_runs(settings, owner_repo="owner/repo", status="running", limit=20)
+    )
+    complete_runs = asyncio.run(list_runs(settings, status="complete", limit=20))
+
+    assert [run["id"] for run in all_runs] == ["other-running", "run-complete"]
+    assert [run["id"] for run in repo_running] == ["run-running"]
+    assert [run["id"] for run in complete_runs] == ["run-complete"]
+    assert complete_runs[0]["pr_url"] == "https://github.com/owner/repo/pull/1"
 
 
 def _set_run_state(

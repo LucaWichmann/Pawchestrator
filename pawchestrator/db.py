@@ -531,6 +531,52 @@ async def list_repo_registrations(settings: Settings) -> list[dict[str, str]]:
     return [dict(row) for row in rows]
 
 
+async def list_runs(
+    settings: Settings,
+    owner_repo: str | None = None,
+    status: str | None = None,
+    limit: int = 20,
+) -> list[dict[str, object]]:
+    await init_db(settings)
+    filters: list[str] = []
+    params: list[object] = []
+    if owner_repo is not None:
+        owner, repo = owner_repo.split("/", maxsplit=1)
+        filters.append("owner = ? AND repo = ?")
+        params.extend([owner, repo])
+    if status is not None:
+        if status == "failed":
+            filters.append("status LIKE ?")
+            params.append("%failed")
+        elif status == "complete":
+            filters.append("(status = 'completed' OR status LIKE ?)")
+            params.append("%complete")
+        elif status == "running":
+            filters.append("status LIKE ?")
+            params.append("%running")
+        else:
+            filters.append("status = ?")
+            params.append(status)
+
+    where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
+    params.append(limit)
+    async with aiosqlite.connect(settings.database_path) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            f"""
+            SELECT id, owner, repo, issue_number, pr_number, workflow_type, status,
+                   current_stage, pr_url, created_at
+            FROM workflow_runs
+            {where_clause}
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            """,
+            params,
+        )
+        rows = await cursor.fetchall()
+    return [dict(row) for row in rows]
+
+
 async def count_registered_repos(settings: Settings) -> int:
     await init_db(settings)
     async with aiosqlite.connect(settings.database_path) as db:
