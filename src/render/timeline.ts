@@ -56,9 +56,12 @@ function collapseStages(pipeline) {
   return PIPELINE_STAGES.map((name) => {
     const matching = byName.get(name) || [];
     const stage = matching[matching.length - 1] || { stage_name: name, status: "pending" };
+    const planRetryCount = name === "plan" ? Math.max(0, matching.length - 1) : 0;
     const label =
       name === "implement" && repairCount > 0
         ? `${name} (repair ${repairCount}/${repairTotal})`
+        : planRetryCount > 0
+          ? `${name} (re-plan ${planRetryCount})`
         : name;
     return {
       name,
