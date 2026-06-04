@@ -481,6 +481,20 @@ async def lookup_repo_path(settings: Settings, *, owner: str, repo: str) -> Path
     return Path(row[0]) if row is not None else None
 
 
+async def delete_repo_registration(settings: Settings, *, owner: str, repo: str) -> bool:
+    await init_db(settings)
+    async with aiosqlite.connect(settings.database_path) as db:
+        cursor = await db.execute(
+            """
+            DELETE FROM github_repos
+            WHERE owner = ? AND repo = ?
+            """,
+            (owner, repo),
+        )
+        await db.commit()
+    return cursor.rowcount > 0
+
+
 async def store_github_comment_id(
     settings: Settings,
     run_id: str,
