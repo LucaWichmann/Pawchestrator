@@ -20,6 +20,7 @@ from pawchestrator.codegraph import sync_back_if_merged
 from pawchestrator.config import DEFAULT_PORT, LOCAL_HOST, load_settings
 from pawchestrator.db import (
     create_epic_run,
+    delete_repo_registration,
     list_runs,
     get_run_detail,
     get_run_state,
@@ -317,6 +318,36 @@ def repo_list() -> None:
         typer.echo(
             f"{registration['owner']}/{registration['repo']} -> {registration['local_path']}"
         )
+
+
+@repo_app.command("remove")
+def repo_remove(
+    repo_ref: Annotated[
+        str,
+        typer.Argument(
+            help="GitHub owner/repo registration or local git repository path to remove.",
+        ),
+    ],
+) -> None:
+    """Remove a registered GitHub repository clone."""
+
+    try:
+        owner, repo = _resolve_repo_ref(repo_ref)
+    except ValueError as error:
+        typer.secho(str(error), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from error
+
+    settings = load_settings()
+    deleted = asyncio.run(delete_repo_registration(settings, owner=owner, repo=repo))
+    if not deleted:
+        typer.secho(
+            f"Repository not registered: {owner}/{repo}",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    typer.echo(f"Removed {owner}/{repo}")
 
 
 @sessions_app.command("clear")
@@ -760,6 +791,18 @@ def _port_available(port: int) -> bool:
         except OSError:
             return False
     return True
+
+
+def _resolve_repo_ref(repo_ref: str) -> tuple[str, str]:
+    path = Path(repo_ref).expanduser()
+    if path.exists():
+        return _github_remote_owner_repo(path)
+
+    if re.fullmatch(r"[^/\s]+/[^/\s]+", repo_ref):
+        owner, repo = repo_ref.split("/", maxsplit=1)
+        return owner, repo.removesuffix(".git")
+
+    return _github_remote_owner_repo(path)
 
 
 def _github_remote_owner_repo(path: Path) -> tuple[str, str]:
