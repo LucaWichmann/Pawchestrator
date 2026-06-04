@@ -12,6 +12,7 @@ from pawchestrator import cli
 from pawchestrator.config import Settings, StageSettings
 from pawchestrator.db import get_run_warnings, init_db
 from pawchestrator.plan import (
+    _prompt_plan_snapshot,
     build_plan_prompt,
     normalize_implementation_plan,
     run_plan,
@@ -106,13 +107,61 @@ def test_build_plan_prompt_includes_issue_and_scout_report() -> None:
     assert "Issue: #42 - Add plan" in prompt
     assert "Repository: owner/repo" in prompt
     assert "Issue body" in prompt
-    assert '"author": "alice"' in prompt
+    assert '"comments"' not in prompt
+    assert "Needs tests" not in prompt
     assert '"text": "Small change"' in prompt
     assert "pawchestrator.implementation_plan.v1" in prompt
     assert "file_operations" in prompt
     assert '"create" | "modify" | "delete"' in prompt
     assert "<=100 chars" in prompt
     assert "No prose. No progress updates. Emit valid JSON artifact only." in prompt
+
+
+def test_prompt_plan_snapshot_strips_comments() -> None:
+    snapshot = {
+        "owner": "owner",
+        "repo": "repo",
+        "number": 42,
+        "title": "Add plan",
+        "body": "Issue body",
+        "labels": ["enhancement"],
+        "checkboxes": [{"index": 0, "text": "Do it"}],
+        "comments": [{"author": "alice", "body": "Needs tests"}],
+    }
+
+    prompt_snapshot = _prompt_plan_snapshot(snapshot)
+
+    assert "comments" not in prompt_snapshot
+    assert prompt_snapshot["body"] == "Issue body"
+    assert prompt_snapshot["title"] == "Add plan"
+    assert prompt_snapshot["number"] == 42
+    assert prompt_snapshot["labels"] == ["enhancement"]
+    assert prompt_snapshot["checkboxes"] == [{"index": 0, "text": "Do it"}]
+    assert "comments" in snapshot
+
+
+def test_build_plan_prompt_keeps_snapshot_fields_except_comments() -> None:
+    prompt = build_plan_prompt(
+        {
+            "owner": "owner",
+            "repo": "repo",
+            "number": 42,
+            "title": "Add plan",
+            "body": "Issue body",
+            "labels": ["enhancement"],
+            "checkboxes": [{"index": 0, "text": "Do it"}],
+            "comments": [{"author": "alice", "body": "Needs tests"}],
+        },
+        {"schema": "pawchestrator.scout_report.v1"},
+    )
+
+    assert '"comments"' not in prompt
+    assert "Needs tests" not in prompt
+    assert '"body": "Issue body"' in prompt
+    assert '"title": "Add plan"' in prompt
+    assert '"number": 42' in prompt
+    assert '"labels": ["enhancement"]' in prompt
+    assert '"checkboxes": [{"index": 0, "text": "Do it"}]' in prompt
 
 
 def test_build_plan_prompt_truncates_scout_findings_and_risks_for_prompt_only() -> None:

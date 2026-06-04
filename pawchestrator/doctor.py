@@ -18,6 +18,8 @@ from pawchestrator import grill, implement, plan, scout
 from pawchestrator.runners import (
     ClaudeRunner,
     CodexRunner,
+    _effective_claude_config,
+    _effective_codex_config,
     resolve_runner,
     runner_tool_mismatch_warning,
 )
@@ -62,6 +64,7 @@ def run_checks(settings: Settings, port: int = DEFAULT_PORT) -> list[CheckResult
         check_codex_runner(settings),
         check_cross_review_runners(settings),
         check_port_available(port),
+        check_scout_model(settings),
         *check_stage_tool_mismatches(settings),
         check_backend_routes(settings, port),
         check_sqlite_writable(settings),
@@ -172,6 +175,35 @@ def check_stage_tool_mismatches(settings: Settings) -> list[CheckResult]:
             )
         )
     return results
+
+
+def check_scout_model(settings: Settings) -> CheckResult:
+    runner = resolve_runner(settings, "scout", "claude")
+    if isinstance(runner, ClaudeRunner):
+        model = _effective_claude_config(
+            runner.config,
+            runner.stage_overrides,
+            "scout",
+        ).model
+        return CheckResult(
+            "scout model",
+            STATUS_PASS,
+            f"claude model {model}",
+            required=False,
+        )
+    if isinstance(runner, CodexRunner):
+        config = _effective_codex_config(
+            runner.config,
+            runner.stage_overrides,
+            "scout",
+        )
+        return CheckResult(
+            "scout model",
+            STATUS_PASS,
+            f"codex model {config.model} ({config.reasoning_effort} reasoning)",
+            required=False,
+        )
+    return CheckResult("scout model", STATUS_WARN, "unknown runner", required=False)
 
 
 def check_wsl(settings: Settings | None = None) -> CheckResult:

@@ -406,7 +406,7 @@ def test_claude_runner_invokes_expected_command_and_parses_result(
         "claude-beta",
         "-p",
         "--model",
-        "sonnet",
+        "haiku",
         "--effort",
         "medium",
         "--output-format",
@@ -615,7 +615,9 @@ def test_claude_runner_uses_stage_model_override_without_mutating_global_config(
     assert config.effort == "medium"
 
 
-@pytest.mark.parametrize("stage_name", ["criteria_dedupe", "review_issue_format"])
+@pytest.mark.parametrize(
+    "stage_name", ["criteria_dedupe", "review_issue_format", "scout"]
+)
 def test_claude_runner_uses_haiku_for_small_model_stages_by_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage_name: str
 ) -> None:
@@ -750,7 +752,7 @@ def test_claude_runner_wsl_mode_invokes_wsl_and_preserves_tools(
         "claude-linux",
         "-p",
         "--model",
-        "sonnet",
+        "haiku",
         "--effort",
         "low",
         "--output-format",
@@ -793,7 +795,7 @@ def test_claude_runner_debug_prints_command_and_output(
     assert "[pawchestrator:debug] run=run-debug stage=scout runner=claude" in output
     assert "stdin=<prompt chars=12>" in output
     assert "debug prompt" not in output
-    assert "--model sonnet --effort low" in output
+    assert "--model haiku --effort low" in output
     assert '{"result": {"status": "success"}}' in output
     assert "claude warning" in output
 
@@ -1075,7 +1077,9 @@ def test_codex_runner_uses_stage_model_override_without_mutating_global_config(
     assert config.reasoning_effort == "medium"
 
 
-@pytest.mark.parametrize("stage_name", ["criteria_dedupe", "review_issue_format"])
+@pytest.mark.parametrize(
+    "stage_name", ["criteria_dedupe", "review_issue_format", "scout"]
+)
 def test_codex_runner_uses_mini_low_for_small_model_stages_by_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage_name: str
 ) -> None:

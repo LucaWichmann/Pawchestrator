@@ -702,6 +702,7 @@ def _effective_claude_config(
     if stage_name in {
         "criteria_dedupe",
         "review_issue_format",
+        "scout",
         "epic_scout",
         "epic_architect",
     } and (
@@ -726,6 +727,7 @@ def _effective_codex_config(
         if stage_name in {
             "criteria_dedupe",
             "review_issue_format",
+            "scout",
             "epic_scout",
             "epic_architect",
         }:
@@ -756,6 +758,7 @@ def _effective_codex_config(
     if stage_name in {
         "criteria_dedupe",
         "review_issue_format",
+        "scout",
         "epic_scout",
         "epic_architect",
     }:

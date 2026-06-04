@@ -114,7 +114,7 @@ def build_plan_prompt(
 Repository: {snapshot.get("owner", "")}/{snapshot.get("repo", "")}
 
 IssueSnapshot JSON:
-{_prompt_json(snapshot)}
+{_prompt_json(_prompt_plan_snapshot(snapshot))}
 
 ScoutReport JSON:
 {_prompt_json(prompt_scout_report)}"""
@@ -172,6 +172,12 @@ def _prompt_rejections(rejections: list[dict[str, Any]]) -> str:
 
 def _prompt_json(value: dict[str, Any]) -> str:
     return json.dumps(value, sort_keys=True)
+
+
+def _prompt_plan_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    compressed = dict(snapshot)
+    compressed.pop("comments", None)
+    return compressed
 
 
 def normalize_implementation_plan(artifact: dict[str, Any] | None) -> dict[str, Any]:

@@ -106,7 +106,7 @@ def test_build_implement_prompt_includes_snapshot_plan_and_worktree(tmp_path: Pa
     assert "Issue body" in prompt
     assert "Use existing orchestration." in prompt
     assert "pawchestrator/implement.py" in prompt
-    assert "Keep full artifact notes out of the prompt." not in prompt
+    assert "Keep full artifact notes out of the prompt." in prompt
     assert "estimated_risk" not in prompt
     assert "pawchestrator.implementation_plan.v1" not in prompt
     assert "Do not run build | test commands" in prompt
@@ -135,9 +135,26 @@ def test_build_implement_prompt_compresses_plan_for_prompt_only(tmp_path: Path) 
     assert ("x" * 151) not in prompt
     assert '"description": "Edit code."' in prompt
     assert '"files_to_modify": ["pawchestrator/implement.py"]' in prompt
-    assert '"notes"' not in prompt
+    assert '"notes": "drop me"' in prompt
     assert plan["approach_summary"] == approach_summary
     assert "notes" in plan["steps"][0]
+
+
+def test_build_implement_prompt_serializes_empty_step_notes(tmp_path: Path) -> None:
+    prompt = build_implement_prompt(
+        _snapshot(),
+        {
+            "steps": [
+                {
+                    "description": "Edit code.",
+                    "files_to_modify": ["pawchestrator/implement.py"],
+                }
+            ],
+        },
+        tmp_path,
+    )
+
+    assert '"notes": ""' in prompt
 
 
 def test_build_implement_prompt_includes_checkbox_criteria(tmp_path: Path) -> None:
@@ -210,7 +227,7 @@ def test_build_implement_prompt_keeps_non_repair_shape(tmp_path: Path) -> None:
     prompt = build_implement_prompt(_snapshot(), {"steps": []}, tmp_path)
 
     assert prompt.startswith("Issue: #42 - Add implement")
-    assert "IssueSnapshot JSON:" in prompt
+    assert "IssueSnapshot JSON:" not in prompt
     assert "Issue body:\nIssue body" in prompt
     assert "Background (what was implemented):" not in prompt
     assert "Verification failure:" not in prompt
@@ -609,7 +626,7 @@ def test_run_implement_writes_report_log_and_records_stage(
     assert events == ["sync-back", "seed", "runner"]
     assert runner.task.cwd == worktree_path
     assert runner.task.stage_name == "implement"
-    assert "IssueSnapshot JSON" in runner.task.prompt
+    assert "IssueSnapshot JSON" not in runner.task.prompt
     assert result.artifact_path == tmp_path / "runs" / run_id / "implementation_report.json"
     assert result.log_path == tmp_path / "runs" / run_id / "stdout" / "implement.log"
 
