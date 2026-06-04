@@ -21,6 +21,7 @@ from pawchestrator.doctor import (
     check_codex_runner,
     check_cross_review_runners,
     check_port_available,
+    check_scout_model,
     check_stage_tool_mismatches,
     check_sqlite_writable,
     check_wsl,
@@ -391,6 +392,25 @@ def test_stage_tool_mismatch_check_skips_codex_runner() -> None:
     results = check_stage_tool_mismatches(settings)
 
     assert results == []
+
+
+def test_scout_model_check_reports_default_claude_haiku() -> None:
+    result = check_scout_model(Settings())
+
+    assert result.label == "scout model"
+    assert result.status == STATUS_PASS
+    assert result.message == "claude model haiku"
+    assert result.required is False
+
+
+def test_scout_model_check_reports_claude_stage_override() -> None:
+    settings = Settings(
+        stages={"scout": StageSettings(claude={"model": "sonnet"})},
+    )
+
+    result = check_scout_model(settings)
+
+    assert result.message == "claude model sonnet"
 
 
 def test_wsl_check_warns_when_missing_on_windows(monkeypatch) -> None:
