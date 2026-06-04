@@ -12,6 +12,7 @@ from pawchestrator.skill_loader import load_skill
 from pawchestrator.db import get_run_state
 from pawchestrator.runners import (
     Runner,
+    RunnerFailedError,
     RunnerTask,
     resolve_runner,
     runner_tool_mismatch_warning,
@@ -23,6 +24,7 @@ from pawchestrator.stage_fallback import (
 from pawchestrator.stage_lifecycle import StageResult, run_stage_lifecycle
 
 IMPLEMENTATION_PLAN_SCHEMA = "pawchestrator.implementation_plan.v1"
+MICRO_PLAN_SCHEMA = "pawchestrator.micro_plan.v1"
 REQUIRED_TOOLS: list[str] = ["Read", "Glob", "Grep"]
 VALID_RISKS = {"low", "medium", "high"}
 VALID_FILE_OPERATION_TYPES = {"create", "modify", "delete"}
@@ -89,6 +91,60 @@ async def run_plan(
     return await run_stage_lifecycle(settings, run_id, "plan", body)
 
 
+async def run_micro_plan(
+    run_id: str,
+    settings: Settings,
+    *,
+    repo_path: Path | None = None,
+    runner: Runner | None = None,
+) -> StageResult:
+    state = await get_run_state(settings, run_id)
+    if state is None:
+        raise ValueError(f"run not found: {run_id}")
+
+    local_repo_path = (repo_path or Path.cwd()).resolve()
+    artifact_path = _plan_artifact_path(settings, run_id)
+
+    async def body(log_path: Path) -> tuple[dict[str, Any], Path]:
+        snapshot_path = _snapshot_artifact_path(settings, run_id)
+        if not snapshot_path.exists():
+            raise FileNotFoundError(f"issue snapshot not found: {snapshot_path}")
+        snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        scout_path = _scout_artifact_path(settings, run_id)
+        if not scout_path.exists():
+            raise FileNotFoundError(f"scout report not found: {scout_path}")
+
+        scout_report = json.loads(scout_path.read_text(encoding="utf-8"))
+        active_runner = runner or resolve_runner(settings, "micro_plan", "claude")
+        task = RunnerTask(
+            prompt=build_micro_plan_prompt(
+                snapshot,
+                scout_report,
+                app_dir=settings.app_dir,
+            ),
+            cwd=local_repo_path,
+            run_id=run_id,
+            stage_name="micro_plan",
+        )
+        healthy, message = await active_runner.check_health()
+        if not healthy:
+            raise RuntimeError(message)
+        result = await active_runner.run_task(task)
+        _write_plan_attempt_log(log_path, active_runner.id, result, append=False)
+        if result.exit_code != 0:
+            raise RunnerFailedError(
+                public_message=f"Runner exited with code {result.exit_code}",
+                exit_code=result.exit_code,
+                stderr=result.stderr,
+                stdout=result.stdout,
+            )
+
+        plan = normalize_micro_plan(result.artifact)
+        return plan, artifact_path
+
+    return await run_stage_lifecycle(settings, run_id, "plan", body)
+
+
 def _log_tool_mismatch(runner: Runner) -> None:
     warning = runner_tool_mismatch_warning(
         runner,
@@ -100,6 +156,7 @@ def _log_tool_mismatch(runner: Runner) -> None:
 
 
 _PLAN_FALLBACK = 'Create an implementation plan for this issue and return an ImplementationPlan JSON artifact with approach_summary, steps, file_operations, files_to_modify, and estimated_risk. file_operations must be [{path, type, description}], type must be "create", "modify", or "delete", and description must be one line <=100 chars.'
+_MICRO_PLAN_FALLBACK = 'Create a minimal implementation plan for this trivial GitHub issue and return only JSON with schema "pawchestrator.micro_plan.v1", approach_summary, steps, and files_to_modify. Max 3 steps.'
 
 
 def build_plan_prompt(
@@ -122,6 +179,25 @@ ScoutReport JSON:
     rejection_section = _prompt_rejections(rejections or [])
     if rejection_section:
         data_section = f"{data_section}\n\n{rejection_section}"
+
+    return f"{instructions}\n\n{data_section}"
+
+
+def build_micro_plan_prompt(
+    snapshot: dict[str, Any],
+    scout_report: dict[str, Any],
+    app_dir: Path | None = None,
+) -> str:
+    prompt_scout_report = _prompt_scout_report(scout_report)
+    instructions = load_skill("MicroPlan", app_dir) or _MICRO_PLAN_FALLBACK
+    data_section = f"""Issue: #{snapshot.get("number")} - {snapshot.get("title", "")}
+Repository: {snapshot.get("owner", "")}/{snapshot.get("repo", "")}
+
+IssueSnapshot JSON:
+{_prompt_json(_prompt_plan_snapshot(snapshot))}
+
+ScoutReport JSON:
+{_prompt_json(prompt_scout_report)}"""
 
     return f"{instructions}\n\n{data_section}"
 
@@ -227,6 +303,42 @@ def normalize_implementation_plan(artifact: dict[str, Any] | None) -> dict[str, 
     }
 
 
+def normalize_micro_plan(artifact: dict[str, Any] | None) -> dict[str, Any]:
+    if artifact is None:
+        raise ValueError("Claude did not return a JSON artifact")
+
+    schema = str(artifact.get("schema") or "")
+    if schema != MICRO_PLAN_SCHEMA:
+        raise ValueError("Micro plan missing required schema")
+
+    approach_summary = str(artifact.get("approach_summary") or "").strip()
+    steps = [
+        _normalize_step(_truncate_words(str(step), 15), index)
+        for index, step in enumerate(_list_value(artifact.get("steps"))[:3], start=1)
+    ]
+    files_to_modify = _dedupe_strings(artifact.get("files_to_modify"))
+
+    if not approach_summary:
+        raise ValueError("Micro plan missing required approach_summary")
+    if not steps:
+        raise ValueError("Micro plan missing required steps")
+    if not files_to_modify:
+        raise ValueError("Micro plan missing required files_to_modify")
+
+    return {
+        "schema": IMPLEMENTATION_PLAN_SCHEMA,
+        "approach_summary": approach_summary[:100],
+        "steps": steps,
+        "file_operations": [
+            {"path": file_path, "type": "modify", "description": ""}
+            for file_path in files_to_modify
+        ],
+        "files_to_modify": files_to_modify,
+        "estimated_risk": "low",
+        "source_schema": schema,
+    }
+
+
 def _normalize_step(step: object, fallback_order: int) -> dict[str, object]:
     if not isinstance(step, dict):
         return {
@@ -247,6 +359,13 @@ def _normalize_step(step: object, fallback_order: int) -> dict[str, object]:
         "files_to_modify": _dedupe_strings(step.get("files_to_modify")),
         "notes": str(step.get("notes") or ""),
     }
+
+
+def _truncate_words(text: str, max_words: int) -> str:
+    words = text.split()
+    if len(words) <= max_words:
+        return text
+    return " ".join(words[:max_words])
 
 
 def _list_value(value: object) -> list[object]:

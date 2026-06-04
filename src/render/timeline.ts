@@ -10,6 +10,11 @@ function stageStatus(stage) {
   return String(stage?.status || "pending").replace(/^[^_]+_/, "");
 }
 
+function hasSmartRoutingPlanSkippedWarning(pipeline) {
+  const warnings = Array.isArray(pipeline?.warnings) ? pipeline.warnings : [];
+  return warnings.some((warning) => warning?.code === "smart_routing_plan_skipped");
+}
+
 export function normalizeStepStatus(stage, isAfterActive) {
   if (isAfterActive || !stage) {
     return "pending";
@@ -31,7 +36,8 @@ export function normalizeStepStatus(stage, isAfterActive) {
   return "pending";
 }
 
-function collapseStages(stages) {
+function collapseStages(pipeline) {
+  const stages = pipeline?.stages;
   const rows = Array.isArray(stages) ? stages : [];
   const byName = new Map();
   PIPELINE_STAGES.forEach((name) => byName.set(name, []));
@@ -45,14 +51,24 @@ function collapseStages(stages) {
   const repairCount = Math.max(0, (byName.get("implement") || []).length - 1);
   const repairTotal = state.config!.pipeline.verify_repair_attempts;
 
+  const smartRoutingPlanSkipped = hasSmartRoutingPlanSkippedWarning(pipeline);
+
   return PIPELINE_STAGES.map((name) => {
     const matching = byName.get(name) || [];
     const stage = matching[matching.length - 1] || { stage_name: name, status: "pending" };
+    const planRetryCount = name === "plan" ? Math.max(0, matching.length - 1) : 0;
     const label =
       name === "implement" && repairCount > 0
         ? `${name} (repair ${repairCount}/${repairTotal})`
+        : planRetryCount > 0
+          ? `${name} (re-plan ${planRetryCount})`
         : name;
-    return { name, label, stage };
+    return {
+      name,
+      label,
+      stage,
+      badge: name === "plan" && smartRoutingPlanSkipped ? "micro-plan via Haiku" : "",
+    };
   });
 }
 
@@ -126,6 +142,13 @@ export function renderStep(step, status, active) {
   label.className = "pawchestrator-step-label";
   label.textContent = step.label;
 
+  if (step.badge) {
+    const badge = document.createElement("span");
+    badge.className = "pawchestrator-step-badge pawchestrator-smart-routing-badge";
+    badge.textContent = step.badge;
+    label.append(badge);
+  }
+
   item.append(indicator, label);
   return item;
 }
@@ -149,7 +172,7 @@ export function renderNamedTimeline(parent, run, stageNames, options = {}) {
 }
 
 export function renderTimeline(parent, pipeline, options = {}) {
-  const steps = collapseStages(pipeline.stages);
+  const steps = collapseStages(pipeline);
   const activeIndex = activeStageIndex(pipeline, steps);
   const timeline = document.createElement("div");
   timeline.className = "pawchestrator-timeline";

@@ -192,6 +192,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "plan_approval_max_attempts": (
                     runtime_settings.pipeline.plan_approval_max_attempts
                 ),
+                "smart_routing": runtime_settings.pipeline.smart_routing.model_dump(
+                    mode="json"
+                ),
             },
         }
 

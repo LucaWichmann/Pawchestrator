@@ -236,6 +236,15 @@ export function injectStyles() {
       white-space: pre-wrap;
     }
 
+    #${PANEL_ID} .pawchestrator-plan-approval-context {
+      background: var(--bgColor-accent-muted, #ddf4ff);
+      border: 1px solid var(--borderColor-accent-muted, #54aeff);
+      border-radius: 6px;
+      color: var(--fgColor-default, #24292f);
+      font-weight: 600;
+      padding: 8px 10px;
+    }
+
     #${PANEL_ID} .pawchestrator-plan-approval-attempt {
       color: var(--fgColor-muted, #59636e);
       font-size: 12px;
@@ -457,6 +466,22 @@ export function injectStyles() {
       line-height: 16px;
       margin-top: 4px;
       overflow-wrap: anywhere;
+    }
+
+    #${PANEL_ID} .pawchestrator-step-badge,
+    #${PR_PANEL_ID} .pawchestrator-step-badge {
+      border: 1px solid var(--borderColor-accent-muted, #54aeff);
+      border-radius: 999px;
+      color: var(--fgColor-accent, #0969da);
+      display: inline-flex;
+      font-size: 11px;
+      font-weight: 600;
+      line-height: 16px;
+      margin-top: 3px;
+      max-width: 100%;
+      padding: 0 6px;
+      vertical-align: top;
+      white-space: normal;
     }
 
     #${PANEL_ID} .pawchestrator-step-indicator,

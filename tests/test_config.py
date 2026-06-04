@@ -45,6 +45,11 @@ def test_runner_settings_defaults_match_low_token_profile() -> None:
     assert settings.pipeline.verify_non_code_changes is False
     assert settings.pipeline.non_code_patterns == ["*.md", "*.txt", "docs/**", "adr/**"]
     assert settings.pipeline.epic_branch_mode == "epic"
+    assert settings.pipeline.smart_routing.enabled is False
+    assert settings.pipeline.smart_routing.skip_plan_when == ["implement"]
+    assert settings.pipeline.smart_routing.require_readiness == ["ready"]
+    assert settings.pipeline.smart_routing.require_max_risk == "low"
+    assert settings.pipeline.smart_routing.confirm_skip is False
     assert settings.checkboxes.headings == [
         "Acceptance Criteria",
         "AC",
@@ -114,6 +119,13 @@ verify_non_code_changes = true
 non_code_patterns = ["*.md", "notes/**"]
 epic_branch_mode = "epic-with-sub-issues"
 
+[pipeline.smart_routing]
+enabled = true
+skip_plan_when = ["implement", "verify"]
+require_readiness = ["ready", "accepted"]
+require_max_risk = "medium"
+confirm_skip = true
+
 [checkboxes]
 headings = ["Done When", "Ship List"]
 
@@ -172,6 +184,11 @@ approval_policy = "never"
     assert settings.pipeline.verify_non_code_changes is True
     assert settings.pipeline.non_code_patterns == ["*.md", "notes/**"]
     assert settings.pipeline.epic_branch_mode == "epic-with-sub-issues"
+    assert settings.pipeline.smart_routing.enabled is True
+    assert settings.pipeline.smart_routing.skip_plan_when == ["implement", "verify"]
+    assert settings.pipeline.smart_routing.require_readiness == ["ready", "accepted"]
+    assert settings.pipeline.smart_routing.require_max_risk == "medium"
+    assert settings.pipeline.smart_routing.confirm_skip is True
     assert settings.checkboxes.headings == ["Done When", "Ship List"]
     assert settings.stages["scout"].usage_limit_fallback_runner == "codex"
     assert settings.stages["scout"].claude.allowed_tools == ["Read"]
@@ -197,6 +214,27 @@ debug = true
     assert settings.pr.assign is True
     assert settings.review.default_runner == "claude"
     assert settings.review.cross_review is True
+
+
+def test_load_settings_defaults_smart_routing_when_section_missing(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        """
+[pipeline]
+verify_repair_attempts = 1
+""",
+        encoding="utf-8",
+    )
+
+    settings = load_settings(config_path)
+
+    assert settings.pipeline.smart_routing.enabled is False
+    assert settings.pipeline.smart_routing.skip_plan_when == ["implement"]
+    assert settings.pipeline.smart_routing.require_readiness == ["ready"]
+    assert settings.pipeline.smart_routing.require_max_risk == "low"
+    assert settings.pipeline.smart_routing.confirm_skip is False
 
 
 def test_load_settings_rejects_invalid_review_default_runner(tmp_path: Path) -> None:

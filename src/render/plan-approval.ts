@@ -23,6 +23,17 @@ function operationDescription(operation) {
   return operation?.description || operation?.summary || "";
 }
 
+function isSmartRoutingMicroPlanApproval() {
+  if (!state.config?.pipeline.smart_routing?.confirm_skip) {
+    return false;
+  }
+
+  const warnings = Array.isArray(state.latestIssueStatus?.pipeline?.warnings)
+    ? state.latestIssueStatus.pipeline.warnings
+    : [];
+  return warnings.some((warning) => warning?.code === "smart_routing_plan_skipped");
+}
+
 function renderPlanFileSection(parent, titleText, operations) {
   if (operations.length === 0) {
     return;
@@ -113,6 +124,14 @@ export function renderPlanApprovalSubView(plan, runId, callbacks = {}) {
   badge.textContent = `Risk: ${risk}`;
   header.append(title, attempt, badge);
   view.append(header);
+
+  if (isSmartRoutingMicroPlanApproval()) {
+    const note = document.createElement("div");
+    note.className = "pawchestrator-plan-approval-context";
+    note.textContent =
+      "Micro-plan generated (smart routing) \u2014 approve to proceed or reject to run full plan.";
+    view.append(note);
+  }
 
   const summary = document.createElement("div");
   summary.className = "pawchestrator-plan-approval-summary prc-Text-Text-0ima0";

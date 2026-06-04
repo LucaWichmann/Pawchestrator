@@ -6,6 +6,10 @@ export const state = {
     pipeline: {
       verify_repair_attempts: number;
       plan_approval_max_attempts: number;
+      smart_routing?: {
+        enabled: boolean;
+        confirm_skip: boolean;
+      };
     };
   } | null,
   panelExpandedByUser: null,

@@ -144,6 +144,18 @@ class ReviewSettings(BaseSettings):
     cross_review: bool = True
 
 
+class SmartRoutingSettings(BaseSettings):
+    """Conditional plan skip settings."""
+
+    model_config = SettingsConfigDict(extra="ignore")
+
+    enabled: bool = False
+    skip_plan_when: list[str] = Field(default_factory=lambda: ["implement"])
+    require_readiness: list[str] = Field(default_factory=lambda: ["ready"])
+    require_max_risk: Literal["low", "medium"] = "low"
+    confirm_skip: bool = False
+
+
 class PipelineSettings(BaseSettings):
     """Pipeline orchestration settings."""
 
@@ -160,6 +172,7 @@ class PipelineSettings(BaseSettings):
         default_factory=lambda: ["*.md", "*.txt", "docs/**", "adr/**"]
     )
     epic_branch_mode: Literal["epic", "epic-with-sub-issues"] = "epic"
+    smart_routing: SmartRoutingSettings = Field(default_factory=SmartRoutingSettings)
 
 
 class CheckboxSettings(BaseSettings):

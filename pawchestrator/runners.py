@@ -703,6 +703,7 @@ def _effective_claude_config(
         "criteria_dedupe",
         "review_issue_format",
         "scout",
+        "micro_plan",
         "epic_scout",
         "epic_architect",
     } and (
@@ -728,6 +729,7 @@ def _effective_codex_config(
             "criteria_dedupe",
             "review_issue_format",
             "scout",
+            "micro_plan",
             "epic_scout",
             "epic_architect",
         }:
@@ -759,6 +761,7 @@ def _effective_codex_config(
         "criteria_dedupe",
         "review_issue_format",
         "scout",
+        "micro_plan",
         "epic_scout",
         "epic_architect",
     }:

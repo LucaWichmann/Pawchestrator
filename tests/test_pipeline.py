@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from pawchestrator.config import PipelineSettings, Settings
+from pawchestrator.config import PipelineSettings, Settings, SmartRoutingSettings
 from pawchestrator.approval_gate import (
     has_approval_event,
     signal_approval,
@@ -77,6 +77,222 @@ def test_run_pipeline_runs_all_stages_and_marks_completed(
         ("verify", "complete"),
         ("pr", "complete"),
     ]
+
+
+def test_should_skip_plan_evaluates_all_smart_routing_conditions() -> None:
+    settings = Settings(
+        pipeline=PipelineSettings(
+            smart_routing=SmartRoutingSettings(
+                enabled=True,
+                skip_plan_when=["implement"],
+                require_readiness=["ready"],
+                require_max_risk="medium",
+            )
+        )
+    )
+
+    from pawchestrator.pipeline import _should_skip_plan
+
+    assert _should_skip_plan(
+        settings,
+        {
+            "next_recommended_stage": "implement",
+            "readiness": "ready",
+            "risk": "medium",
+        },
+    ) is True
+    assert _should_skip_plan(
+        settings,
+        {
+            "next_recommended_stage": "plan",
+            "readiness": "ready",
+            "risk": "medium",
+        },
+    ) is False
+    assert _should_skip_plan(
+        settings,
+        {
+            "next_recommended_stage": "implement",
+            "readiness": "blocked",
+            "risk": "medium",
+        },
+    ) is False
+    assert _should_skip_plan(
+        settings,
+        {
+            "next_recommended_stage": "implement",
+            "readiness": "ready",
+            "risk": "high",
+        },
+    ) is False
+
+
+def test_run_pipeline_uses_micro_plan_when_smart_routing_matches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(
+        app_dir=tmp_path,
+        pipeline=PipelineSettings(
+            plan_approval=False,
+            smart_routing=SmartRoutingSettings(enabled=True),
+        ),
+    )
+    calls: list[str] = []
+    _patch_successful_stages(
+        monkeypatch,
+        calls,
+        scout_report={
+            "readiness": "ready",
+            "next_recommended_stage": "implement",
+            "risk": "low",
+        },
+    )
+
+    result = asyncio.run(
+        run_pipeline(
+            "https://github.com/owner/repo/issues/42",
+            settings,
+            repo_path=tmp_path,
+        )
+    )
+    warnings = asyncio.run(get_run_warnings(settings, result.run_id))
+
+    assert calls == ["snapshot", "scout", "micro_plan", "implement", "verify", "pr"]
+    assert [warning["code"] for warning in warnings] == [
+        "smart_routing_plan_skipped"
+    ]
+    assert warnings[0]["stage_name"] == "plan"
+
+
+def test_run_pipeline_uses_full_plan_when_smart_routing_disabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(
+        app_dir=tmp_path,
+        pipeline=PipelineSettings(
+            plan_approval=False,
+            smart_routing=SmartRoutingSettings(enabled=False),
+        ),
+    )
+    calls: list[str] = []
+    _patch_successful_stages(
+        monkeypatch,
+        calls,
+        scout_report={
+            "readiness": "ready",
+            "next_recommended_stage": "implement",
+            "risk": "low",
+        },
+    )
+
+    asyncio.run(
+        run_pipeline(
+            "https://github.com/owner/repo/issues/42",
+            settings,
+            repo_path=tmp_path,
+        )
+    )
+
+    assert calls == ["snapshot", "scout", "plan", "implement", "verify", "pr"]
+
+
+def test_run_pipeline_uses_full_plan_when_smart_routing_conditions_do_not_match(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(
+        app_dir=tmp_path,
+        pipeline=PipelineSettings(
+            plan_approval=False,
+            smart_routing=SmartRoutingSettings(enabled=True),
+        ),
+    )
+    calls: list[str] = []
+    _patch_successful_stages(
+        monkeypatch,
+        calls,
+        scout_report={
+            "readiness": "ready",
+            "next_recommended_stage": "implement",
+            "risk": "high",
+        },
+    )
+
+    asyncio.run(
+        run_pipeline(
+            "https://github.com/owner/repo/issues/42",
+            settings,
+            repo_path=tmp_path,
+        )
+    )
+
+    assert calls == ["snapshot", "scout", "plan", "implement", "verify", "pr"]
+
+
+def test_run_pipeline_confirm_skip_pauses_for_micro_plan_approval_then_full_plan_on_reject(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        settings = Settings(
+            app_dir=tmp_path,
+            pipeline=PipelineSettings(
+                plan_approval=False,
+                smart_routing=SmartRoutingSettings(enabled=True, confirm_skip=True),
+            ),
+        )
+        calls: list[str] = []
+        replan_feedback: list[list[dict[str, object]] | None] = []
+        _patch_successful_stages(
+            monkeypatch,
+            calls,
+            replan_feedback=replan_feedback,
+            scout_report={
+                "readiness": "ready",
+                "next_recommended_stage": "implement",
+                "risk": "low",
+            },
+        )
+
+        task = asyncio.create_task(
+            run_pipeline(
+                "https://github.com/owner/repo/issues/42",
+                settings,
+                repo_path=tmp_path,
+            )
+        )
+        await _wait_for_approval_gate(settings)
+        run_id = next(iter(_run_ids(settings)))
+        assert calls == ["snapshot", "scout", "micro_plan"]
+        _write_rejections(
+            settings,
+            run_id,
+            [{"attempt": 1, "feedback": "Use the full planner."}],
+        )
+        assert signal_approval_decision(run_id, "reject") is True
+
+        await _wait_for_plan_call_count(calls, 1)
+        await _wait_for_approval_gate(settings)
+        assert signal_approval(run_id, approved=True) is True
+
+        result = await task
+        assert result.pr_url == "https://github.com/owner/repo/pull/99"
+        assert calls == [
+            "snapshot",
+            "scout",
+            "micro_plan",
+            "plan",
+            "implement",
+            "verify",
+            "pr",
+        ]
+        assert replan_feedback == [
+            [{"attempt": 1, "feedback": "Use the full planner."}]
+        ]
+
+    asyncio.run(scenario())
 
 
 def test_run_pipeline_pauses_for_plan_approval_then_continues(
@@ -1048,6 +1264,7 @@ def _patch_successful_stages(
     repair_contexts: list[tuple[dict[str, object] | None, int | None]] | None = None,
     allow_dirty_existing_worktree_values: list[bool] | None = None,
     replan_feedback: list[list[dict[str, object]] | None] | None = None,
+    scout_report: dict[str, object] | None = None,
 ) -> None:
     async def fake_snapshot(issue_url: str, settings: Settings, *, run_id: str):
         calls.append("snapshot")
@@ -1063,7 +1280,7 @@ def _patch_successful_stages(
         artifact_path = settings.app_dir / "runs" / run_id / "scout_report.json"
 
         async def body(log_path: Path):
-            return {"readiness": "ready"}, artifact_path
+            return scout_report or {"readiness": "ready"}, artifact_path
 
         return await run_stage_lifecycle(settings, run_id, "scout", body)
 
@@ -1077,6 +1294,20 @@ def _patch_successful_stages(
         calls.append("plan")
         if replan_feedback is not None:
             replan_feedback.append(rejections)
+        artifact_path = settings.app_dir / "runs" / run_id / "implementation_plan.json"
+
+        async def body(log_path: Path):
+            return {}, artifact_path
+
+        return await run_stage_lifecycle(settings, run_id, "plan", body)
+
+    async def fake_micro_plan(
+        run_id: str,
+        settings: Settings,
+        *,
+        repo_path: Path | None = None,
+    ):
+        calls.append("micro_plan")
         artifact_path = settings.app_dir / "runs" / run_id / "implementation_plan.json"
 
         async def body(log_path: Path):
@@ -1144,6 +1375,7 @@ def _patch_successful_stages(
     monkeypatch.setattr("pawchestrator.pipeline.snapshot_issue", fake_snapshot)
     monkeypatch.setattr("pawchestrator.pipeline.run_scout", fake_scout)
     monkeypatch.setattr("pawchestrator.pipeline.run_plan", fake_plan)
+    monkeypatch.setattr("pawchestrator.pipeline.run_micro_plan", fake_micro_plan)
     monkeypatch.setattr("pawchestrator.pipeline.run_implement", fake_implement)
     monkeypatch.setattr("pawchestrator.pipeline.run_verify", fake_verify)
     monkeypatch.setattr("pawchestrator.pipeline.run_pr", fake_pr)
