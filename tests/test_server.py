@@ -72,6 +72,7 @@ def test_config_returns_pipeline_settings(tmp_path: Path) -> None:
         "pipeline": {
             "verify_repair_attempts": 3,
             "plan_approval_max_attempts": 3,
+            "auto_clean": "14d",
             "smart_routing": {
                 "enabled": False,
                 "skip_plan_when": ["implement"],
@@ -89,6 +90,7 @@ def test_config_returns_custom_pipeline_settings(tmp_path: Path) -> None:
         pipeline=PipelineSettings(
             verify_repair_attempts=1,
             plan_approval_max_attempts=5,
+            auto_clean=False,
             smart_routing={
                 "enabled": True,
                 "skip_plan_when": ["implement", "verify"],
@@ -108,6 +110,7 @@ def test_config_returns_custom_pipeline_settings(tmp_path: Path) -> None:
         "pipeline": {
             "verify_repair_attempts": 1,
             "plan_approval_max_attempts": 5,
+            "auto_clean": False,
             "smart_routing": {
                 "enabled": True,
                 "skip_plan_when": ["implement", "verify"],
@@ -126,6 +129,22 @@ def test_config_requires_auth(tmp_path: Path) -> None:
         response = client.get("/config")
 
     assert response.status_code == 403
+
+
+def test_lifespan_runs_auto_clean_on_startup(tmp_path: Path, monkeypatch) -> None:
+    settings = Settings(app_dir=tmp_path)
+    calls = []
+
+    async def fake_auto_clean(runtime_settings: Settings):
+        calls.append(runtime_settings)
+        return []
+
+    monkeypatch.setattr("pawchestrator.server.auto_clean_runs", fake_auto_clean)
+
+    with TestClient(create_app(settings)):
+        pass
+
+    assert calls == [settings]
 
 
 def test_run_state_returns_run_stages_and_artifacts(tmp_path: Path) -> None:
