@@ -9,6 +9,7 @@ import {
   START_ID,
   WARNING,
 } from "../constants";
+import { requestJson } from "../api";
 import { state } from "../state";
 import { currentRun, isRunDone, summarizeError, summarizeRun } from "../summarize";
 import { epicSubRuns, renderEpicSection } from "../render/epic";
@@ -182,7 +183,103 @@ function renderCreatedSubIssueLinks(parent, created) {
   parent.append(list);
 }
 
-function renderEpicArchitectSection(parent, run) {
+function epicArchitectSubIssues(run) {
+  return Array.isArray(run?.sub_issues) ? run.sub_issues : [];
+}
+
+function renderEpicArchitectApproval(parent, run, callbacks = {}) {
+  const subIssues = epicArchitectSubIssues(run);
+  const approval = document.createElement("div");
+  approval.className = "pawchestrator-epic-architect-approval";
+
+  const list = document.createElement("ol");
+  list.className = "pawchestrator-epic-architect-sub-issues";
+  subIssues.forEach((issue) => {
+    const item = document.createElement("li");
+    item.className = "pawchestrator-epic-architect-sub-issue";
+
+    const title = document.createElement("div");
+    title.className = "pawchestrator-epic-architect-sub-issue-title";
+    title.textContent = issue?.title || "Untitled sub-issue";
+    item.append(title);
+
+    const description = document.createElement("div");
+    description.className = "pawchestrator-epic-architect-sub-issue-description";
+    description.textContent = issue?.description || "";
+    item.append(description);
+
+    const dependencies = Array.isArray(issue?.depends_on_indexes)
+      ? issue.depends_on_indexes
+      : [];
+    if (dependencies.length > 0) {
+      const dependencyLine = document.createElement("div");
+      dependencyLine.className = "pawchestrator-epic-architect-sub-issue-dependencies";
+      dependencyLine.textContent = `Depends on: ${dependencies
+        .map((index) => Number(index) + 1)
+        .join(", ")}`;
+      item.append(dependencyLine);
+    }
+
+    list.append(item);
+  });
+  approval.append(list);
+
+  const error = document.createElement("div");
+  error.className = "pawchestrator-epic-architect-approval-error";
+  error.hidden = true;
+
+  const actions = document.createElement("div");
+  actions.className = "pawchestrator-epic-architect-approval-actions";
+  const abortBtn = createButton("", "pawchestrator-epic-abort-button", "Abort", () => {
+    handleEpicApprovalAction(run.run_id, "abort", abortBtn, approveBtn, error, callbacks);
+  });
+  abortBtn.classList.add("btn-danger");
+  const approveBtn = createButton("", "pawchestrator-epic-approve-button", "Approve", () => {
+    handleEpicApprovalAction(run.run_id, "approve-epic", approveBtn, abortBtn, error, callbacks);
+  });
+  approveBtn.classList.add("btn-primary");
+  actions.append(abortBtn, approveBtn);
+  approval.append(error, actions);
+  parent.append(approval);
+}
+
+async function handleEpicApprovalAction(runId, action, primaryButton, secondaryButton, errorElement, callbacks) {
+  if (!runId) {
+    errorElement.textContent = "No run id found for this epic approval.";
+    errorElement.hidden = false;
+    return;
+  }
+
+  errorElement.hidden = true;
+  primaryButton.disabled = true;
+  secondaryButton.disabled = true;
+  try {
+    const run = await requestJson(`/runs/${runId}/${action}`, {
+      method: "POST",
+      label: `Epic ${action} request`,
+    });
+    if (action === "abort") {
+      callbacks.renderStatus?.({
+        ...(state.latestIssueStatus || {}),
+        epic_architect: {
+          ...((state.latestIssueStatus || {}).epic_architect || {}),
+          ...(run || {}),
+          run_id: run?.run_id || run?.id || runId,
+          status: run?.status || "epic_architect_failed",
+        },
+      });
+      return;
+    }
+    callbacks.startIssueStatusPolling?.();
+  } catch (error) {
+    errorElement.textContent = error.message;
+    errorElement.hidden = false;
+    primaryButton.disabled = false;
+    secondaryButton.disabled = false;
+  }
+}
+
+function renderEpicArchitectSection(parent, run, callbacks = {}) {
   if (!run) {
     return;
   }
@@ -202,7 +299,9 @@ function renderEpicArchitectSection(parent, run) {
   const created = epicArchitectCreatedIssues(run);
   if (
     run.epic_analysis &&
-    (run.status === "completed" || run.status === "epic_architect_complete")
+    (run.status === "completed" ||
+      run.status === "epic_architect_complete" ||
+      run.status === "awaiting_epic_approval")
   ) {
     const analysis = document.createElement("div");
     analysis.className = "pawchestrator-epic-architect-analysis";
@@ -226,6 +325,9 @@ function renderEpicArchitectSection(parent, run) {
       partial.textContent = `Created before failure: ${created.map((issue) => `#${issue.number}`).join(", ")}`;
       section.append(partial);
     }
+  }
+  if (run.status === "awaiting_epic_approval") {
+    renderEpicArchitectApproval(section, run, callbacks);
   }
 
   parent.append(section);
@@ -406,7 +508,7 @@ export function renderStatus(status, callbacks = {}) {
   }
 
   renderGrillSection(body, status.grill);
-  renderEpicArchitectSection(body, status.epic_architect);
+  renderEpicArchitectSection(body, status.epic_architect, callbacks);
   renderPipeline(body, status.pipeline);
   renderLogSection(body);
   if (status.pipeline?.status === "awaiting_plan_approval" && status.plan_approval_plan) {
