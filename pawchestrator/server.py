@@ -51,6 +51,12 @@ from pawchestrator.review import run_review
 from pawchestrator.review import review_report_path
 from pawchestrator.review_issues import format_and_create_issues
 from pawchestrator.review_post import run_review_post
+from pawchestrator.run_events import (
+    _STREAM_SENTINEL,
+    _run_stream_queues,
+    close_run_stream,
+    get_or_create_run_queue,
+)
 from pawchestrator.run_clean import auto_clean_runs
 from pawchestrator.runners import get_runner_health
 from pawchestrator.sessions import (
@@ -137,8 +143,6 @@ class EpicStartResponse(BaseModel):
 
 
 _active_run_tasks: dict[str, asyncio.Task[None]] = {}
-_run_stream_queues: dict[str, asyncio.Queue[object]] = {}
-_STREAM_SENTINEL = object()
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -323,7 +327,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             error="aborted by user",
             current_stage=str(state.get("current_stage") or "plan"),
         )
-        _close_run_stream(run_id)
+        close_run_stream(run_id)
         return {"run_id": run_id, "status": "failed", "error": "aborted by user"}
 
     @app.post("/runs/{run_id}/reject")
@@ -637,19 +641,6 @@ def _unregister_run_task(run_id: str, completed: asyncio.Task[None]) -> None:
     if _active_run_tasks.get(run_id) is completed:
         _active_run_tasks.pop(run_id, None)
 
-
-def _close_run_stream(run_id: str) -> None:
-    queue = _run_stream_queues.get(run_id)
-    if queue is not None:
-        queue.put_nowait(_STREAM_SENTINEL)
-
-
-def get_or_create_run_queue(run_id: str) -> asyncio.Queue[object]:
-    if run_id not in _run_stream_queues:
-        _run_stream_queues[run_id] = asyncio.Queue()
-    return _run_stream_queues[run_id]
-
-
 async def _create_review_issues(settings: Settings, run_id: str) -> dict[str, object]:
     state = await get_run_state(settings, run_id)
     if state is None:
@@ -791,7 +782,7 @@ async def _run_pipeline_background(
         await mark_run_failed(settings, run_id=run_id)
         print(f"[run {run_id}] failed: {error}")
     finally:
-        _close_run_stream(run_id)
+        close_run_stream(run_id)
 
 
 async def _run_epic_background(
@@ -815,7 +806,7 @@ async def _run_epic_background(
     except Exception as error:
         print(f"[epic {parent_run_id}] failed: {error}")
     finally:
-        _close_run_stream(parent_run_id)
+        close_run_stream(parent_run_id)
 
 
 async def _run_grill_background(
@@ -836,7 +827,7 @@ async def _run_grill_background(
         await mark_run_failed(settings, run_id=run_id)
         print(f"[run {run_id}] grill failed: {error}")
     finally:
-        _close_run_stream(run_id)
+        close_run_stream(run_id)
 
 
 async def _run_epic_architect_background(
@@ -859,7 +850,7 @@ async def _run_epic_architect_background(
         await mark_run_failed(settings, run_id=run_id)
         print(f"[run {run_id}] epic architect failed: {error}")
     finally:
-        _close_run_stream(run_id)
+        close_run_stream(run_id)
 
 
 async def _run_review_background(
@@ -875,7 +866,7 @@ async def _run_review_background(
     except Exception as error:
         print(f"[run {run_id}] review failed: {error}")
     finally:
-        _close_run_stream(run_id)
+        close_run_stream(run_id)
 
 
 async def _run_repair_background(
@@ -890,7 +881,7 @@ async def _run_repair_background(
     except Exception as error:
         print(f"[run {run_id}] repair failed: {error}")
     finally:
-        _close_run_stream(run_id)
+        close_run_stream(run_id)
 
 
 async def _prepare_pipeline_run(issue_url_value: str, settings: Settings) -> str:
@@ -945,3 +936,4 @@ async def _prepare_epic_architect_run(issue_url_value: str, settings: Settings) 
         issue_number=reference.number,
     )
     return run_id
+
