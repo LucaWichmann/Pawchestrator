@@ -174,6 +174,7 @@ class PipelineSettings(BaseSettings):
     )
     epic_branch_mode: Literal["epic", "epic-with-sub-issues"] = "epic"
     smart_routing: SmartRoutingSettings = Field(default_factory=SmartRoutingSettings)
+    base_branch: str = "main"
 
 
 class CheckboxSettings(BaseSettings):

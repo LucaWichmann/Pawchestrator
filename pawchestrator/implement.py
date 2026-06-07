@@ -82,11 +82,12 @@ async def run_implement(
     allow_dirty_existing_worktree: bool = False,
     worktree_branch: str | None = None,
     worktree_path: Path | None = None,
-    base_branch: str = DEFAULT_BASE_BRANCH,
+    base_branch: str | None = None,
 ) -> StageResult:
     state = await get_run_state(settings, run_id)
     if state is None:
         raise ValueError(f"run not found: {run_id}")
+    resolved_base_branch = base_branch or settings.pipeline.base_branch
 
     source_repo_path = (repo_path or Path.cwd()).resolve()
     active_runner = runner or resolve_runner(settings, "implement", "codex")
@@ -120,8 +121,7 @@ async def run_implement(
             worktree_kwargs["branch_override"] = worktree_branch
         if worktree_path is not None:
             worktree_kwargs["path_override"] = worktree_path
-        if base_branch != DEFAULT_BASE_BRANCH:
-            worktree_kwargs["base_branch"] = base_branch
+        worktree_kwargs["base_branch"] = resolved_base_branch
         worktree_info = await ensure_issue_worktree(settings, **worktree_kwargs)
         await upsert_worktree_record(
             settings,
@@ -183,7 +183,10 @@ async def run_implement(
         if not diff.strip() and not no_dirty_delta:
             diff = result.diff
         if not diff.strip():
-            diff = await _committed_diff_against_base(worktree_info.path, base_branch)
+            diff = await _committed_diff_against_base(
+                worktree_info.path,
+                resolved_base_branch,
+            )
         files_changed = files_changed_from_diff(diff)
         no_changes_error = _no_changes_error(
             exit_code=result.exit_code,
