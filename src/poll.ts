@@ -10,6 +10,7 @@ import {
   fetchPrReviewState,
   fetchPrRun,
   fetchPrStatus,
+  openRunStream,
   requestJson,
 } from "./api";
 import { setButtonText, setPanelSummary } from "./panel/common";
@@ -24,6 +25,8 @@ import { updateGrillButton } from "./render/grill";
 import { renderPlanApprovalSubView, resetPlanAttemptForRun } from "./render/plan-approval";
 import { currentRun, isEpicDone, isRunDone } from "./summarize";
 import { state } from "./state";
+
+const RUN_LOG_LIMIT = 200;
 
 function isIssueOpen() {
   const el = document.querySelector('[data-testid="header-state"]');
@@ -241,7 +244,139 @@ function renderOffline() {
   renderIssueOffline({ disconnectGrillReplyObserver });
 }
 
+function activeIssueRun(status) {
+  const run = currentRun(status);
+  return run && !isRunDone(run) && run.run_id ? run : null;
+}
+
+function stopIssueStatusPollTimer() {
+  if (state.activePoll) {
+    window.clearInterval(state.activePoll);
+    state.activePoll = null;
+  }
+}
+
+function closeIssueStream() {
+  if (state.activeRunStream) {
+    state.activeRunStream.close();
+  }
+  state.activeRunStream = null;
+  state.activeRunId = null;
+  state.sseConnected = false;
+}
+
+function appendRunLogLine(event) {
+  const stage = event.stage_name || event.stage || state.latestIssueStatus?.pipeline?.current_stage || "run";
+  const message = event.message || event.line || event.text || "";
+  state.runLogLines.push(`[${stage}] ${message}`);
+  if (state.runLogLines.length > RUN_LOG_LIMIT) {
+    state.runLogLines.splice(0, state.runLogLines.length - RUN_LOG_LIMIT);
+  }
+}
+
+function mergeRunEvent(event) {
+  if (!state.latestIssueStatus) {
+    return;
+  }
+  const runId = event.run_id || state.activeRunId;
+  const keys = ["pipeline", "grill", "epic_architect"];
+  const key =
+    keys.find((candidate) => state.latestIssueStatus?.[candidate]?.run_id === runId) || "pipeline";
+  const run = state.latestIssueStatus[key] || { run_id: runId };
+  const nextRun = {
+    ...run,
+    ...event.run,
+    run_id: runId,
+  };
+  if (event.stage_name || event.stage) {
+    nextRun.current_stage = event.stage_name || event.stage;
+  }
+  if (event.status) {
+    nextRun.status = event.status;
+  }
+  if (Array.isArray(event.stages)) {
+    nextRun.stages = event.stages;
+  }
+  if (event.pr_url) {
+    nextRun.pr_url = event.pr_url;
+  }
+  if (event.warning) {
+    nextRun.warnings = [...(Array.isArray(run.warnings) ? run.warnings : []), event.warning];
+  } else if (event.message && event.type === "warning") {
+    nextRun.warnings = [
+      ...(Array.isArray(run.warnings) ? run.warnings : []),
+      { stage_name: event.stage_name, code: event.code, message: event.message },
+    ];
+  }
+  state.latestIssueStatus = {
+    ...state.latestIssueStatus,
+    [key]: nextRun,
+  };
+}
+
+function parseRunStreamEvent(message) {
+  try {
+    return JSON.parse(message.data || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function handleRunStreamEvent(kind, message) {
+  const event = { ...parseRunStreamEvent(message), type: kind };
+  if (kind === "log_line") {
+    appendRunLogLine(event);
+  } else {
+    mergeRunEvent(event);
+  }
+  if (state.latestIssueStatus) {
+    renderStatus(state.latestIssueStatus);
+  }
+  if (kind === "run_complete" || kind === "run_failed") {
+    closeIssueStream();
+    startIssueStatusPolling();
+  }
+}
+
+async function openIssueStream(runId) {
+  closeIssueStream();
+  stopIssueStatusPollTimer();
+  state.activeRunId = runId;
+  const stream = openRunStream(runId);
+  state.activeRunStream = stream;
+  stream.onopen = () => {
+    state.sseConnected = true;
+    stopIssueStatusPollTimer();
+  };
+  stream.onerror = () => {
+    closeIssueStream();
+    startIssueStatusPolling();
+  };
+  ["stage_transition", "warning", "run_complete", "run_failed", "log_line"].forEach((kind) => {
+    stream.addEventListener(kind, (message) => handleRunStreamEvent(kind, message));
+  });
+}
+
+function maybeSwitchToRunStream(status) {
+  const run = activeIssueRun(status);
+  if (!run) {
+    if (state.activeRunStream) {
+      closeIssueStream();
+    }
+    return false;
+  }
+  if (state.activeRunId === run.run_id && state.activeRunStream) {
+    return true;
+  }
+  state.runLogLines = [];
+  openIssueStream(run.run_id).catch(() => startIssueStatusPolling());
+  return true;
+}
+
 export async function pollIssueStatusOnce() {
+  if (state.activeRunStream && state.sseConnected) {
+    return true;
+  }
   const issue = parseIssueReference();
   const status = await fetchIssueStatus(issue);
   if (status.pipeline?.run_id && status.pipeline.run_id !== state.planAttemptRunId) {
@@ -257,6 +392,7 @@ export async function pollIssueStatusOnce() {
     });
   }
   renderStatus(status);
+  const streaming = maybeSwitchToRunStream(status);
   const run = currentRun(status);
   const running = run && !isRunDone(run);
   const issueOpen = isIssueOpen();
@@ -275,11 +411,11 @@ export async function pollIssueStatusOnce() {
     btn.toggleAttribute("disabled", shouldDisable);
     btn.title = closedTitle;
   }
-  return running;
+  return streaming || running;
 }
 
 export function startIssueStatusPolling() {
-  stopIssueStatusPolling();
+  stopIssueStatusPollTimer();
   pollIssueStatusOnce().catch(() => renderOffline());
   state.activePoll = window.setInterval(() => {
     pollIssueStatusOnce().catch(() => {
@@ -294,8 +430,6 @@ export function startIssueStatusPolling() {
 }
 
 export function stopIssueStatusPolling() {
-  if (state.activePoll) {
-    window.clearInterval(state.activePoll);
-    state.activePoll = null;
-  }
+  stopIssueStatusPollTimer();
+  closeIssueStream();
 }
