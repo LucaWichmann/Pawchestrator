@@ -607,6 +607,31 @@
       padding-left: 18px;
     }
 
+    #${PANEL_ID} .pawchestrator-run-log {
+      margin-top: 10px;
+    }
+
+    #${PANEL_ID} .pawchestrator-run-log summary {
+      color: var(--fgColor-muted, #59636e);
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    #${PANEL_ID} .pawchestrator-run-log-lines {
+      background: var(--bgColor-muted, #f6f8fa);
+      border: 1px solid var(--borderColor-default, #d0d7de);
+      border-radius: 6px;
+      color: var(--fgColor-muted, #59636e);
+      font-family: ui-monospace, SFMono-Regular, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: 12px;
+      line-height: 1.45;
+      margin: 6px 0 0;
+      max-height: 220px;
+      overflow: auto;
+      padding: 8px;
+      white-space: pre-wrap;
+    }
+
     @keyframes pawchestrator-spin {
       to {
         transform: rotate(360deg);
@@ -742,6 +767,12 @@
 			});
 		}
 	}
+	function openRunStream(runId) {
+		const token = GM_getValue(TOKEN_KEY);
+		const url = new URL(`${API_BASE}/runs/${encodeURIComponent(runId)}/stream`);
+		url.searchParams.set("token", token);
+		return new EventSource(url.toString());
+	}
 	async function fetchIssueStatus(issue) {
 		return requestJson(`/issue/${issue.owner}/${issue.repo}/${issue.number}/status`, { label: "Issue status request" });
 	}
@@ -757,6 +788,8 @@
 	var state = {
 		activePoll: null,
 		activePrPoll: null,
+		activeRunId: null,
+		activeRunStream: null,
 		activePathname: window.location.pathname,
 		panelExpandedByUser: null,
 		lastPipelineExpansionKey: null,
@@ -765,6 +798,8 @@
 		latestIssueStatus: null,
 		latestPrRun: null,
 		latestPrReviewState: null,
+		runLogLines: [],
+		sseConnected: false,
 		planAttempt: 1,
 		planAttemptRunId: null,
 		rejectedPlanRunIds: new Set()
@@ -1601,6 +1636,19 @@
 		}
 		parent.append(section);
 	}
+	function renderLogSection(parent) {
+		if (state.runLogLines.length === 0) return;
+		const details = document.createElement("details");
+		details.className = "pawchestrator-run-log";
+		const summary = document.createElement("summary");
+		summary.textContent = `Run log (${state.runLogLines.length})`;
+		details.append(summary);
+		const list = document.createElement("pre");
+		list.className = "pawchestrator-run-log-lines";
+		list.textContent = state.runLogLines.join("\n");
+		details.append(list);
+		parent.append(details);
+	}
 	function epicArchitectCreatedIssues(run) {
 		return Array.isArray(run?.created_sub_issues) ? run.created_sub_issues : [];
 	}
@@ -1784,6 +1832,7 @@
 		renderGrillSection(body, status.grill);
 		renderEpicArchitectSection(body, status.epic_architect);
 		renderPipeline(body, status.pipeline);
+		renderLogSection(body);
 		if (status.pipeline?.status === "awaiting_plan_approval" && status.plan_approval_plan) callbacks.renderPlanApprovalSubView?.(status.plan_approval_plan, status.pipeline.run_id);
 		renderEpicSection(body, status.epic);
 		if (status.grill?.status === "grill_waiting") callbacks.attachGrillReplyObserver?.(status.grill);
@@ -2442,7 +2491,116 @@
 	function renderOffline() {
 		renderOffline$1({ disconnectGrillReplyObserver });
 	}
+	var RUN_LOG_LIMIT = 200;
+	function activeIssueRun(status) {
+		const run = currentRun(status);
+		return run && !isRunDone(run) && run.run_id ? run : null;
+	}
+	function stopIssueStatusPollTimer() {
+		if (state.activePoll) {
+			window.clearInterval(state.activePoll);
+			state.activePoll = null;
+		}
+	}
+	function closeIssueStream() {
+		if (state.activeRunStream) state.activeRunStream.close();
+		state.activeRunStream = null;
+		state.activeRunId = null;
+		state.sseConnected = false;
+	}
+	function appendRunLogLine(event) {
+		const stage = event.stage_name || event.stage || state.latestIssueStatus?.pipeline?.current_stage || "run";
+		const message = event.message || event.line || event.text || "";
+		state.runLogLines.push(`[${stage}] ${message}`);
+		if (state.runLogLines.length > RUN_LOG_LIMIT) state.runLogLines.splice(0, state.runLogLines.length - RUN_LOG_LIMIT);
+	}
+	function mergeRunEvent(event) {
+		if (!state.latestIssueStatus) return;
+		const runId = event.run_id || state.activeRunId;
+		const keys = [
+			"pipeline",
+			"grill",
+			"epic_architect"
+		];
+		const key = keys.find((candidate) => state.latestIssueStatus?.[candidate]?.run_id === runId) || "pipeline";
+		const run = state.latestIssueStatus[key] || { run_id: runId };
+		const nextRun = {
+			...run,
+			...event.run,
+			run_id: runId
+		};
+		if (event.stage_name || event.stage) nextRun.current_stage = event.stage_name || event.stage;
+		if (event.status) nextRun.status = event.status;
+		if (Array.isArray(event.stages)) nextRun.stages = event.stages;
+		if (event.pr_url) nextRun.pr_url = event.pr_url;
+		if (event.warning) nextRun.warnings = [
+			...Array.isArray(run.warnings) ? run.warnings : [],
+			event.warning
+		];
+		else if (event.message && event.type === "warning") nextRun.warnings = [
+			...Array.isArray(run.warnings) ? run.warnings : [],
+			{
+				stage_name: event.stage_name,
+				code: event.code,
+				message: event.message
+			}
+		];
+		state.latestIssueStatus = {
+			...state.latestIssueStatus,
+			[key]: nextRun
+		};
+	}
+	function parseRunStreamEvent(message) {
+		try {
+			return JSON.parse(message.data || "{}");
+		} catch {
+			return {};
+		}
+	}
+	function handleRunStreamEvent(kind, message) {
+		const event = {
+			...parseRunStreamEvent(message),
+			type: kind
+		};
+		if (kind === "log_line") appendRunLogLine(event);
+		else mergeRunEvent(event);
+		if (state.latestIssueStatus) renderStatus(state.latestIssueStatus);
+		if (kind === "run_complete" || kind === "run_failed") {
+			closeIssueStream();
+			startIssueStatusPolling();
+		}
+	}
+	async function openIssueStream(runId) {
+		closeIssueStream();
+		stopIssueStatusPollTimer();
+		state.activeRunId = runId;
+		const stream = openRunStream(runId);
+		state.activeRunStream = stream;
+		stream.onopen = () => {
+			state.sseConnected = true;
+			stopIssueStatusPollTimer();
+		};
+		stream.onerror = () => {
+			closeIssueStream();
+			startIssueStatusPolling();
+		};
+		["stage_transition", "warning", "run_complete", "run_failed", "log_line"].forEach((kind) => {
+			stream.addEventListener(kind, (message) => handleRunStreamEvent(kind, message));
+		});
+	}
+	function maybeSwitchToRunStream(status) {
+		const run = activeIssueRun(status);
+		if (!run) {
+			if (state.activeRunStream) closeIssueStream();
+			return false;
+		}
+		if (state.activeRunId === run.run_id && state.activeRunStream) return true;
+		state.runLogLines = [];
+		openIssueStream(run.run_id).catch(() => startIssueStatusPolling());
+		return true;
+	}
 	async function pollIssueStatusOnce() {
+		if (state.activeRunStream && state.sseConnected) return true;
 		const status = await fetchIssueStatus(parseIssueReference());
 		if (status.pipeline?.run_id && status.pipeline.run_id !== state.planAttemptRunId) resetPlanAttemptForRun(status.pipeline.run_id);
 		if (status.pipeline?.status === "awaiting_plan_approval" && status.pipeline.run_id) {
@@ -2453,6 +2611,7 @@
 			status.plan_approval_plan = await requestJson(`/runs/${status.pipeline.run_id}/plan`, { label: "Plan request" });
 		}
 		renderStatus(status);
+		const streaming = maybeSwitchToRunStream(status);
 		const run = currentRun(status);
 		const running = run && !isRunDone(run);
 		const issueOpen = isIssueOpen$1();
@@ -2469,10 +2628,10 @@
 			btn.toggleAttribute("disabled", shouldDisable);
 			btn.title = closedTitle;
 		}
-		return running;
+		return streaming || running;
 	}
 	function startIssueStatusPolling() {
-		stopIssueStatusPolling();
+		stopIssueStatusPollTimer();
 		pollIssueStatusOnce().catch(() => renderOffline());
 		state.activePoll = window.setInterval(() => {
 			pollIssueStatusOnce().catch(() => {
@@ -2486,10 +2645,8 @@
 		}, POLL_INTERVAL_MS);
 	}
 	function stopIssueStatusPolling() {
-		if (state.activePoll) {
-			window.clearInterval(state.activePoll);
-			state.activePoll = null;
-		}
+		stopIssueStatusPollTimer();
+		closeIssueStream();
 	}
 	function isIssueOpen() {
 		return document.querySelector("[data-testid=\"header-state\"]")?.dataset.status === "issueOpened";

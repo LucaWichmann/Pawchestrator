@@ -10,7 +10,7 @@ from typing import AsyncIterator
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from pawchestrator import __version__
@@ -51,6 +51,12 @@ from pawchestrator.review import run_review
 from pawchestrator.review import review_report_path
 from pawchestrator.review_issues import format_and_create_issues
 from pawchestrator.review_post import run_review_post
+from pawchestrator.run_events import (
+    _STREAM_SENTINEL,
+    _run_stream_queues,
+    close_run_stream,
+    get_or_create_run_queue,
+)
 from pawchestrator.run_clean import auto_clean_runs
 from pawchestrator.runners import get_runner_health
 from pawchestrator.sessions import (
@@ -137,8 +143,6 @@ class EpicStartResponse(BaseModel):
 
 
 _active_run_tasks: dict[str, asyncio.Task[None]] = {}
-_run_stream_queues: dict[str, asyncio.Queue[object]] = {}
-_STREAM_SENTINEL = object()
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -238,6 +242,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="run not found")
         return state
 
+    @app.get("/runs/{run_id}/stream")
+    async def stream_run(run_id: str) -> StreamingResponse:
+        state = await get_run_state(runtime_settings, run_id)
+        if state is None:
+            raise HTTPException(status_code=404, detail="run not found")
+
+        queue = get_or_create_run_queue(run_id)
+
+        async def event_generator() -> AsyncIterator[str]:
+            try:
+                while True:
+                    event = await queue.get()
+                    if event is _STREAM_SENTINEL:
+                        break
+                    if not isinstance(event, dict):
+                        continue
+                    yield (
+                        f"event: {event['type']}\n"
+                        f"data: {json.dumps(event['data'])}\n\n"
+                    )
+            finally:
+                if _run_stream_queues.get(run_id) is queue:
+                    _run_stream_queues.pop(run_id, None)
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+        )
+
     @app.get("/runs/{run_id}/plan")
     async def run_plan(run_id: str) -> dict[str, object]:
         state = await get_run_state(runtime_settings, run_id)
@@ -294,7 +327,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             error="aborted by user",
             current_stage=str(state.get("current_stage") or "plan"),
         )
-        _close_run_stream(run_id)
+        close_run_stream(run_id)
         return {"run_id": run_id, "status": "failed", "error": "aborted by user"}
 
     @app.post("/runs/{run_id}/reject")
@@ -608,13 +641,6 @@ def _unregister_run_task(run_id: str, completed: asyncio.Task[None]) -> None:
     if _active_run_tasks.get(run_id) is completed:
         _active_run_tasks.pop(run_id, None)
 
-
-def _close_run_stream(run_id: str) -> None:
-    queue = _run_stream_queues.get(run_id)
-    if queue is not None:
-        queue.put_nowait(_STREAM_SENTINEL)
-
-
 async def _create_review_issues(settings: Settings, run_id: str) -> dict[str, object]:
     state = await get_run_state(settings, run_id)
     if state is None:
@@ -755,6 +781,8 @@ async def _run_pipeline_background(
     except Exception as error:
         await mark_run_failed(settings, run_id=run_id)
         print(f"[run {run_id}] failed: {error}")
+    finally:
+        close_run_stream(run_id)
 
 
 async def _run_epic_background(
@@ -777,6 +805,8 @@ async def _run_epic_background(
         raise
     except Exception as error:
         print(f"[epic {parent_run_id}] failed: {error}")
+    finally:
+        close_run_stream(parent_run_id)
 
 
 async def _run_grill_background(
@@ -796,6 +826,8 @@ async def _run_grill_background(
     except Exception as error:
         await mark_run_failed(settings, run_id=run_id)
         print(f"[run {run_id}] grill failed: {error}")
+    finally:
+        close_run_stream(run_id)
 
 
 async def _run_epic_architect_background(
@@ -817,6 +849,8 @@ async def _run_epic_architect_background(
     except Exception as error:
         await mark_run_failed(settings, run_id=run_id)
         print(f"[run {run_id}] epic architect failed: {error}")
+    finally:
+        close_run_stream(run_id)
 
 
 async def _run_review_background(
@@ -831,6 +865,8 @@ async def _run_review_background(
         raise
     except Exception as error:
         print(f"[run {run_id}] review failed: {error}")
+    finally:
+        close_run_stream(run_id)
 
 
 async def _run_repair_background(
@@ -844,6 +880,8 @@ async def _run_repair_background(
         raise
     except Exception as error:
         print(f"[run {run_id}] repair failed: {error}")
+    finally:
+        close_run_stream(run_id)
 
 
 async def _prepare_pipeline_run(issue_url_value: str, settings: Settings) -> str:
@@ -898,3 +936,4 @@ async def _prepare_epic_architect_run(issue_url_value: str, settings: Settings) 
         issue_number=reference.number,
     )
     return run_id
+

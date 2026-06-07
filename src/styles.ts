@@ -545,6 +545,31 @@ export function injectStyles() {
       padding-left: 18px;
     }
 
+    #${PANEL_ID} .pawchestrator-run-log {
+      margin-top: 10px;
+    }
+
+    #${PANEL_ID} .pawchestrator-run-log summary {
+      color: var(--fgColor-muted, #59636e);
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    #${PANEL_ID} .pawchestrator-run-log-lines {
+      background: var(--bgColor-muted, #f6f8fa);
+      border: 1px solid var(--borderColor-default, #d0d7de);
+      border-radius: 6px;
+      color: var(--fgColor-muted, #59636e);
+      font-family: ui-monospace, SFMono-Regular, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: 12px;
+      line-height: 1.45;
+      margin: 6px 0 0;
+      max-height: 220px;
+      overflow: auto;
+      padding: 8px;
+      white-space: pre-wrap;
+    }
+
     @keyframes pawchestrator-spin {
       to {
         transform: rotate(360deg);

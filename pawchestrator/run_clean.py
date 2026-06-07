@@ -61,7 +61,10 @@ async def clean_runs(
     dry_run: bool = False,
 ) -> list[CleanResult]:
     await init_db(settings)
-    cutoff = datetime.now(UTC) - parse_duration(older_than)
+    duration = parse_duration(older_than)
+    cutoff = datetime.now(UTC) - duration
+    if older_than.strip().endswith(("d", "w")):
+        cutoff = cutoff.replace(hour=0, minute=0, second=0, microsecond=0)
     targets = await _find_clean_targets(settings, cutoff=cutoff, statuses=statuses)
     results: list[CleanResult] = []
     for target in targets:

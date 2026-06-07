@@ -16,6 +16,7 @@ from pawchestrator.lifecycle import (
     fail_stale_runs_on_startup,
     skip_stage,
 )
+from pawchestrator.run_events import push_run_event
 from pawchestrator.run_lifecycle import (
     WorkflowKind,
     create_run,
@@ -618,6 +619,16 @@ async def insert_run_warning(
             (str(uuid4()), run_id, stage_name, code, message, now),
         )
         await db.commit()
+    await push_run_event(
+        run_id,
+        "warning",
+        {
+            "stage": stage_name,
+            "code": code,
+            "message": message,
+            "created_at": now,
+        },
+    )
 
 
 async def get_run_warnings(settings: Settings, run_id: str) -> list[dict[str, str]]:

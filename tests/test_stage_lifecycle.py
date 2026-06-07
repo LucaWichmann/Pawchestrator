@@ -7,13 +7,16 @@ from typing import Any
 import pytest
 
 from pawchestrator.config import Settings
-from pawchestrator.db import create_grill_run, create_pipeline_run
+from pawchestrator.db import create_grill_run, create_pipeline_run, insert_run_warning
+from pawchestrator.run_events import _run_stream_queues, push_run_event
 from pawchestrator.runners import RunnerFailedError
 from pawchestrator.stage_lifecycle import (
     GENERIC_STAGE_ERROR,
     STAGE_CONFIGS,
+    StageFailedWithArtifact,
     StageLifecycleConfig,
     StageResult,
+    StageSkipped,
     run_stage_lifecycle,
 )
 
@@ -69,6 +72,134 @@ def test_run_stage_lifecycle_success_path_writes_artifact(
     assert _run_status(tmp_path, run_id) == ("scout_complete", "scout")
     assert _stage_by_name(tmp_path, run_id, "scout") == ("complete", None)
     assert _artifacts(tmp_path, run_id) == [("scout_report", str(artifact_path))]
+
+
+def test_push_run_event_noops_without_queue() -> None:
+    _run_stream_queues.pop("missing-run", None)
+
+    asyncio.run(push_run_event("missing-run", "stage_transition", {"status": "running"}))
+
+    assert "missing-run" not in _run_stream_queues
+
+
+def test_run_stage_lifecycle_emits_start_and_complete_events(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    run_id = "stage-events-complete"
+    _run_stream_queues[run_id] = asyncio.Queue()
+
+    async def body(_log_path: Path) -> tuple[dict[str, Any], Path | None]:
+        return {"status": "ok"}, None
+
+    try:
+        asyncio.run(_create_pipeline(settings, run_id))
+        asyncio.run(run_stage_lifecycle(settings, run_id, "scout", body))
+
+        assert _queued_events(run_id) == [
+            {
+                "type": "stage_transition",
+                "data": {"stage": "scout", "status": "running"},
+            },
+            {
+                "type": "stage_transition",
+                "data": {"stage": "scout", "status": "complete"},
+            },
+        ]
+    finally:
+        _run_stream_queues.pop(run_id, None)
+
+
+def test_run_stage_lifecycle_emits_skip_event(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    run_id = "stage-events-skip"
+    _run_stream_queues[run_id] = asyncio.Queue()
+
+    async def body(_log_path: Path) -> tuple[dict[str, Any], Path | None]:
+        raise StageSkipped("nothing to verify", {"status": "skipped"}, None)
+
+    try:
+        asyncio.run(_create_pipeline(settings, run_id))
+        asyncio.run(run_stage_lifecycle(settings, run_id, "verify", body))
+
+        assert _queued_events(run_id) == [
+            {
+                "type": "stage_transition",
+                "data": {"stage": "verify", "status": "running"},
+            },
+            {
+                "type": "stage_transition",
+                "data": {
+                    "stage": "verify",
+                    "status": "skipped",
+                    "error": "nothing to verify",
+                },
+            },
+        ]
+    finally:
+        _run_stream_queues.pop(run_id, None)
+
+
+def test_run_stage_lifecycle_emits_fail_event(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    run_id = "stage-events-fail"
+    _run_stream_queues[run_id] = asyncio.Queue()
+
+    async def body(_log_path: Path) -> tuple[dict[str, Any], Path | None]:
+        raise StageFailedWithArtifact("boom", {"status": "failed"}, None)
+
+    try:
+        asyncio.run(_create_pipeline(settings, run_id))
+        with pytest.raises(StageFailedWithArtifact):
+            asyncio.run(run_stage_lifecycle(settings, run_id, "implement", body))
+
+        assert _queued_events(run_id) == [
+            {
+                "type": "stage_transition",
+                "data": {"stage": "implement", "status": "running"},
+            },
+            {
+                "type": "stage_transition",
+                "data": {
+                    "stage": "implement",
+                    "status": "failed",
+                    "error": GENERIC_STAGE_ERROR,
+                },
+            },
+        ]
+    finally:
+        _run_stream_queues.pop(run_id, None)
+
+
+def test_insert_run_warning_emits_warning_event(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    run_id = "warning-events"
+    _run_stream_queues[run_id] = asyncio.Queue()
+
+    try:
+        asyncio.run(_create_pipeline(settings, run_id))
+        asyncio.run(
+            insert_run_warning(
+                settings,
+                run_id=run_id,
+                stage_name="plan",
+                code="smart_routing_plan_skipped",
+                message="Smart routing skipped full plan.",
+            )
+        )
+
+        assert _queued_events(run_id) == [
+            {
+                "type": "warning",
+                "data": {
+                    "stage": "plan",
+                    "code": "smart_routing_plan_skipped",
+                    "message": "Smart routing skipped full plan.",
+                },
+            }
+        ]
+    finally:
+        _run_stream_queues.pop(run_id, None)
 
 
 def test_run_stage_lifecycle_grill_uses_grill_statuses(
@@ -222,3 +353,16 @@ def _artifacts(tmp_path: Path, run_id: str) -> list[tuple[str, str]]:
             (run_id,),
         ).fetchall()
     return rows
+
+
+def _queued_events(run_id: str) -> list[dict[str, Any]]:
+    queue = _run_stream_queues[run_id]
+    events: list[dict[str, Any]] = []
+    while not queue.empty():
+        event = queue.get_nowait()
+        assert isinstance(event, dict)
+        data = event["data"].copy()
+        data.pop("updated_at", None)
+        data.pop("created_at", None)
+        events.append({"type": event["type"], "data": data})
+    return events

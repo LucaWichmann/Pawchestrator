@@ -176,6 +176,13 @@ export async function requestJson(path: string, options: RequestOptions = {}) {
   }
 }
 
+export function openRunStream(runId: string): EventSource {
+  const token = GM_getValue(TOKEN_KEY);
+  const url = new URL(`${API_BASE}/runs/${encodeURIComponent(runId)}/stream`);
+  url.searchParams.set("token", token);
+  return new EventSource(url.toString());
+}
+
 export async function fetchIssueStatus(issue: { owner: string; repo: string; number: number }) {
   return requestJson(`/issue/${issue.owner}/${issue.repo}/${issue.number}/status`, {
     label: "Issue status request",

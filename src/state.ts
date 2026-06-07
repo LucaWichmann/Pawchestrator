@@ -1,6 +1,8 @@
 export const state = {
   activePoll: null,
   activePrPoll: null,
+  activeRunId: null,
+  activeRunStream: null as EventSource | null,
   activePathname: window.location.pathname,
   config: null as {
     pipeline: {
@@ -19,6 +21,8 @@ export const state = {
   latestIssueStatus: null,
   latestPrRun: null,
   latestPrReviewState: null,
+  runLogLines: [] as string[],
+  sseConnected: false,
   planAttempt: 1,
   planAttemptRunId: null,
   rejectedPlanRunIds: new Set(),

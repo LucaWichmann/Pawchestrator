@@ -122,6 +122,23 @@ function renderPipeline(parent, pipeline) {
   parent.append(section);
 }
 
+function renderLogSection(parent) {
+  if (state.runLogLines.length === 0) {
+    return;
+  }
+  const details = document.createElement("details");
+  details.className = "pawchestrator-run-log";
+  const summary = document.createElement("summary");
+  summary.textContent = `Run log (${state.runLogLines.length})`;
+  details.append(summary);
+
+  const list = document.createElement("pre");
+  list.className = "pawchestrator-run-log-lines";
+  list.textContent = state.runLogLines.join("\n");
+  details.append(list);
+  parent.append(details);
+}
+
 function epicArchitectCreatedIssues(run) {
   return Array.isArray(run?.created_sub_issues) ? run.created_sub_issues : [];
 }
@@ -391,6 +408,7 @@ export function renderStatus(status, callbacks = {}) {
   renderGrillSection(body, status.grill);
   renderEpicArchitectSection(body, status.epic_architect);
   renderPipeline(body, status.pipeline);
+  renderLogSection(body);
   if (status.pipeline?.status === "awaiting_plan_approval" && status.plan_approval_plan) {
     callbacks.renderPlanApprovalSubView?.(status.plan_approval_plan, status.pipeline.run_id);
   }

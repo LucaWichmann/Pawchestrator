@@ -44,6 +44,7 @@ from pawchestrator.issues import snapshot_issue
 from pawchestrator.plan import load_plan_rejections
 from pawchestrator.plan import run_micro_plan, run_plan
 from pawchestrator.pr import run_pr
+from pawchestrator.run_events import close_run_stream, push_run_event
 from pawchestrator.scout import run_scout
 from pawchestrator.stage_lifecycle import StageResult, StageSkipped, run_stage_lifecycle
 from pawchestrator.verify import run_verify
@@ -331,8 +332,14 @@ async def run_pipeline(
             pr_url = str(pr.report["pr_url"])
             _print_done(progress, "pr", pr_url)
             await _edit_run_comment(settings, active_run_id, comment_client)
-    except Exception:
+    except Exception as error:
         await mark_run_failed(settings, run_id=active_run_id)
+        await push_run_event(
+            active_run_id,
+            "run_failed",
+            {"status": "failed", "error": str(error)},
+        )
+        close_run_stream(active_run_id)
         await _edit_run_comment(settings, active_run_id, comment_client)
         await _swap_stage_label(settings, active_run_id, comment_client, "failed")
         raise
@@ -350,6 +357,12 @@ async def run_pipeline(
         run_id=active_run_id,
         current_stage="pr" if create_pr else "verify",
     )
+    await push_run_event(
+        active_run_id,
+        "run_complete",
+        {"status": "complete", "pr_url": pr_url},
+    )
+    close_run_stream(active_run_id)
     await _edit_run_comment(settings, active_run_id, comment_client)
     await _swap_stage_label(settings, active_run_id, comment_client, "pr-ready")
     if pr_url:
@@ -369,8 +382,8 @@ async def _await_plan_approval(
     if not require_approval:
         return "approve"
 
-    event = register_approval_event(run_id)
     await set_run_awaiting_plan_approval(settings, run_id=run_id)
+    event = register_approval_event(run_id)
     progress("[plan] awaiting approval")
 
     try:
