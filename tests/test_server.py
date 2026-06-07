@@ -175,6 +175,67 @@ def test_run_state_returns_404_for_missing_run(tmp_path: Path) -> None:
     assert response.status_code == 404
 
 
+def test_run_stream_requires_pairing_token(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _insert_run_state(settings)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.get("/runs/run-123/stream")
+
+    assert response.status_code == 403
+
+
+def test_run_stream_returns_404_for_missing_run(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _seed_token(settings)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.get("/runs/missing/stream", headers=_token_headers())
+
+    assert response.status_code == 404
+
+
+def test_get_or_create_run_queue_reuses_per_run_queue() -> None:
+    server._run_stream_queues.pop("run-123", None)
+
+    try:
+        queue = server.get_or_create_run_queue("run-123")
+        same_queue = server.get_or_create_run_queue("run-123")
+    finally:
+        server._run_stream_queues.pop("run-123", None)
+
+    assert isinstance(queue, asyncio.Queue)
+    assert same_queue is queue
+
+
+def test_run_stream_yields_sse_events_and_cleans_up_on_sentinel(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _insert_run_state(settings)
+    _seed_token(settings)
+    queue = server.get_or_create_run_queue("run-123")
+    queue.put_nowait({"type": "stage", "data": {"stage": "plan", "status": "running"}})
+    queue.put_nowait(server._STREAM_SENTINEL)
+
+    try:
+        with TestClient(create_app(settings)) as client:
+            with client.stream(
+                "GET",
+                "/runs/run-123/stream",
+                headers=_token_headers(),
+            ) as response:
+                body = response.read().decode("utf-8")
+                content_type = response.headers["content-type"]
+    finally:
+        server._run_stream_queues.pop("run-123", None)
+
+    assert response.status_code == 200
+    assert content_type.startswith("text/event-stream")
+    assert body == 'event: stage\ndata: {"stage": "plan", "status": "running"}\n\n'
+    assert "run-123" not in server._run_stream_queues
+
+
 def test_run_plan_returns_projection_with_file_operations(tmp_path: Path) -> None:
     settings = Settings(app_dir=tmp_path)
     _insert_run_state(settings)
