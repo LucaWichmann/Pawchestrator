@@ -12,6 +12,7 @@ import aiosqlite
 
 from pawchestrator.db import init_db, utc_now_iso
 from pawchestrator.lifecycle import complete_stage, fail_stage, skip_stage
+from pawchestrator.run_events import push_run_event
 from pawchestrator.run_lifecycle import start_stage
 from pawchestrator.runners import RunnerFailedError
 
@@ -182,6 +183,26 @@ class StageFailedWithArtifact(RuntimeError):
 StageFn = Callable[[Path], Awaitable[tuple[dict[str, Any], Path | None]]]
 
 
+async def _push_stage_transition(
+    run_id: str,
+    stage_name: str,
+    status: str,
+    *,
+    error: str | None = None,
+) -> None:
+    data: dict[str, Any] = {
+        "stage": stage_name,
+        "status": status,
+        "updated_at": utc_now_iso(),
+    }
+    if error is not None:
+        data["error"] = error
+    try:
+        await push_run_event(run_id, "stage_transition", data)
+    except Exception:
+        return
+
+
 def _write_stage_artifact(report: dict[str, Any], artifact_path: Path | None) -> None:
     if artifact_path is None:
         return
@@ -248,6 +269,7 @@ async def run_stage_lifecycle(
         workflow_kind=config.workflow_kind,
         now=utc_now_iso(),
     )
+    await _push_stage_transition(run_id, stage_name, "running")
 
     try:
         report, artifact_path = await body(log_path)
@@ -268,6 +290,12 @@ async def run_stage_lifecycle(
                     now=utc_now_iso(),
                 )
                 await db.commit()
+            await _push_stage_transition(
+                run_id,
+                stage_name,
+                "failed",
+                error=error,
+            )
             return StageResult(
                 run_id=run_id,
                 artifact_path=artifact_path,
@@ -287,6 +315,7 @@ async def run_stage_lifecycle(
                 now=utc_now_iso(),
             )
             await db.commit()
+        await _push_stage_transition(run_id, stage_name, "complete")
         return StageResult(
             run_id=run_id,
             artifact_path=artifact_path,
@@ -309,6 +338,12 @@ async def run_stage_lifecycle(
                 now=utc_now_iso(),
             )
             await db.commit()
+        await _push_stage_transition(
+            run_id,
+            stage_name,
+            "skipped",
+            error=skipped.reason,
+        )
         return StageResult(
             run_id=run_id,
             artifact_path=skipped.artifact_path,
@@ -334,6 +369,12 @@ async def run_stage_lifecycle(
                 now=utc_now_iso(),
             )
             await db.commit()
+        await _push_stage_transition(
+            run_id,
+            stage_name,
+            "failed",
+            error=GENERIC_STAGE_ERROR,
+        )
         raise
     except Exception as exc:
         error = (
@@ -356,4 +397,5 @@ async def run_stage_lifecycle(
                 now=utc_now_iso(),
             )
             await db.commit()
+        await _push_stage_transition(run_id, stage_name, "failed", error=error)
         raise
