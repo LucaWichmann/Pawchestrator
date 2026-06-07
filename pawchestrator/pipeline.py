@@ -382,8 +382,8 @@ async def _await_plan_approval(
     if not require_approval:
         return "approve"
 
-    event = register_approval_event(run_id)
     await set_run_awaiting_plan_approval(settings, run_id=run_id)
+    event = register_approval_event(run_id)
     progress("[plan] awaiting approval")
 
     try:
