@@ -11,7 +11,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from pawchestrator.config import (
     ClaudeRunnerSettings,
@@ -19,6 +19,10 @@ from pawchestrator.config import (
     Settings,
     StageSettings,
 )
+from pawchestrator.run_events import push_run_event
+
+
+LineCallback = Callable[[str], Awaitable[None]]
 
 
 @dataclass(frozen=True)
@@ -155,6 +159,7 @@ class ClaudeRunner(Runner):
             task=task,
             prompt_index=None,
             prompt_stdin_chars=len(task.prompt),
+            on_line=_run_log_line_callback(task),
         )
         return RunnerResult(
             exit_code=exit_code,
@@ -274,6 +279,7 @@ class CodexRunner(Runner):
             prompt_index=_prompt_index(cmd, "-"),
             prompt_stdin_chars=len(task.prompt),
             attempts=config.previous_response_not_found_attempts,
+            on_line=_run_log_line_callback(task),
         )
         diff = await _capture_git_diff(task.cwd)
         if (
@@ -380,6 +386,7 @@ class CodexRunner(Runner):
             prompt_index=_prompt_index(wsl_cmd, "-"),
             prompt_stdin_chars=len(task.prompt),
             attempts=config.previous_response_not_found_attempts,
+            on_line=_run_log_line_callback(task),
         )
         await _write_runner_log(task, stdout=stdout, stderr=stderr)
         diff = await _capture_git_diff(task.cwd)
@@ -592,6 +599,7 @@ async def _run_process(
     task: RunnerTask | None = None,
     prompt_index: int | None = None,
     prompt_stdin_chars: int | None = None,
+    on_line: LineCallback | None = None,
 ) -> tuple[str, str, int]:
     if debug and runner_id and task:
         _debug_print_command(
@@ -616,7 +624,14 @@ async def _run_process(
         reason = error.strerror or str(error)
         return "", f"failed to launch {cmd[0]}: {reason}", 126
 
-    if debug and runner_id and task and hasattr(proc, "stdout") and hasattr(proc, "stderr"):
+    if on_line is not None and getattr(proc, "stdout", None) is not None:
+        stdout_bytes, stderr_bytes = await _communicate_with_line_streaming(
+            proc,
+            stdin_text=stdin_text,
+            on_line=on_line,
+            debug=debug and bool(runner_id and task),
+        )
+    elif debug and runner_id and task and hasattr(proc, "stdout") and hasattr(proc, "stderr"):
         stdout_bytes, stderr_bytes = await _communicate_with_debug_streaming(
             proc,
             stdin_text=stdin_text,
@@ -640,6 +655,49 @@ async def _run_process(
             stderr=stderr,
         )
     return stdout, stderr, exit_code
+
+
+async def _communicate_with_line_streaming(
+    proc: asyncio.subprocess.Process,
+    *,
+    stdin_text: str | None,
+    on_line: LineCallback,
+    debug: bool = False,
+) -> tuple[bytes, bytes]:
+    async def write_stdin() -> None:
+        stdin = getattr(proc, "stdin", None)
+        if stdin_text is None or stdin is None:
+            return
+        stdin.write(stdin_text.encode("utf-8"))
+        await stdin.drain()
+        stdin.close()
+        if hasattr(stdin, "wait_closed"):
+            await stdin.wait_closed()
+
+    async def read_stdout() -> bytes:
+        if proc.stdout is None:
+            return b""
+        chunks: list[bytes] = []
+        async for line in proc.stdout:
+            chunks.append(line)
+            decoded = line.decode("utf-8", errors="replace").rstrip()
+            await on_line(decoded)
+            if debug:
+                print(f"[pawchestrator:debug] stdout:\n{decoded}", flush=True)
+        return b"".join(chunks)
+
+    async def read_stderr() -> bytes:
+        if proc.stderr is None:
+            return b""
+        return await proc.stderr.read()
+
+    _, stdout_bytes, stderr_bytes = await asyncio.gather(
+        write_stdin(),
+        read_stdout(),
+        read_stderr(),
+    )
+    await proc.wait()
+    return stdout_bytes, stderr_bytes
 
 
 async def _communicate_with_debug_streaming(
@@ -827,6 +885,7 @@ async def _run_codex_process_with_recovery(
     prompt_index: int | None,
     prompt_stdin_chars: int,
     attempts: int,
+    on_line: LineCallback | None = None,
 ) -> tuple[str, str, int]:
     notes: list[str] = []
     stdout = ""
@@ -846,6 +905,7 @@ async def _run_codex_process_with_recovery(
             task=task,
             prompt_index=active_prompt_index,
             prompt_stdin_chars=prompt_stdin_chars,
+            on_line=on_line,
         )
         if not _looks_like_previous_response_not_found(stdout, stderr, exit_code):
             return stdout, _append_codex_retry_notes(stderr, notes), exit_code
@@ -860,6 +920,17 @@ async def _run_codex_process_with_recovery(
             f"{attempt}/{attempts}; retrying with `codex exec resume --last -`."
         )
     return stdout, _append_codex_retry_notes(stderr, notes), exit_code
+
+
+def _run_log_line_callback(task: RunnerTask) -> LineCallback:
+    async def on_line(line: str) -> None:
+        await push_run_event(
+            task.run_id,
+            "log_line",
+            {"stage": task.stage_name, "line": line},
+        )
+
+    return on_line
 
 
 def _append_codex_retry_notes(stderr: str, notes: list[str]) -> str:
