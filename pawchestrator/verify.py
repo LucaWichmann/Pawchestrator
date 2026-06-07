@@ -192,11 +192,12 @@ async def run_verify(
     settings: Settings,
     *,
     runner: ShellRunner | None = None,
-    base_branch: str = "main",
+    base_branch: str | None = None,
 ) -> StageResult:
     state = await get_run_state(settings, run_id)
     if state is None:
         raise ValueError(f"run not found: {run_id}")
+    resolved_base_branch = base_branch or settings.pipeline.base_branch
 
     artifact_path = _verification_report_path(settings, run_id)
     active_runner = runner or ShellRunner(debug=settings.debug, run_id=run_id)
@@ -211,7 +212,11 @@ async def run_verify(
             raise RuntimeError(f"worktree path not found: {worktree_path}")
 
         if not settings.pipeline.verify_non_code_changes:
-            skip_report = _non_code_skip_report(settings, worktree_path, base_branch)
+            skip_report = _non_code_skip_report(
+                settings,
+                worktree_path,
+                resolved_base_branch,
+            )
             if skip_report is not None:
                 reason = str(skip_report["skip_reason"])
                 _write_verify_log(log_path, reason + "\n", [])

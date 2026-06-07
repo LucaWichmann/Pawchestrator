@@ -91,13 +91,15 @@ async def run_pipeline(
     create_pr: bool = True,
     worktree_branch: str | None = None,
     worktree_path: Path | None = None,
-    base_branch: str = "main",
-    pr_base_branch: str = "main",
+    base_branch: str | None = None,
+    pr_base_branch: str | None = None,
     allow_dirty_existing_worktree: bool = False,
     defer_verification: bool = False,
     progress: ProgressFn = print,
 ) -> PipelineResult:
     reference = parse_issue_url(issue_url)
+    resolved_base_branch = base_branch or settings.pipeline.base_branch
+    resolved_pr_base_branch = pr_base_branch or settings.pipeline.base_branch
     resolved_repo_path = repo_path.resolve() if repo_path is not None else None
     if resolved_repo_path is None:
         resolved_repo_path = await lookup_repo_path(
@@ -166,14 +168,17 @@ async def run_pipeline(
             implement_kwargs["worktree_branch"] = worktree_branch
         if worktree_path is not None:
             implement_kwargs["worktree_path"] = worktree_path
-        if base_branch != "main":
-            implement_kwargs["base_branch"] = base_branch
+        implement_kwargs["base_branch"] = resolved_base_branch
         return await run_implement(active_run_id, settings, **implement_kwargs)
 
     async def verify_stage() -> StageResult:
         verify_module.all_files_match_non_code = all_files_match_non_code
         verify_module._changed_files = _changed_files
-        return await run_verify(active_run_id, settings, base_branch=base_branch)
+        return await run_verify(
+            active_run_id,
+            settings,
+            base_branch=resolved_base_branch,
+        )
 
     async def deferred_verify_skip_stage() -> StageResult:
         reason = "verification deferred to epic level"
@@ -199,11 +204,11 @@ async def run_pipeline(
         worktree_path = Path(str(worktree["path"]))
         if not all_files_match_non_code(
             worktree_path,
-            base_branch,
+            resolved_base_branch,
             settings.pipeline.non_code_patterns,
         ):
             return None
-        changed_files = _changed_files(worktree_path, base_branch)
+        changed_files = _changed_files(worktree_path, resolved_base_branch)
         if changed_files is None:
             return None
 
@@ -224,8 +229,7 @@ async def run_pipeline(
 
     async def pr_stage() -> StageResult:
         pr_kwargs: dict[str, Any] = {"allow_empty_commit": allow_empty_commit}
-        if pr_base_branch != "main":
-            pr_kwargs["base_branch"] = pr_base_branch
+        pr_kwargs["base_branch"] = resolved_pr_base_branch
         return await run_pr(active_run_id, settings, **pr_kwargs)
 
     async def reconcile_marks(stage_name: str) -> None:

@@ -19,6 +19,9 @@ _approval_gates: dict[str, ApprovalGate] = {}
 
 
 def register_approval_event(run_id: str) -> asyncio.Event:
+    existing = _approval_gates.get(run_id)
+    if existing is not None:
+        return existing.event
     gate = ApprovalGate(event=asyncio.Event())
     _approval_gates[run_id] = gate
     return gate.event

@@ -44,7 +44,7 @@ from pawchestrator.github import (
 )
 from pawchestrator.grill import run_grill
 from pawchestrator.implement import run_repair
-from pawchestrator.lifecycle import fail_stale_runs_on_startup
+from pawchestrator.lifecycle import fail_stale_runs_on_startup, resume_pending_approvals
 from pawchestrator.pipeline import run_pipeline
 from pawchestrator.plan import append_plan_rejection
 from pawchestrator.review import run_review
@@ -153,6 +153,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         database_path = await init_db(runtime_settings)
         await fail_stale_runs_on_startup(runtime_settings)
+        try:
+            await resume_pending_approvals(
+                runtime_settings,
+                GitHubIssueClient(get_gh_token()),
+            )
+        except Exception:
+            pass
         await auto_clean_runs(runtime_settings)
         app.state.settings = runtime_settings
         app.state.database_path = database_path
@@ -310,6 +317,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=409, detail="approval gate is not active")
         return {"run_id": run_id, "decision": "approve"}
 
+    @app.post("/runs/{run_id}/approve-epic")
+    async def approve_epic_run(run_id: str) -> dict[str, str]:
+        state = await get_run_state(runtime_settings, run_id)
+        if state is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        if state.get("status") != "awaiting_epic_approval":
+            raise HTTPException(status_code=409, detail="run is not awaiting epic approval")
+        if not signal_approval_decision(run_id, "approve"):
+            raise HTTPException(status_code=409, detail="approval gate is not active")
+        return {"run_id": run_id, "decision": "approve"}
+
     @app.post("/runs/{run_id}/abort")
     async def abort_run(run_id: str) -> dict[str, str]:
         state = await get_run_state(runtime_settings, run_id)
@@ -318,6 +336,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         task = _active_run_tasks.get(run_id)
         if task is None or task.done():
             raise HTTPException(status_code=404, detail="run not active")
+
+        if state.get("status") == "awaiting_epic_approval":
+            signal_approval_decision(run_id, "abort")
+            return {
+                "run_id": run_id,
+                "status": "epic_architect_failed",
+                "error": "aborted by user",
+            }
 
         signal_approval(run_id, approved=False)
         task.cancel()
@@ -847,7 +873,9 @@ async def _run_epic_architect_background(
     except asyncio.CancelledError:
         raise
     except Exception as error:
-        await mark_run_failed(settings, run_id=run_id)
+        state = await get_run_state(settings, run_id)
+        if (state or {}).get("status") != "epic_architect_failed":
+            await mark_run_failed(settings, run_id=run_id)
         print(f"[run {run_id}] epic architect failed: {error}")
     finally:
         close_run_stream(run_id)

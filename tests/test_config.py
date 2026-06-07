@@ -46,6 +46,7 @@ def test_runner_settings_defaults_match_low_token_profile() -> None:
     assert settings.pipeline.non_code_patterns == ["*.md", "*.txt", "docs/**", "adr/**"]
     assert settings.pipeline.epic_branch_mode == "epic"
     assert settings.pipeline.smart_routing.enabled is False
+    assert settings.pipeline.base_branch == "main"
     assert settings.pipeline.smart_routing.skip_plan_when == ["implement"]
     assert settings.pipeline.smart_routing.require_readiness == ["ready"]
     assert settings.pipeline.smart_routing.require_max_risk == "low"
@@ -118,6 +119,7 @@ epic_confirm = true
 verify_non_code_changes = true
 non_code_patterns = ["*.md", "notes/**"]
 epic_branch_mode = "epic-with-sub-issues"
+base_branch = "develop"
 
 [pipeline.smart_routing]
 enabled = true
@@ -184,6 +186,7 @@ approval_policy = "never"
     assert settings.pipeline.verify_non_code_changes is True
     assert settings.pipeline.non_code_patterns == ["*.md", "notes/**"]
     assert settings.pipeline.epic_branch_mode == "epic-with-sub-issues"
+    assert settings.pipeline.base_branch == "develop"
     assert settings.pipeline.smart_routing.enabled is True
     assert settings.pipeline.smart_routing.skip_plan_when == ["implement", "verify"]
     assert settings.pipeline.smart_routing.require_readiness == ["ready", "accepted"]

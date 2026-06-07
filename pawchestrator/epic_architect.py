@@ -9,8 +9,17 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from pawchestrator.approval_gate import (
+    approval_decision,
+    register_approval_event,
+)
 from pawchestrator.config import Settings
-from pawchestrator.db import get_run_state, insert_run_warning, lookup_repo_path
+from pawchestrator.db import (
+    get_run_state,
+    insert_run_warning,
+    lookup_repo_path,
+    set_run_awaiting_epic_approval,
+)
 from pawchestrator.epic_scout import (
     epic_scout_report_path,
     run_epic_scout,
@@ -97,6 +106,25 @@ async def run_epic_architect(
             run_id=run_id,
             plan=plan,
         )
+        if settings.pipeline.epic_confirm:
+            artifact_path.parent.mkdir(parents=True, exist_ok=True)
+            artifact_path.write_text(
+                json.dumps(validated_plan, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            await set_run_awaiting_epic_approval(
+                settings,
+                run_id=run_id,
+                artifact_path=artifact_path,
+            )
+            event = register_approval_event(run_id)
+            await event.wait()
+            if approval_decision(run_id) == "abort":
+                raise StageFailedWithArtifact(
+                    "epic approval aborted",
+                    validated_plan,
+                    artifact_path,
+                )
         client = github_client or GitHubIssueClient(get_gh_token())
         try:
             created_plan = await create_epic_architect_sub_issues(

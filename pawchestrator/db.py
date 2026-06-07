@@ -648,6 +648,23 @@ async def get_run_warnings(settings: Settings, run_id: str) -> list[dict[str, st
     return [dict(row) for row in rows]
 
 
+async def get_runs_by_status(settings: Settings, status: str) -> list[dict]:
+    await init_db(settings)
+    async with aiosqlite.connect(settings.database_path) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT id, owner, repo, issue_number, status
+            FROM workflow_runs
+            WHERE status = ?
+            ORDER BY created_at, id
+            """,
+            (status,),
+        )
+        rows = await cursor.fetchall()
+    return [dict(row) for row in rows]
+
+
 async def get_runs_by_group_id(settings: Settings, group_id: str) -> list[dict]:
     await init_db(settings)
     async with aiosqlite.connect(settings.database_path) as db:
@@ -793,6 +810,34 @@ async def set_run_awaiting_plan_approval(settings: Settings, *, run_id: str) -> 
             WHERE id = ?
             """,
             (now, run_id),
+        )
+        await db.commit()
+
+
+async def set_run_awaiting_epic_approval(
+    settings: Settings,
+    *,
+    run_id: str,
+    artifact_path: Path,
+) -> None:
+    now = utc_now_iso()
+    async with aiosqlite.connect(settings.database_path) as db:
+        await db.execute(
+            """
+            UPDATE workflow_runs
+            SET status = 'awaiting_epic_approval',
+                current_stage = 'epic_architect',
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (now, run_id),
+        )
+        await db.execute(
+            """
+            INSERT INTO artifacts (id, run_id, artifact_type, file_path, created_at)
+            VALUES (?, ?, 'epic_architect_plan', ?, ?)
+            """,
+            (str(uuid4()), run_id, str(artifact_path), now),
         )
         await db.commit()
 
@@ -956,6 +1001,9 @@ async def get_latest_run_by_issue(
         run["created_sub_issues"] = (
             created_sub_issues if isinstance(created_sub_issues, list) else []
         )
+        sub_issues = None if epic_plan is None else epic_plan.get("sub_issues")
+        if run.get("status") == "awaiting_epic_approval":
+            run["sub_issues"] = sub_issues if isinstance(sub_issues, list) else []
         return run
 
     grill_report = _read_latest_artifact(run, "grill_report")

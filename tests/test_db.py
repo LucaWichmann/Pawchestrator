@@ -29,7 +29,6 @@ from pawchestrator.db import (
     upsert_worktree_record,
 )
 from pawchestrator.lifecycle import (
-    PLAN_APPROVAL_RESTART_ERROR,
     STALE_RUN_ERROR,
     TERMINAL_RUN_STATUSES,
     fail_stale_runs_on_startup,
@@ -458,7 +457,7 @@ def test_fail_stale_runs_marks_running_stage_failed(tmp_path: Path) -> None:
     assert stages["plan"] == ("failed", STALE_RUN_ERROR)
 
 
-def test_fail_stale_runs_marks_awaiting_plan_approval_failed_with_reason(
+def test_fail_stale_runs_skips_awaiting_plan_approval(
     tmp_path: Path,
 ) -> None:
     settings = Settings(app_dir=tmp_path)
@@ -482,10 +481,40 @@ def test_fail_stale_runs_marks_awaiting_plan_approval_failed_with_reason(
 
     cleaned = asyncio.run(fail_stale_runs_on_startup(settings))
 
-    assert cleaned == 1
+    assert cleaned == 0
     run, stages = _fetch_run_and_stages(tmp_path, "run-123")
-    assert run == ("failed", "plan", None)
-    assert stages["plan"] == ("failed", PLAN_APPROVAL_RESTART_ERROR)
+    assert run == ("awaiting_plan_approval", "plan", None)
+    assert stages["plan"] == ("complete", None)
+
+
+def test_fail_stale_runs_skips_awaiting_epic_approval(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(app_dir=tmp_path)
+    asyncio.run(
+        create_epic_architect_run(
+            settings,
+            run_id="run-123",
+            owner="owner",
+            repo="repo",
+            issue_number=42,
+        )
+    )
+    _set_run_state(
+        tmp_path,
+        "run-123",
+        status="awaiting_epic_approval",
+        current_stage="epic_architect",
+    )
+    for stage_name in ("epic_scout", "epic_architect"):
+        _set_stage_state(tmp_path, "run-123", stage_name, "complete")
+
+    cleaned = asyncio.run(fail_stale_runs_on_startup(settings))
+
+    assert cleaned == 0
+    run, stages = _fetch_run_and_stages(tmp_path, "run-123")
+    assert run == ("awaiting_epic_approval", "epic_architect", None)
+    assert stages["epic_architect"] == ("complete", None)
 
 
 def test_fail_stale_runs_marks_next_stage_after_completed_stage_failed(
