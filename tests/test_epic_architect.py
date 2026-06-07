@@ -3,9 +3,11 @@ import json
 import sqlite3
 from pathlib import Path
 
+from pawchestrator.approval_gate import signal_approval_decision
 from pawchestrator.config import Settings
 from pawchestrator.db import (
     create_epic_architect_run,
+    get_run_state,
     get_run_warnings,
     insert_repo_registration,
 )
@@ -173,6 +175,55 @@ def test_run_epic_architect_writes_plan_and_records_stage(tmp_path: Path) -> Non
     assert run == ("epic_architect_complete", "epic_architect")
     assert stages[-1] == ("epic_architect", "complete", None)
     assert artifact == ("epic_architect_plan", str(result.artifact_path))
+
+
+def test_run_epic_architect_awaits_epic_approval_when_confirm_enabled(
+    tmp_path: Path,
+) -> None:
+    async def exercise() -> None:
+        settings = Settings(app_dir=tmp_path)
+        settings.pipeline.epic_confirm = True
+        run_id = "run-123"
+        repo_path = tmp_path / "repo"
+        repo_path.mkdir()
+        await _insert_run_snapshot_and_scout(settings, run_id)
+        await insert_repo_registration(
+            settings,
+            owner="owner",
+            repo="repo",
+            local_path=repo_path,
+        )
+        github_client = FakeGitHubClient()
+
+        task = asyncio.create_task(
+            run_epic_architect(
+                "https://github.com/owner/repo/issues/42",
+                settings,
+                run_id=run_id,
+                runner=FakeRunner(),
+                github_client=github_client,
+            )
+        )
+        for _ in range(20):
+            state = await get_run_state(settings, run_id)
+            if state and state["status"] == "awaiting_epic_approval":
+                break
+            await asyncio.sleep(0.01)
+
+        state = await get_run_state(settings, run_id)
+        assert state is not None
+        assert state["status"] == "awaiting_epic_approval"
+        assert github_client.calls == []
+        assert signal_approval_decision(run_id, "approve") is True
+        await task
+        assert [call[0] for call in github_client.calls] == [
+            "create",
+            "link",
+            "create",
+            "link",
+        ]
+
+    asyncio.run(exercise())
 
 
 def test_create_sub_issues_happy_path_without_dependencies() -> None:

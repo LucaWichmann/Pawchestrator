@@ -359,6 +359,17 @@ def test_approve_non_awaiting_run_returns_409(tmp_path: Path) -> None:
     assert response.status_code == 409
 
 
+def test_approve_epic_non_awaiting_run_returns_409(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _insert_run_state(settings)
+    _seed_token(settings)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.post("/runs/run-123/approve-epic", headers=_token_headers())
+
+    assert response.status_code == 409
+
+
 def test_abort_non_active_run_returns_404(tmp_path: Path) -> None:
     settings = Settings(app_dir=tmp_path)
     _insert_run_state(settings)
@@ -378,6 +389,24 @@ def test_approve_signals_plan_approval_event(tmp_path: Path) -> None:
 
     with TestClient(create_app(settings)) as client:
         response = client.post("/runs/run-123/approve", headers=_token_headers())
+
+    assert response.status_code == 200
+    assert response.json() == {"run_id": "run-123", "decision": "approve"}
+    assert event.is_set() is True
+
+
+def test_approve_epic_signals_epic_approval_event(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _insert_run_state(
+        settings,
+        status="awaiting_epic_approval",
+        current_stage="epic_architect",
+    )
+    _seed_token(settings)
+    event = register_approval_event("run-123")
+
+    with TestClient(create_app(settings)) as client:
+        response = client.post("/runs/run-123/approve-epic", headers=_token_headers())
 
     assert response.status_code == 200
     assert response.json() == {"run_id": "run-123", "decision": "approve"}

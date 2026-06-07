@@ -282,7 +282,7 @@ def test_userscript_renders_independent_grill_section() -> None:
 def test_userscript_renders_epic_architect_section_states() -> None:
     source = _read_userscript()
 
-    assert "function renderEpicArchitectSection(parent, run)" in source
+    assert "function renderEpicArchitectSection(parent, run, callbacks = {})" in source
     assert 'section.className = "pawchestrator-epic-architect-section"' in source
     assert 'title.textContent = "EpicArchitect"' in source
     assert "renderNamedTimeline$1(section, epicArchitectTimelineRun(run), EPIC_ARCHITECT_STAGES" in source
@@ -295,10 +295,22 @@ def test_userscript_renders_epic_architect_section_states() -> None:
     assert "error.textContent = summarizeError(run)" in source
     assert 'partial.textContent = `Created before failure: ${created.map((issue) => `#${issue.number}`).join(", ")}`' in source
     assert "renderGrillSection(body, status.grill)" in source
-    assert "renderEpicArchitectSection(body, status.epic_architect)" in source
+    assert "renderEpicArchitectSection(body, status.epic_architect, callbacks)" in source
     assert source.index("renderGrillSection(body, status.grill)") < source.index(
-        "renderEpicArchitectSection(body, status.epic_architect)"
+        "renderEpicArchitectSection(body, status.epic_architect, callbacks)"
     )
+
+
+def test_userscript_renders_epic_architect_approval_actions() -> None:
+    source = _read_userscript()
+
+    assert "awaiting_epic_approval" in source
+    assert 'list.className = "pawchestrator-epic-architect-sub-issues"' in source
+    assert 'title.className = "pawchestrator-epic-architect-sub-issue-title"' in source
+    assert 'description.className = "pawchestrator-epic-architect-sub-issue-description"' in source
+    assert '"pawchestrator-epic-approve-button", "Approve"' in source
+    assert '"pawchestrator-epic-abort-button", "Abort"' in source
+    assert 'requestJson(`/runs/${runId}/${action}`' in source
 
 
 def test_userscript_renders_epic_section_with_sub_run_timelines() -> None:
