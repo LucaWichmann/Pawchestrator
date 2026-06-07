@@ -481,6 +481,20 @@ async def lookup_repo_path(settings: Settings, *, owner: str, repo: str) -> Path
     return Path(row[0]) if row is not None else None
 
 
+async def delete_repo_registration(settings: Settings, *, owner: str, repo: str) -> bool:
+    await init_db(settings)
+    async with aiosqlite.connect(settings.database_path) as db:
+        cursor = await db.execute(
+            """
+            DELETE FROM github_repos
+            WHERE owner = ? AND repo = ?
+            """,
+            (owner, repo),
+        )
+        await db.commit()
+    return cursor.rowcount > 0
+
+
 async def store_github_comment_id(
     settings: Settings,
     run_id: str,
@@ -526,6 +540,52 @@ async def list_repo_registrations(settings: Settings) -> list[dict[str, str]]:
             FROM github_repos
             ORDER BY owner, repo
             """
+        )
+        rows = await cursor.fetchall()
+    return [dict(row) for row in rows]
+
+
+async def list_runs(
+    settings: Settings,
+    owner_repo: str | None = None,
+    status: str | None = None,
+    limit: int = 20,
+) -> list[dict[str, object]]:
+    await init_db(settings)
+    filters: list[str] = []
+    params: list[object] = []
+    if owner_repo is not None:
+        owner, repo = owner_repo.split("/", maxsplit=1)
+        filters.append("owner = ? AND repo = ?")
+        params.extend([owner, repo])
+    if status is not None:
+        if status == "failed":
+            filters.append("status LIKE ?")
+            params.append("%failed")
+        elif status == "complete":
+            filters.append("(status = 'completed' OR status LIKE ?)")
+            params.append("%complete")
+        elif status == "running":
+            filters.append("status LIKE ?")
+            params.append("%running")
+        else:
+            filters.append("status = ?")
+            params.append(status)
+
+    where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
+    params.append(limit)
+    async with aiosqlite.connect(settings.database_path) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            f"""
+            SELECT id, owner, repo, issue_number, pr_number, workflow_type, status,
+                   current_stage, pr_url, created_at
+            FROM workflow_runs
+            {where_clause}
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            """,
+            params,
         )
         rows = await cursor.fetchall()
     return [dict(row) for row in rows]
@@ -825,6 +885,12 @@ async def get_run_state(settings: Settings, run_id: str) -> dict[str, object] | 
     payload["review_report"] = _read_latest_artifact(payload, "review_report")
     payload["created_issue_urls"] = _created_issue_urls(payload)
     return payload
+
+
+async def get_run_detail(settings: Settings, run_id: str) -> dict[str, object] | None:
+    """Return full run detail for CLI inspection."""
+
+    return await get_run_state(settings, run_id)
 
 
 async def get_latest_run_by_issue(

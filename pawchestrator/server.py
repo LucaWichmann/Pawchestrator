@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -51,6 +51,7 @@ from pawchestrator.review import run_review
 from pawchestrator.review import review_report_path
 from pawchestrator.review_issues import format_and_create_issues
 from pawchestrator.review_post import run_review_post
+from pawchestrator.run_clean import auto_clean_runs
 from pawchestrator.runners import get_runner_health
 from pawchestrator.sessions import (
     _pair_lock,
@@ -135,6 +136,11 @@ class EpicStartResponse(BaseModel):
     pr_url: str | None = None
 
 
+_active_run_tasks: dict[str, asyncio.Task[None]] = {}
+_run_stream_queues: dict[str, asyncio.Queue[object]] = {}
+_STREAM_SENTINEL = object()
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     runtime_settings = settings or load_settings()
     _debug_print_settings(runtime_settings)
@@ -143,6 +149,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         database_path = await init_db(runtime_settings)
         await fail_stale_runs_on_startup(runtime_settings)
+        await auto_clean_runs(runtime_settings)
         app.state.settings = runtime_settings
         app.state.database_path = database_path
         yield
@@ -192,6 +199,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "plan_approval_max_attempts": (
                     runtime_settings.pipeline.plan_approval_max_attempts
                 ),
+                "auto_clean": runtime_settings.pipeline.auto_clean,
                 "smart_routing": runtime_settings.pipeline.smart_routing.model_dump(
                     mode="json"
                 ),
@@ -274,11 +282,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         state = await get_run_state(runtime_settings, run_id)
         if state is None:
             raise HTTPException(status_code=404, detail="run not found")
-        if state.get("status") != "awaiting_plan_approval":
-            raise HTTPException(status_code=409, detail="run is not awaiting plan approval")
-        if not signal_approval(run_id, approved=False):
-            raise HTTPException(status_code=409, detail="approval gate is not active")
-        return {"run_id": run_id, "decision": "abort"}
+        task = _active_run_tasks.get(run_id)
+        if task is None or task.done():
+            raise HTTPException(status_code=404, detail="run not active")
+
+        signal_approval(run_id, approved=False)
+        task.cancel()
+        await mark_run_failed(
+            runtime_settings,
+            run_id=run_id,
+            error="aborted by user",
+            current_stage=str(state.get("current_stage") or "plan"),
+        )
+        _close_run_stream(run_id)
+        return {"run_id": run_id, "status": "failed", "error": "aborted by user"}
 
     @app.post("/runs/{run_id}/reject")
     async def reject_run(run_id: str, body: PlanRejectRequest) -> dict[str, str]:
@@ -363,7 +380,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/issue/start")
     async def issue_start(
         body: IssueStartRequest,
-        background_tasks: BackgroundTasks,
     ) -> PipelineStartResponse | EpicStartResponse:
         url = f"https://github.com/{body.owner}/{body.repo}/issues/{body.number}"
         reference = parse_issue_url(url)
@@ -423,7 +439,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     if failed_epic["pr_url"] is None
                     else str(failed_epic["pr_url"])
                 )
-            background_tasks.add_task(
+            _spawn_run_task(
+                parent_run_id,
                 _run_epic_background,
                 url,
                 runtime_settings,
@@ -456,7 +473,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
 
         run_id = await _prepare_pipeline_run(url, runtime_settings)
-        background_tasks.add_task(
+        _spawn_run_task(
+            run_id,
             _run_pipeline_background,
             url,
             runtime_settings,
@@ -467,11 +485,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/issue/grill")
     async def issue_grill(
         body: IssueGrillRequest,
-        background_tasks: BackgroundTasks,
     ) -> dict[str, str]:
         url = f"https://github.com/{body.owner}/{body.repo}/issues/{body.number}"
         run_id = await _prepare_grill_run(url, runtime_settings)
-        background_tasks.add_task(
+        _spawn_run_task(
+            run_id,
             _run_grill_background,
             url,
             runtime_settings,
@@ -482,11 +500,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/issue/epic-architect")
     async def issue_epic_architect(
         body: IssueEpicArchitectRequest,
-        background_tasks: BackgroundTasks,
     ) -> dict[str, str]:
         url = f"https://github.com/{body.owner}/{body.repo}/issues/{body.number}"
         run_id = await _prepare_epic_architect_run(url, runtime_settings)
-        background_tasks.add_task(
+        _spawn_run_task(
+            run_id,
             _run_epic_architect_background,
             url,
             runtime_settings,
@@ -497,7 +515,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/runs/review/start")
     async def review_start(
         body: ReviewStartRequest,
-        background_tasks: BackgroundTasks,
     ) -> ReviewStartResponse:
         from uuid import uuid4
 
@@ -509,7 +526,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             repo=body.repo,
             pr_number=body.pr_number,
         )
-        background_tasks.add_task(
+        _spawn_run_task(
+            run_id,
             _run_review_background,
             runtime_settings,
             run_id=run_id,
@@ -519,7 +537,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/runs/repair/start")
     async def repair_start(
         body: RepairStartRequest,
-        background_tasks: BackgroundTasks,
     ) -> RepairStartResponse:
         from uuid import uuid4
 
@@ -531,7 +548,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             repo=body.repo,
             pr_number=body.pr_number,
         )
-        background_tasks.add_task(
+        _spawn_run_task(
+            run_id,
             _run_repair_background,
             runtime_settings,
             run_id=run_id,
@@ -570,6 +588,31 @@ def _prompt_pairing() -> bool:
         except (EOFError, KeyboardInterrupt):
             return False
         return True
+
+
+def _spawn_run_task(
+    task_run_id: str,
+    func,
+    *args,
+    **kwargs,
+) -> asyncio.Task[None]:
+    task = asyncio.create_task(func(*args, **kwargs))
+    _active_run_tasks[task_run_id] = task
+    task.add_done_callback(
+        lambda completed: _unregister_run_task(task_run_id, completed)
+    )
+    return task
+
+
+def _unregister_run_task(run_id: str, completed: asyncio.Task[None]) -> None:
+    if _active_run_tasks.get(run_id) is completed:
+        _active_run_tasks.pop(run_id, None)
+
+
+def _close_run_stream(run_id: str) -> None:
+    queue = _run_stream_queues.get(run_id)
+    if queue is not None:
+        queue.put_nowait(_STREAM_SENTINEL)
 
 
 async def _create_review_issues(settings: Settings, run_id: str) -> dict[str, object]:
@@ -707,6 +750,8 @@ async def _run_pipeline_background(
             settings,
             run_id=run_id,
         )
+    except asyncio.CancelledError:
+        raise
     except Exception as error:
         await mark_run_failed(settings, run_id=run_id)
         print(f"[run {run_id}] failed: {error}")
@@ -728,6 +773,8 @@ async def _run_epic_background(
             group_id=group_id,
             parent_run_id=parent_run_id,
         )
+    except asyncio.CancelledError:
+        raise
     except Exception as error:
         print(f"[epic {parent_run_id}] failed: {error}")
 
@@ -744,6 +791,8 @@ async def _run_grill_background(
             settings,
             run_id=run_id,
         )
+    except asyncio.CancelledError:
+        raise
     except Exception as error:
         await mark_run_failed(settings, run_id=run_id)
         print(f"[run {run_id}] grill failed: {error}")
@@ -763,6 +812,8 @@ async def _run_epic_architect_background(
             run_id=run_id,
             current_stage="epic_architect",
         )
+    except asyncio.CancelledError:
+        raise
     except Exception as error:
         await mark_run_failed(settings, run_id=run_id)
         print(f"[run {run_id}] epic architect failed: {error}")
@@ -776,6 +827,8 @@ async def _run_review_background(
     try:
         await run_review(run_id, settings)
         await run_review_post(run_id, settings)
+    except asyncio.CancelledError:
+        raise
     except Exception as error:
         print(f"[run {run_id}] review failed: {error}")
 
@@ -787,6 +840,8 @@ async def _run_repair_background(
 ) -> None:
     try:
         await run_repair(run_id, settings)
+    except asyncio.CancelledError:
+        raise
     except Exception as error:
         print(f"[run {run_id}] repair failed: {error}")
 

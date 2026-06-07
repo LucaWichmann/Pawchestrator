@@ -13,12 +13,16 @@ from uuid import uuid4
 
 import typer
 import uvicorn
+import httpx
 
 from pawchestrator.checkbox import check_checkbox
 from pawchestrator.codegraph import sync_back_if_merged
 from pawchestrator.config import DEFAULT_PORT, LOCAL_HOST, load_settings
 from pawchestrator.db import (
     create_epic_run,
+    delete_repo_registration,
+    list_runs,
+    get_run_detail,
     get_run_state,
     get_worktree_record,
     insert_repo_registration,
@@ -45,7 +49,9 @@ from pawchestrator.issues import snapshot_issue
 from pawchestrator.pipeline import run_pipeline
 from pawchestrator.plan import run_plan
 from pawchestrator.pr import run_pr
+from pawchestrator.run_clean import clean_runs
 from pawchestrator.scout import run_scout
+from pawchestrator.sessions import load_sessions
 from pawchestrator.verify import run_verify
 
 app = typer.Typer(add_completion=False, help="Local Pawchestrator backend tools.")
@@ -314,6 +320,36 @@ def repo_list() -> None:
         )
 
 
+@repo_app.command("remove")
+def repo_remove(
+    repo_ref: Annotated[
+        str,
+        typer.Argument(
+            help="GitHub owner/repo registration or local git repository path to remove.",
+        ),
+    ],
+) -> None:
+    """Remove a registered GitHub repository clone."""
+
+    try:
+        owner, repo = _resolve_repo_ref(repo_ref)
+    except ValueError as error:
+        typer.secho(str(error), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from error
+
+    settings = load_settings()
+    deleted = asyncio.run(delete_repo_registration(settings, owner=owner, repo=repo))
+    if not deleted:
+        typer.secho(
+            f"Repository not registered: {owner}/{repo}",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    typer.echo(f"Removed {owner}/{repo}")
+
+
 @sessions_app.command("clear")
 def sessions_clear() -> None:
     """Revoke all browser pairing sessions."""
@@ -452,6 +488,136 @@ def run_pr_command(run_id: str) -> None:
     typer.echo(result.report["pr_url"])
 
 
+@run_app.command("abort")
+def run_abort_command(
+    run_id: str,
+    port: Annotated[
+        int,
+        typer.Option("--port", min=1, max=65535, help="Local backend port."),
+    ] = DEFAULT_PORT,
+) -> None:
+    """Abort an active workflow run in the local backend."""
+
+    settings = load_settings()
+    try:
+        payload = _abort_run_in_daemon(settings, run_id, port=port)
+    except Exception as error:
+        typer.secho(f"Run abort failed: {error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from error
+
+    typer.echo(f"Aborted run {payload['run_id']}: {payload['error']}")
+
+
+@run_app.command("show")
+def run_show_command(run_id: str) -> None:
+    """Show full detail for a workflow run."""
+
+    settings = load_settings()
+    run_detail = asyncio.run(get_run_detail(settings, run_id))
+    if run_detail is None:
+        typer.secho(f"Run not found: {run_id}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    _print_run_detail(run_detail, settings.app_dir / "runs" / run_id)
+
+
+@run_app.command("list")
+def run_list_command(
+    owner_repo: Annotated[
+        str | None,
+        typer.Option("--repo", help="Filter runs by owner/repo."),
+    ] = None,
+    status: Annotated[
+        str | None,
+        typer.Option(
+            "--status",
+            help="Filter by failed, complete, running, or an exact run status.",
+        ),
+    ] = None,
+    limit: Annotated[
+        int,
+        typer.Option("--limit", min=1, help="Maximum number of runs to show."),
+    ] = 20,
+) -> None:
+    """List workflow runs."""
+
+    settings = load_settings()
+    try:
+        runs = asyncio.run(list_runs(settings, owner_repo, status, limit))
+    except ValueError as error:
+        typer.secho(f"Run list failed: {error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from error
+
+    _print_table(
+        [
+            "run_id",
+            "workflow_type",
+            "issue/pr",
+            "status",
+            "current_stage",
+            "created_at",
+            "pr_url",
+        ],
+        [
+            [
+                str(run["id"]),
+                str(run["workflow_type"]),
+                _issue_or_pr(run),
+                str(run["status"]),
+                str(run.get("current_stage") or "-"),
+                str(run["created_at"]),
+                str(run.get("pr_url") or "-"),
+            ]
+            for run in runs
+        ],
+    )
+
+
+@run_app.command("clean")
+def run_clean_command(
+    older_than: Annotated[
+        str,
+        typer.Option("--older-than", help="Delete run files older than this duration."),
+    ] = "30d",
+    status: Annotated[
+        list[str] | None,
+        typer.Option("--status", help="Filter by failed, complete, or exact status."),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Print paths without deleting files."),
+    ] = False,
+) -> None:
+    """Delete old run artifacts and worktrees while preserving run history."""
+
+    settings = load_settings()
+    try:
+        results = asyncio.run(
+            clean_runs(
+                settings,
+                older_than=older_than,
+                statuses=status or ["failed", "complete"],
+                dry_run=dry_run,
+            )
+        )
+    except Exception as error:
+        typer.secho(f"Run clean failed: {error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from error
+
+    action = "Would clean" if dry_run else "Cleaned"
+    if not results:
+        typer.echo("No matching runs to clean.")
+        return
+
+    for result in results:
+        typer.echo(
+            f"{action} {result.target.run_id} "
+            f"status={result.target.status} artifacts={result.target.artifacts_path}"
+        )
+        if result.target.worktree_path is not None:
+            typer.echo(f"Worktree: {result.target.worktree_path}")
+
+
 async def _sync_codegraph_run(run_id: str, settings, *, repo_path: Path | None = None):
     run_state = await get_run_state(settings, run_id)
     if run_state is None:
@@ -480,6 +646,127 @@ async def _sync_codegraph_run(run_id: str, settings, *, repo_path: Path | None =
     )
 
 
+def _abort_run_in_daemon(settings, run_id: str, *, port: int) -> dict[str, str]:
+    sessions = load_sessions(settings)
+    tokens = sessions.get("tokens") or []
+    if not tokens:
+        raise RuntimeError("no pairing token found - pair with the daemon first")
+
+    url = f"http://{LOCAL_HOST}:{port}/runs/{run_id}/abort"
+    response = httpx.post(
+        url,
+        headers={"X-Pawchestrator-Token": str(tokens[-1])},
+        timeout=10,
+    )
+    if response.status_code == 404:
+        raise RuntimeError(f"run not found or not active: {run_id}")
+    if response.status_code >= 400:
+        try:
+            detail = response.json().get("detail")
+        except ValueError:
+            detail = response.text
+        raise RuntimeError(str(detail or f"HTTP {response.status_code}"))
+
+    payload = response.json()
+    return {
+        "run_id": str(payload["run_id"]),
+        "error": str(payload.get("error") or "aborted by user"),
+    }
+
+
+def _print_run_detail(run_detail: dict[str, object], run_dir: Path) -> None:
+    issue_number = run_detail.get("issue_number")
+    pr_number = run_detail.get("pr_number")
+    issue_or_pr = f"#{issue_number}" if issue_number is not None else "-"
+    if pr_number is not None:
+        issue_or_pr = f"PR #{pr_number}"
+
+    typer.echo("Metadata")
+    typer.echo(f"ID: {run_detail['id']}")
+    typer.echo(f"Type: {run_detail['workflow_type']}")
+    typer.echo(f"Repository: {run_detail['owner']}/{run_detail['repo']}")
+    typer.echo(f"Issue/PR: {issue_or_pr}")
+    typer.echo(f"Status: {run_detail['status']}")
+    typer.echo(f"Created: {run_detail['created_at']}")
+    typer.echo(f"Updated: {run_detail['updated_at']}")
+    typer.echo("")
+
+    typer.echo("Stages")
+    _print_table(
+        ["Stage", "Status", "Started", "Completed", "Error"],
+        [
+            [
+                str(stage.get("stage_name") or "-"),
+                str(stage.get("status") or "-"),
+                str(stage.get("started_at") or "-"),
+                str(stage.get("completed_at") or "-"),
+                str(stage.get("error") or "-"),
+            ]
+            for stage in _as_dict_list(run_detail.get("stages"))
+        ],
+    )
+    typer.echo("")
+
+    typer.echo("Warnings")
+    _print_table(
+        ["Stage", "Code", "Message", "Timestamp"],
+        [
+            [
+                str(warning.get("stage_name") or "-"),
+                str(warning.get("code") or "-"),
+                str(warning.get("message") or "-"),
+                str(warning.get("created_at") or "-"),
+            ]
+            for warning in _as_dict_list(run_detail.get("warnings"))
+        ],
+    )
+    typer.echo("")
+
+    typer.echo("Artifacts")
+    artifact_paths = _scan_artifact_paths(run_dir)
+    if artifact_paths:
+        for artifact_path in artifact_paths:
+            typer.echo(str(artifact_path))
+    else:
+        typer.echo("-")
+
+
+def _as_dict_list(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
+def _issue_or_pr(run: dict[str, object]) -> str:
+    if run.get("pr_number") is not None:
+        return f"PR #{run['pr_number']}"
+    if run.get("issue_number") is not None:
+        return f"#{run['issue_number']}"
+    return "-"
+
+
+def _print_table(headers: list[str], rows: list[list[str]]) -> None:
+    table_rows = rows or [["-" for _ in headers]]
+    widths = [
+        max(len(headers[index]), *(len(row[index]) for row in table_rows))
+        for index in range(len(headers))
+    ]
+    typer.echo(
+        "  ".join(header.ljust(widths[index]) for index, header in enumerate(headers))
+    )
+    typer.echo("  ".join("-" * width for width in widths))
+    for row in table_rows:
+        typer.echo(
+            "  ".join(value.ljust(widths[index]) for index, value in enumerate(row))
+        )
+
+
+def _scan_artifact_paths(run_dir: Path) -> list[Path]:
+    if not run_dir.exists():
+        return []
+    return sorted(path for path in run_dir.rglob("*") if path.is_file())
+
+
 def _print_result(label: str, status: str, message: str) -> None:
     colors = {
         STATUS_PASS: typer.colors.GREEN,
@@ -504,6 +791,18 @@ def _port_available(port: int) -> bool:
         except OSError:
             return False
     return True
+
+
+def _resolve_repo_ref(repo_ref: str) -> tuple[str, str]:
+    path = Path(repo_ref).expanduser()
+    if path.exists():
+        return _github_remote_owner_repo(path)
+
+    if re.fullmatch(r"[^/\s]+/[^/\s]+", repo_ref):
+        owner, repo = repo_ref.split("/", maxsplit=1)
+        return owner, repo.removesuffix(".git")
+
+    return _github_remote_owner_repo(path)
 
 
 def _github_remote_owner_repo(path: Path) -> tuple[str, str]:
