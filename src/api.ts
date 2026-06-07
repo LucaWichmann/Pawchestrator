@@ -176,6 +176,13 @@ export async function requestJson(path: string, options: RequestOptions = {}) {
   }
 }
 
+export async function openRunStream(runId: string): Promise<EventSource> {
+  const token = await getOrAcquireToken();
+  const url = new URL(`${API_BASE}/runs/${encodeURIComponent(runId)}/stream`);
+  url.searchParams.set("token", token);
+  return new EventSource(url.toString());
+}
+
 export async function fetchIssueStatus(issue: { owner: string; repo: string; number: number }) {
   return requestJson(`/issue/${issue.owner}/${issue.repo}/${issue.number}/status`, {
     label: "Issue status request",
