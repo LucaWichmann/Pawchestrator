@@ -44,7 +44,7 @@ from pawchestrator.github import (
 )
 from pawchestrator.grill import run_grill
 from pawchestrator.implement import run_repair
-from pawchestrator.lifecycle import fail_stale_runs_on_startup
+from pawchestrator.lifecycle import fail_stale_runs_on_startup, resume_pending_approvals
 from pawchestrator.pipeline import run_pipeline
 from pawchestrator.plan import append_plan_rejection
 from pawchestrator.review import run_review
@@ -153,6 +153,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         database_path = await init_db(runtime_settings)
         await fail_stale_runs_on_startup(runtime_settings)
+        try:
+            await resume_pending_approvals(
+                runtime_settings,
+                GitHubIssueClient(get_gh_token()),
+            )
+        except Exception:
+            pass
         await auto_clean_runs(runtime_settings)
         app.state.settings = runtime_settings
         app.state.database_path = database_path

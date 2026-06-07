@@ -648,6 +648,23 @@ async def get_run_warnings(settings: Settings, run_id: str) -> list[dict[str, st
     return [dict(row) for row in rows]
 
 
+async def get_runs_by_status(settings: Settings, status: str) -> list[dict]:
+    await init_db(settings)
+    async with aiosqlite.connect(settings.database_path) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT id, owner, repo, issue_number, status
+            FROM workflow_runs
+            WHERE status = ?
+            ORDER BY created_at, id
+            """,
+            (status,),
+        )
+        rows = await cursor.fetchall()
+    return [dict(row) for row in rows]
+
+
 async def get_runs_by_group_id(settings: Settings, group_id: str) -> list[dict]:
     await init_db(settings)
     async with aiosqlite.connect(settings.database_path) as db:

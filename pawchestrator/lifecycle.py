@@ -13,6 +13,7 @@ from pawchestrator.run_lifecycle import PIPELINE_STAGES, REPAIR_STAGES, REVIEW_S
 
 if TYPE_CHECKING:
     from pawchestrator.config import Settings
+    from pawchestrator.github import GitHubIssueClient
 
 
 TERMINAL_RUN_STATUSES = (
@@ -34,7 +35,7 @@ TERMINAL_RUN_STATUSES = (
     "push_failed",
 )
 STALE_RUN_ERROR = "Run aborted: Pawchestrator stopped before this run finished."
-PLAN_APPROVAL_RESTART_ERROR = "daemon restarted during plan approval"
+PLAN_STALE_AFTER_RESTART = "plan_stale_after_restart"
 
 
 def _utc_now_iso() -> str:
@@ -42,7 +43,6 @@ def _utc_now_iso() -> str:
 
 
 async def fail_stale_runs_on_startup(settings: Settings) -> int:
-    from pawchestrator.approval_gate import has_approval_event
     from pawchestrator.db import init_db
 
     await init_db(settings)
@@ -67,7 +67,7 @@ async def fail_stale_runs_on_startup(settings: Settings) -> int:
             run_id = str(run["id"])
             if run["status"] == "grill_waiting":
                 continue
-            if run["status"] == "awaiting_plan_approval" and has_approval_event(run_id):
+            if run["status"] == "awaiting_plan_approval":
                 continue
 
             if run["status"] == "pr_complete" and run["pr_url"]:
@@ -99,11 +99,6 @@ async def fail_stale_runs_on_startup(settings: Settings) -> int:
                 continue
 
             stage_name = await _stale_failure_stage(db, run)
-            error = (
-                PLAN_APPROVAL_RESTART_ERROR
-                if run["status"] == "awaiting_plan_approval"
-                else STALE_RUN_ERROR
-            )
             await db.execute(
                 """
                 UPDATE workflow_runs
@@ -118,13 +113,51 @@ async def fail_stale_runs_on_startup(settings: Settings) -> int:
                 db,
                 run_id=run_id,
                 stage_name=stage_name,
-                error=error,
+                error=STALE_RUN_ERROR,
                 now=now,
             )
             cleaned += 1
 
         await db.commit()
     return cleaned
+
+
+async def resume_pending_approvals(
+    settings: Settings,
+    github_client: GitHubIssueClient,
+) -> None:
+    from pawchestrator.approval_gate import register_approval_event
+    from pawchestrator.db import get_runs_by_status, insert_run_warning
+
+    pending = await get_runs_by_status(settings, "awaiting_plan_approval")
+    for run in pending:
+        run_id = str(run["id"])
+        try:
+            issue_updated_at = await github_client.fetch_issue_updated_at(
+                str(run["owner"]),
+                str(run["repo"]),
+                int(run["issue_number"]),
+            )
+            plan_path = settings.app_dir / "runs" / run_id / "implementation_plan.json"
+            plan_mtime = datetime.fromtimestamp(plan_path.stat().st_mtime, UTC)
+            if _parse_github_datetime(issue_updated_at) > plan_mtime:
+                await insert_run_warning(
+                    settings,
+                    run_id=run_id,
+                    stage_name="plan",
+                    code=PLAN_STALE_AFTER_RESTART,
+                    message=(
+                        "Issue updated after plan was created - consider rejecting "
+                        "and re-planning"
+                    ),
+                )
+        except Exception:
+            pass
+        register_approval_event(run_id)
+
+
+def _parse_github_datetime(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
 
 
 async def complete_stage(

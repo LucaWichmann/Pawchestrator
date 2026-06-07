@@ -262,6 +262,27 @@ class GitHubIssueClient:
 
         return payload.get("body") or ""
 
+    async def fetch_issue_updated_at(
+        self,
+        owner: str,
+        repo: str,
+        issue_number: int,
+    ) -> str:
+        async with httpx.AsyncClient(
+            base_url=self._api_base,
+            headers=self._headers(),
+            transport=self._transport,
+        ) as client:
+            payload = await self._get_json(
+                client,
+                f"/repos/{owner}/{repo}/issues/{issue_number}",
+            )
+
+        updated_at = payload.get("updated_at")
+        if not isinstance(updated_at, str) or not updated_at:
+            raise GitHubError("GitHub issue response did not include updated_at")
+        return updated_at
+
     async def fetch_issue_title(self, reference: IssueReference) -> str:
         async with httpx.AsyncClient(
             base_url=self._api_base,
