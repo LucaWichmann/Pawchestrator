@@ -549,6 +549,41 @@ def test_userscript_polls_every_three_seconds_and_reinjects() -> None:
     assert "window.setTimeout" in source
 
 
+def test_userscript_streams_active_issue_runs_with_poll_fallback() -> None:
+    source = _read_userscript()
+
+    assert "function openRunStream(runId)" in source
+    assert "new EventSource(url.toString())" in source
+    assert 'url.searchParams.set("token", token)' in source
+    assert "activeRunStream: null" in source
+    assert "activeRunId: null" in source
+    assert "sseConnected: false" in source
+    assert "function openIssueStream(runId)" in source
+    assert "stopIssueStatusPollTimer()" in source
+    assert "stream.onopen = () =>" in source
+    assert "stream.onerror = () =>" in source
+    assert "startIssueStatusPolling()" in source
+    assert "if (state.activeRunStream && state.sseConnected)" in source
+    assert '["stage_transition", "warning", "run_complete", "run_failed", "log_line"]' in source
+    assert 'kind === "run_complete" || kind === "run_failed"' in source
+
+
+def test_userscript_renders_sse_log_lines_in_collapsible_panel_section() -> None:
+    source = _read_userscript()
+
+    assert "var RUN_LOG_LIMIT = 200" in source
+    assert "runLogLines: []" in source
+    assert "function appendRunLogLine(event)" in source
+    assert "state.runLogLines.push(`[${stage}] ${message}`)" in source
+    assert "state.runLogLines.splice(0, state.runLogLines.length - RUN_LOG_LIMIT)" in source
+    assert "function renderLogSection(parent)" in source
+    assert 'details.className = "pawchestrator-run-log"' in source
+    assert 'summary.textContent = `Run log (${state.runLogLines.length})`' in source
+    assert 'list.className = "pawchestrator-run-log-lines"' in source
+    assert 'list.textContent = state.runLogLines.join("\\n")' in source
+    assert "renderLogSection(body)" in source
+
+
 def test_userscript_reinjects_after_client_side_navigation() -> None:
     source = _read_userscript()
 
