@@ -79,6 +79,74 @@ def test_run_pipeline_runs_all_stages_and_marks_completed(
     ]
 
 
+def test_run_pipeline_uses_config_base_branch_when_flag_omitted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(
+        app_dir=tmp_path,
+        pipeline=PipelineSettings(plan_approval=False, base_branch="develop"),
+    )
+    calls: list[str] = []
+    implement_base_branches: list[str | None] = []
+    verify_base_branches: list[str | None] = []
+    pr_base_branches: list[str | None] = []
+    _patch_successful_stages(
+        monkeypatch,
+        calls,
+        implement_base_branches=implement_base_branches,
+        verify_base_branches=verify_base_branches,
+        pr_base_branches=pr_base_branches,
+    )
+
+    asyncio.run(
+        run_pipeline(
+            "https://github.com/owner/repo/issues/42",
+            settings,
+            repo_path=tmp_path,
+        )
+    )
+
+    assert implement_base_branches == ["develop"]
+    assert verify_base_branches == ["develop"]
+    assert pr_base_branches == ["develop"]
+
+
+def test_run_pipeline_base_branch_flags_override_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(
+        app_dir=tmp_path,
+        pipeline=PipelineSettings(plan_approval=False, base_branch="develop"),
+    )
+    calls: list[str] = []
+    implement_base_branches: list[str | None] = []
+    verify_base_branches: list[str | None] = []
+    pr_base_branches: list[str | None] = []
+    _patch_successful_stages(
+        monkeypatch,
+        calls,
+        implement_base_branches=implement_base_branches,
+        verify_base_branches=verify_base_branches,
+        pr_base_branches=pr_base_branches,
+    )
+
+    asyncio.run(
+        run_pipeline(
+            "https://github.com/owner/repo/issues/42",
+            settings,
+            repo_path=tmp_path,
+            base_branch="release",
+            pr_base_branch="stable",
+        )
+    )
+
+    assert implement_base_branches == ["release"]
+    assert verify_base_branches == ["release"]
+    assert pr_base_branches == ["stable"]
+
+
 def test_should_skip_plan_evaluates_all_smart_routing_conditions() -> None:
     settings = Settings(
         pipeline=PipelineSettings(
@@ -1263,6 +1331,9 @@ def _patch_successful_stages(
     allow_empty_commit_values: list[bool] | None = None,
     repair_contexts: list[tuple[dict[str, object] | None, int | None]] | None = None,
     allow_dirty_existing_worktree_values: list[bool] | None = None,
+    implement_base_branches: list[str | None] | None = None,
+    verify_base_branches: list[str | None] | None = None,
+    pr_base_branches: list[str | None] | None = None,
     replan_feedback: list[list[dict[str, object]] | None] | None = None,
     scout_report: dict[str, object] | None = None,
 ) -> None:
@@ -1323,12 +1394,15 @@ def _patch_successful_stages(
         repair_context: dict[str, object] | None = None,
         repair_attempt: int | None = None,
         allow_dirty_existing_worktree: bool = False,
+        base_branch: str | None = None,
     ):
         calls.append("implement")
         if repair_contexts is not None:
             repair_contexts.append((repair_context, repair_attempt))
         if allow_dirty_existing_worktree_values is not None:
             allow_dirty_existing_worktree_values.append(allow_dirty_existing_worktree)
+        if implement_base_branches is not None:
+            implement_base_branches.append(base_branch)
         artifact_path = settings.app_dir / "runs" / run_id / "implementation_report.json"
 
         async def body(log_path: Path):
@@ -1340,9 +1414,11 @@ def _patch_successful_stages(
         run_id: str,
         settings: Settings,
         *,
-        base_branch: str = "main",
+        base_branch: str | None = None,
     ):
         calls.append("verify")
+        if verify_base_branches is not None:
+            verify_base_branches.append(base_branch)
         artifact_path = settings.app_dir / "runs" / run_id / "verification_report.json"
 
         async def body(log_path: Path):
@@ -1355,10 +1431,13 @@ def _patch_successful_stages(
         settings: Settings,
         *,
         allow_empty_commit: bool = False,
+        base_branch: str | None = None,
     ):
         calls.append("pr")
         if allow_empty_commit_values is not None:
             allow_empty_commit_values.append(allow_empty_commit)
+        if pr_base_branches is not None:
+            pr_base_branches.append(base_branch)
         artifact_path = settings.app_dir / "runs" / run_id / "pr_draft.json"
 
         async def body(log_path: Path):
@@ -1404,6 +1483,7 @@ def _patch_implement_with_worktree(
         repair_context: dict[str, object] | None = None,
         repair_attempt: int | None = None,
         allow_dirty_existing_worktree: bool = False,
+        base_branch: str | None = None,
     ):
         calls.append("implement")
         worktree_path.mkdir(parents=True, exist_ok=True)
