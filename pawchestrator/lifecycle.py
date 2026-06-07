@@ -69,6 +69,8 @@ async def fail_stale_runs_on_startup(settings: Settings) -> int:
                 continue
             if run["status"] == "awaiting_plan_approval":
                 continue
+            if run["status"] == "awaiting_epic_approval":
+                continue
 
             if run["status"] == "pr_complete" and run["pr_url"]:
                 await db.execute(
