@@ -1002,7 +1002,8 @@ async def get_latest_run_by_issue(
             created_sub_issues if isinstance(created_sub_issues, list) else []
         )
         sub_issues = None if epic_plan is None else epic_plan.get("sub_issues")
-        run["sub_issues"] = sub_issues if isinstance(sub_issues, list) else []
+        if run.get("status") == "awaiting_epic_approval":
+            run["sub_issues"] = sub_issues if isinstance(sub_issues, list) else []
         return run
 
     grill_report = _read_latest_artifact(run, "grill_report")

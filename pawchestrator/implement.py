@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import re
@@ -121,7 +122,13 @@ async def run_implement(
             worktree_kwargs["branch_override"] = worktree_branch
         if worktree_path is not None:
             worktree_kwargs["path_override"] = worktree_path
-        worktree_kwargs["base_branch"] = resolved_base_branch
+        signature = inspect.signature(ensure_issue_worktree)
+        accepts_extra_kwargs = any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in signature.parameters.values()
+        )
+        if accepts_extra_kwargs or "base_branch" in signature.parameters:
+            worktree_kwargs["base_branch"] = resolved_base_branch
         worktree_info = await ensure_issue_worktree(settings, **worktree_kwargs)
         await upsert_worktree_record(
             settings,
