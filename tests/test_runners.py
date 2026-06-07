@@ -41,6 +41,44 @@ PREVIOUS_RESPONSE_NOT_FOUND_ERROR = b"""ERROR: {
 """
 
 
+class AsyncByteLines:
+    def __init__(self, lines: list[bytes]) -> None:
+        self._lines = lines
+
+    def __aiter__(self) -> "AsyncByteLines":
+        return self
+
+    async def __anext__(self) -> bytes:
+        if not self._lines:
+            raise StopAsyncIteration
+        return self._lines.pop(0)
+
+
+class AsyncBytesReader:
+    def __init__(self, data: bytes) -> None:
+        self._data = data
+
+    async def read(self) -> bytes:
+        return self._data
+
+
+class FakeStdin:
+    def __init__(self) -> None:
+        self.data = b""
+
+    def write(self, data: bytes) -> None:
+        self.data += data
+
+    async def drain(self) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+    async def wait_closed(self) -> None:
+        return None
+
+
 def test_runner_registry_contains_both_agent_runners() -> None:
     assert set(RUNNERS) == {"claude", "codex"}
     assert isinstance(RUNNERS["claude"], ClaudeRunner)
@@ -424,6 +462,53 @@ def test_claude_runner_invokes_expected_command_and_parses_result(
         "status": "success",
         "readiness": "ready",
     }
+
+
+def test_claude_runner_streams_stdout_log_line_events(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[tuple[str, str, dict[str, str]]] = []
+
+    class FakeProcess:
+        returncode = 0
+
+        def __init__(self) -> None:
+            self.stdin = FakeStdin()
+            self.stdout = AsyncByteLines([b"first line\n", b"second line\n"])
+            self.stderr = AsyncBytesReader(b"warning")
+
+        async def wait(self) -> int:
+            return self.returncode
+
+    async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
+        return FakeProcess()
+
+    async def fake_push_run_event(
+        run_id: str, event_type: str, data: dict[str, str]
+    ) -> None:
+        events.append((run_id, event_type, data))
+
+    monkeypatch.setattr(
+        "pawchestrator.runners.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr("pawchestrator.runners.push_run_event", fake_push_run_event)
+
+    task = RunnerTask(
+        prompt="repo scout prompt",
+        cwd=tmp_path,
+        run_id="run-stream",
+        stage_name="scout",
+    )
+
+    result = asyncio.run(ClaudeRunner().run_task(task))
+
+    assert result.stdout == "first line\nsecond line\n"
+    assert result.stderr == "warning"
+    assert events == [
+        ("run-stream", "log_line", {"stage": "scout", "line": "first line"}),
+        ("run-stream", "log_line", {"stage": "scout", "line": "second line"}),
+    ]
 
 
 def test_claude_runner_parses_fenced_json_result(
@@ -964,6 +1049,82 @@ def test_codex_runner_invokes_expected_command_logs_and_captures_diff(
     assert (tmp_path / "runs" / "run-123" / "stdout" / "implement.log").read_text(
         encoding="utf-8"
     ) == "codex stdout\ncodex stderr\n"
+
+
+def test_codex_runner_streams_stdout_log_line_events(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    codex_path = "C:\\bin\\codex.CMD"
+    events: list[tuple[str, str, dict[str, str]]] = []
+
+    class FakeProcess:
+        returncode = 0
+
+        def __init__(
+            self,
+            stdout_lines: list[bytes],
+            stderr: bytes = b"",
+            communicate_stdout: bytes = b"",
+        ) -> None:
+            self.stdin = FakeStdin()
+            self.stdout = AsyncByteLines(stdout_lines)
+            self.stderr = AsyncBytesReader(stderr)
+            self._communicate_stdout = communicate_stdout
+            self._communicate_stderr = stderr
+
+        async def wait(self) -> int:
+            return self.returncode
+
+        async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
+            return self._communicate_stdout, self._communicate_stderr
+
+    async def fake_create_subprocess_exec(*cmd, **kwargs) -> FakeProcess:
+        if cmd[:3] == ("git", "diff", "HEAD"):
+            return FakeProcess(
+                [],
+                communicate_stdout=b"diff --git a/file.py b/file.py\n",
+            )
+        return FakeProcess([b"codex first\n", b"codex second\n"], b"codex stderr\n")
+
+    async def fake_push_run_event(
+        run_id: str, event_type: str, data: dict[str, str]
+    ) -> None:
+        events.append((run_id, event_type, data))
+
+    monkeypatch.setattr(
+        "pawchestrator.runners.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr(
+        "pawchestrator.runners.shutil.which",
+        lambda name: codex_path if name == "codex" else None,
+    )
+    monkeypatch.setattr("pawchestrator.runners.push_run_event", fake_push_run_event)
+
+    task = RunnerTask(
+        prompt="implement issue",
+        cwd=tmp_path,
+        run_id="run-codex-stream",
+        stage_name="implement",
+    )
+
+    result = asyncio.run(CodexRunner().run_task(task))
+
+    assert result.stdout == "codex first\ncodex second\n"
+    assert result.stderr == "codex stderr\n"
+    assert result.diff == "diff --git a/file.py b/file.py\n"
+    assert events == [
+        (
+            "run-codex-stream",
+            "log_line",
+            {"stage": "implement", "line": "codex first"},
+        ),
+        (
+            "run-codex-stream",
+            "log_line",
+            {"stage": "implement", "line": "codex second"},
+        ),
+    ]
 
 
 def test_codex_runner_parses_json_artifact_from_stdout(
