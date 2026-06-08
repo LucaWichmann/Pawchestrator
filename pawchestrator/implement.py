@@ -811,7 +811,11 @@ async def _refresh_main_branch(source_repo_path: Path) -> None:
         await _run_git_checked(["branch", "--show-current"], source_repo_path)
     ).strip()
     if current_branch == DEFAULT_BASE_BRANCH:
-        await _ensure_clean_worktree(source_repo_path, "source repo main")
+        await _ensure_clean_worktree(
+            source_repo_path,
+            "source repo main",
+            include_untracked=False,
+        )
         await _run_git_checked(
             ["merge", "--ff-only", f"{DEFAULT_REMOTE}/{DEFAULT_BASE_BRANCH}"],
             source_repo_path,
@@ -829,8 +833,16 @@ async def _refresh_main_branch(source_repo_path: Path) -> None:
     await _run_git_checked(["update-ref", local_main, remote_main], source_repo_path)
 
 
-async def _ensure_clean_worktree(cwd: Path, label: str) -> None:
-    status = await _run_git_checked(["status", "--porcelain"], cwd)
+async def _ensure_clean_worktree(
+    cwd: Path,
+    label: str,
+    *,
+    include_untracked: bool = True,
+) -> None:
+    args = ["status", "--porcelain"]
+    if not include_untracked:
+        args.append("--untracked-files=no")
+    status = await _run_git_checked(args, cwd)
     if status.strip():
         raise RuntimeError(f"{label} has uncommitted changes; clean or stash them first")
 

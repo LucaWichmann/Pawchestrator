@@ -9,3 +9,4 @@ __pycache__/
 *.db
 
 /.pytest_tmp_current
+/runs/

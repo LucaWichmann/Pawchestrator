@@ -313,7 +313,10 @@ def test_ensure_issue_worktree_creates_branch_and_worktree(
             tmp_path / "source",
         ),
         (["branch", "--show-current"], tmp_path / "source"),
-        (["status", "--porcelain"], tmp_path / "source"),
+        (
+            ["status", "--porcelain", "--untracked-files=no"],
+            tmp_path / "source",
+        ),
         (["merge", "--ff-only", "origin/main"], tmp_path / "source"),
         (
             ["rev-parse", "--verify", "refs/heads/paw/issue-42-add-implement"],
@@ -439,7 +442,7 @@ def test_ensure_issue_worktree_fails_when_source_main_is_dirty(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     async def fake_run_git(args: list[str], cwd: Path) -> tuple[str, str, int]:
-        if args == ["status", "--porcelain"]:
+        if args == ["status", "--porcelain", "--untracked-files=no"]:
             return " M file.py\n", "", 0
         return _successful_main_refresh(args)
 
@@ -453,6 +456,34 @@ def test_ensure_issue_worktree_fails_when_source_main_is_dirty(
                 source_repo_path=tmp_path / "source",
             )
         )
+
+
+def test_ensure_issue_worktree_ignores_untracked_source_main_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str]] = []
+
+    async def fake_run_git(args: list[str], cwd: Path) -> tuple[str, str, int]:
+        calls.append(args)
+        if args == ["status", "--porcelain", "--untracked-files=no"]:
+            return "", "", 0
+        if args == ["rev-parse", "--verify", "refs/heads/paw/issue-42-add-implement"]:
+            return "", "missing", 1
+        return _successful_main_refresh(args)
+
+    monkeypatch.setattr("pawchestrator.implement._run_git", fake_run_git)
+
+    info = asyncio.run(
+        ensure_issue_worktree(
+            Settings(app_dir=tmp_path),
+            snapshot=_snapshot(),
+            source_repo_path=tmp_path / "source",
+        )
+    )
+
+    assert info.reused is False
+    assert ["status", "--porcelain", "--untracked-files=no"] in calls
+    assert ["worktree", "add", "-b", "paw/issue-42-add-implement", str(info.path), "main"] in calls
 
 
 def test_ensure_issue_worktree_fails_when_main_diverged(
@@ -489,6 +520,30 @@ def test_ensure_issue_worktree_fails_when_existing_worktree_is_dirty(
     async def fake_run_git(args: list[str], cwd: Path) -> tuple[str, str, int]:
         if args == ["status", "--porcelain"] and cwd == worktree_path:
             return " M file.py\n", "", 0
+        return _successful_main_refresh(args)
+
+    monkeypatch.setattr("pawchestrator.implement._run_git", fake_run_git)
+
+    with pytest.raises(RuntimeError, match="issue worktree has uncommitted changes"):
+        asyncio.run(
+            ensure_issue_worktree(
+                Settings(app_dir=tmp_path),
+                snapshot=_snapshot(),
+                source_repo_path=tmp_path / "source",
+            )
+        )
+
+
+def test_ensure_issue_worktree_fails_when_existing_worktree_has_untracked_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    worktree_path = tmp_path / "worktrees" / "owner" / "repo" / "issue-42"
+    worktree_path.mkdir(parents=True)
+    (worktree_path / ".git").write_text("gitdir: source", encoding="utf-8")
+
+    async def fake_run_git(args: list[str], cwd: Path) -> tuple[str, str, int]:
+        if args == ["status", "--porcelain"] and cwd == worktree_path:
+            return "?? scratch.txt\n", "", 0
         return _successful_main_refresh(args)
 
     monkeypatch.setattr("pawchestrator.implement._run_git", fake_run_git)
