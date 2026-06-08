@@ -297,6 +297,19 @@ function mergeRunEvent(event) {
   if (Array.isArray(event.stages)) {
     nextRun.stages = event.stages;
   }
+  if (event.type === "stage_transition" && (event.stage_name || event.stage)) {
+    const stage: Record<string, unknown> = {
+      stage_name: event.stage_name || event.stage,
+      status: event.status || "pending",
+    };
+    if (event.updated_at) {
+      stage.updated_at = event.updated_at;
+    }
+    if (event.error) {
+      stage.error = event.error;
+    }
+    nextRun.stages = [...(Array.isArray(nextRun.stages) ? nextRun.stages : []), stage];
+  }
   if (event.pr_url) {
     nextRun.pr_url = event.pr_url;
   }
