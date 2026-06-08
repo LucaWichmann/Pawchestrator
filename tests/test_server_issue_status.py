@@ -280,6 +280,7 @@ def test_issue_status_returns_latest_grill_run_with_report(
     monkeypatch,
 ) -> None:
     settings = Settings(app_dir=tmp_path)
+    settings.pipeline.auto_clean = False
     _seed_token(settings)
     _stub_runner_health(monkeypatch)
     _insert_grill_run(settings)
@@ -328,6 +329,7 @@ def test_issue_status_returns_latest_epic_architect_run(
     monkeypatch,
 ) -> None:
     settings = Settings(app_dir=tmp_path)
+    settings.pipeline.auto_clean = False
     _seed_token(settings)
     _stub_runner_health(monkeypatch)
     _insert_epic_architect_run(settings)
