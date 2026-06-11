@@ -355,7 +355,7 @@ async function openIssueStream(runId) {
   closeIssueStream();
   stopIssueStatusPollTimer();
   state.activeRunId = runId;
-  const stream = openRunStream(runId);
+  const stream = await openRunStream(runId);
   state.activeRunStream = stream;
   stream.onopen = () => {
     state.sseConnected = true;
