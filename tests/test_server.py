@@ -14,6 +14,7 @@ from pawchestrator.github import GitHubIssueClient
 from pawchestrator import server
 from pawchestrator.server import create_app
 from pawchestrator.sessions import save_sessions
+from pawchestrator.stream_tokens import mint_stream_token
 
 
 def test_create_app_prints_loaded_config_when_debug_enabled(
@@ -185,12 +186,56 @@ def test_run_stream_requires_pairing_token(tmp_path: Path) -> None:
     assert response.status_code == 403
 
 
-def test_run_stream_returns_404_for_missing_run(tmp_path: Path) -> None:
+def test_run_stream_accepts_valid_stream_token(tmp_path: Path) -> None:
     settings = Settings(app_dir=tmp_path)
-    _seed_token(settings)
+    _insert_run_state(settings)
+    stream_token = mint_stream_token("run-123")
+    queue = server.get_or_create_run_queue("run-123")
+    queue.put_nowait(server._STREAM_SENTINEL)
+
+    try:
+        with TestClient(create_app(settings)) as client:
+            with client.stream(
+                "GET",
+                f"/runs/run-123/stream?token={stream_token}",
+            ) as response:
+                body = response.read().decode("utf-8")
+    finally:
+        server._run_stream_queues.pop("run-123", None)
+
+    assert response.status_code == 200
+    assert body == ""
+
+
+def test_run_stream_rejects_invalid_stream_token(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _insert_run_state(settings)
 
     with TestClient(create_app(settings)) as client:
-        response = client.get("/runs/missing/stream", headers=_token_headers())
+        response = client.get("/runs/run-123/stream?token=expired-token")
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": "invalid or expired stream token"}
+
+
+def test_run_stream_rejects_stream_token_for_other_run(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    _insert_run_state(settings)
+    stream_token = mint_stream_token("other-run")
+
+    with TestClient(create_app(settings)) as client:
+        response = client.get(f"/runs/run-123/stream?token={stream_token}")
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": "invalid or expired stream token"}
+
+
+def test_run_stream_returns_404_for_missing_run(tmp_path: Path) -> None:
+    settings = Settings(app_dir=tmp_path)
+    stream_token = mint_stream_token("missing")
+
+    with TestClient(create_app(settings)) as client:
+        response = client.get(f"/runs/missing/stream?token={stream_token}")
 
     assert response.status_code == 404
 
@@ -217,13 +262,13 @@ def test_run_stream_yields_sse_events_and_cleans_up_on_sentinel(
     queue = server.get_or_create_run_queue("run-123")
     queue.put_nowait({"type": "stage", "data": {"stage": "plan", "status": "running"}})
     queue.put_nowait(server._STREAM_SENTINEL)
+    stream_token = mint_stream_token("run-123")
 
     try:
         with TestClient(create_app(settings)) as client:
             with client.stream(
                 "GET",
-                "/runs/run-123/stream",
-                headers=_token_headers(),
+                f"/runs/run-123/stream?token={stream_token}",
             ) as response:
                 body = response.read().decode("utf-8")
                 content_type = response.headers["content-type"]
