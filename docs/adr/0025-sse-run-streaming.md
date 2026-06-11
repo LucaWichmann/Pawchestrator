@@ -68,7 +68,21 @@ On run completion or terminal status, the daemon pushes a sentinel value to clos
 
 ### Decision 4 — Authentication
 
-`GET /runs/{run_id}/stream` requires `X-Pawchestrator-Token`, consistent with all non-health/non-pair endpoints.
+`GET /runs/{run_id}/stream` cannot use `X-Pawchestrator-Token` directly because native `EventSource` cannot set custom headers. Instead, authentication uses a two-step flow:
+
+1. **Mint** — frontend calls `POST /runs/{run_id}/stream-token` with the standard `X-Pawchestrator-Token` header. Backend validates the run exists (404 if not), generates a short-lived stream token, stores it in-memory as `{stream_token: (run_id, expires_at)}`, and returns `{"token": "...", "expires_in": 300}`.
+2. **Connect** — frontend opens `EventSource` at `/runs/{run_id}/stream?token=<stream_token>`. Middleware special-cases this path: instead of requiring the header, it validates `?token=` against the stream token store, checking both expiry and that the token's stored `run_id` matches the path `run_id`.
+
+**Token properties:**
+- 5-minute TTL, time-based only (no one-use invalidation — invalidating on first connect breaks `EventSource` auto-reconnect).
+- Scoped to a specific `run_id` — a token minted for run A cannot open run B's stream.
+- Stored in-memory; daemon restart invalidates all stream tokens. Clients re-mint automatically via the poll-fallback path.
+
+**Reconnect:** `EventSource` auto-reconnects (~3s after drop). If the stream token is still within its TTL, reconnect succeeds. If expired, `onerror` fires → poll fallback → `openIssueStream` re-mints a fresh token.
+
+**Why not Option 1 (accept pairing token as `?token=`):** pairing tokens in query params appear in access logs and browser history — unacceptable even on localhost.
+
+**Why not Option 2 (`fetch()` streaming):** loses native `EventSource` reconnect and requires manual SSE parsing.
 
 ---
 
