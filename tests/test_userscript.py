@@ -564,9 +564,10 @@ def test_userscript_polls_every_three_seconds_and_reinjects() -> None:
 def test_userscript_streams_active_issue_runs_with_poll_fallback() -> None:
     source = _read_userscript()
 
-    assert "function openRunStream(runId)" in source
+    assert "async function openRunStream(runId)" in source
+    assert "stream-token" in source
     assert "new EventSource(url.toString())" in source
-    assert 'url.searchParams.set("token", token)' in source
+    assert 'url.searchParams.set("token", streamToken)' in source
     assert "activeRunStream: null" in source
     assert "activeRunId: null" in source
     assert "sseConnected: false" in source
