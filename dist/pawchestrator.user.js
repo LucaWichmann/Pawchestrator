@@ -767,10 +767,13 @@
 			});
 		}
 	}
-	function openRunStream(runId) {
-		const token = GM_getValue(TOKEN_KEY);
+	async function openRunStream(runId) {
+		const { token: streamToken } = await requestJson(`/runs/${encodeURIComponent(runId)}/stream-token`, {
+			label: "Mint stream token",
+			method: "POST"
+		});
 		const url = new URL(`${API_BASE}/runs/${encodeURIComponent(runId)}/stream`);
-		url.searchParams.set("token", token);
+		url.searchParams.set("token", streamToken);
 		return new EventSource(url.toString());
 	}
 	async function fetchIssueStatus(issue) {
