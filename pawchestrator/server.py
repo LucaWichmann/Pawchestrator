@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
@@ -70,6 +71,11 @@ from pawchestrator.stage_lifecycle import (
     StageFailedWithArtifact,
     StageSkipped,
     run_stage_lifecycle,
+)
+from pawchestrator.stream_tokens import (
+    STREAM_TOKEN_TTL,
+    mint_stream_token,
+    validate_stream_token,
 )
 
 
@@ -176,6 +182,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.middleware("http")
     async def require_pairing_token(request: Request, call_next):
         if request.method == "OPTIONS" or request.url.path in {"/health", "/pair"}:
+            return await call_next(request)
+
+        stream_match = re.fullmatch(r"/runs/([^/]+)/stream", request.url.path)
+        if stream_match:
+            stream_token = request.query_params.get("token")
+            run_id = stream_match.group(1)
+            if not stream_token or not validate_stream_token(stream_token, run_id):
+                return JSONResponse(
+                    {"detail": "invalid or expired stream token"},
+                    status_code=403,
+                )
             return await call_next(request)
 
         token = request.headers.get("X-Pawchestrator-Token")
@@ -355,6 +372,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         close_run_stream(run_id)
         return {"run_id": run_id, "status": "failed", "error": "aborted by user"}
+
+    @app.post("/runs/{run_id}/stream-token")
+    async def mint_run_stream_token(run_id: str) -> dict[str, object]:
+        state = await get_run_state(runtime_settings, run_id)
+        if state is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        token = mint_stream_token(run_id)
+        return {"token": token, "expires_in": STREAM_TOKEN_TTL}
 
     @app.post("/runs/{run_id}/reject")
     async def reject_run(run_id: str, body: PlanRejectRequest) -> dict[str, str]:

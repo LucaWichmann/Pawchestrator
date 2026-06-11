@@ -176,10 +176,16 @@ export async function requestJson(path: string, options: RequestOptions = {}) {
   }
 }
 
-export function openRunStream(runId: string): EventSource {
-  const token = GM_getValue(TOKEN_KEY);
+export async function openRunStream(runId: string): Promise<EventSource> {
+  const { token: streamToken } = await requestJson(
+    `/runs/${encodeURIComponent(runId)}/stream-token`,
+    {
+      label: "Mint stream token",
+      method: "POST",
+    },
+  );
   const url = new URL(`${API_BASE}/runs/${encodeURIComponent(runId)}/stream`);
-  url.searchParams.set("token", token);
+  url.searchParams.set("token", streamToken);
   return new EventSource(url.toString());
 }
 
